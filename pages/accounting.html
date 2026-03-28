@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Accounting & Finance</title>
+  <link rel="stylesheet" href="../src/script.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+</head>
+<body class="ops-page" data-page="accounting">
+<aside class="ops-sidebar" id="ops-sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-with-logo">
+      <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+      <span class="sidebar-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+    </div>
+  </div>
+  <nav class="ops-nav">
+    <a href="dashboard.html"><i class="fa-solid fa-gauge"></i> Dashboard</a>
+    <a href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i> Inventory &amp; Stock</a>
+    <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
+    <a href="vendors.html"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
+    <a href="accounting.html" class="is-active"><i class="fa-solid fa-calculator"></i> Accounting</a>
+    <a href="production.html"><i class="fa-solid fa-industry"></i> Production</a>
+    <a href="reports.html"><i class="fa-solid fa-chart-line"></i> Reports</a>
+    <a href="users.html"><i class="fa-solid fa-users-gear"></i> User Management</a>
+    <a href="../login.html" class="logout-link"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
+  </nav>
+  <div class="sidebar-footer">
+    <hr>
+    <span>&copy; 2026 White Water Factory</span>
+  </div>
+</aside>
+<header class="ops-topbar">
+  <h1>
+    <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+    <span class="brand-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+  </h1>
+</header>
+<main class="ops-main">
+  <div class="page-header">
+    <h2>Accounting & Finance</h2>
+    <p>General ledger, cashbook, account summaries, and multi-currency exchange rates in one unified view.</p>
+  </div>
+  <section class="stats-row" id="acc-stats-row"></section>
+  <div class="panel">
+    <div class="tab-bar">
+      <button class="tab-btn tab-active" data-tab="ledger" onclick="switchTab('acc','ledger')">General Ledger</button>
+      <button class="tab-btn" data-tab="cashbook" onclick="switchTab('acc','cashbook')">Cashbook</button>
+      <button class="tab-btn" data-tab="summary" onclick="switchTab('acc','summary')">Account Summary</button>
+      <button class="tab-btn" data-tab="currency" onclick="switchTab('acc','currency')">Multi-Currency</button>
+    </div>
+    <div id="acc-tab-ledger" class="tab-panel tab-active">
+      <div class="info-box" style="margin-bottom:14px;">
+        <p><strong>General Ledger</strong> records every financial transaction using double-entry bookkeeping. Each entry has a <em>debit</em> and/or <em>credit</em> side.</p>
+        <ul style="margin:6px 0 0 18px;line-height:1.7;">
+          <li><strong>Asset</strong> — Bank deposits, inventory purchases (debit increases)</li>
+          <li><strong>Liability</strong> — Supplier invoices, loans received (credit increases)</li>
+          <li><strong>Equity</strong> — Owner capital injections, retained earnings</li>
+          <li><strong>Revenue</strong> — Cash sales, invoice payments received (credit increases)</li>
+          <li><strong>Expense</strong> — Utilities, transport, salaries paid (debit increases)</li>
+        </ul>
+        <p style="margin-top:6px;">For every debit there should be a matching credit entry to keep the books balanced.</p>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Type</th><th>Debit (GH)</th><th>Credit (GH)</th><th>Actions</th></tr></thead>
+        <tbody id="ledger-tbody"></tbody>
+      </table>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="ledger">Add Entry <i class="fa-solid fa-plus"></i></button></div>
+    </div>
+    <div id="acc-tab-cashbook" class="tab-panel">
+      <div class="info-box" style="margin-bottom:14px;">
+        <p><strong>Cashbook</strong> tracks all money coming in and going out of the business. The running balance updates automatically.</p>
+        <ul style="margin:6px 0 0 18px;line-height:1.7;">
+          <li><strong>Receipt</strong> — Money received (customer payments, cash sales, bank deposits, capital injections)</li>
+          <li><strong>Payment</strong> — Money spent (supplier payments, utility bills, transport costs, salaries)</li>
+        </ul>
+        <p style="margin-top:6px;">Totals for receipts, payments, and current balance are shown below the table.</p>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Date</th><th>Description</th><th>Type</th><th>Amount (GH)</th><th>Running Balance</th><th>Actions</th></tr></thead>
+        <tbody id="cashbook-tbody"></tbody>
+      </table>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="cashbook">Add Entry <i class="fa-solid fa-plus"></i></button></div>
+      <div class="cashbook-summary" id="cashbook-summary-cards"></div>
+    </div>
+    <div id="acc-tab-summary" class="tab-panel">
+      <div class="info-box" style="margin-bottom:14px;">
+        <p><strong>Account Summary</strong> shows your company's financial position across 5 categories:</p>
+        <ul style="margin:6px 0 0 18px;line-height:1.7;">
+          <li><strong>Assets</strong> — What the company owns (Bank, Inventory, Accounts Receivable, Equipment)</li>
+          <li><strong>Liabilities</strong> — What the company owes (Accounts Payable, Loans, Accrued Expenses)</li>
+          <li><strong>Equity</strong> — Owner's stake (Owner Capital, Retained Earnings)</li>
+          <li><strong>Revenue</strong> — Income earned (Sales Revenue, Other Income)</li>
+          <li><strong>Expenses</strong> — Costs incurred (Utilities, Transport, Salaries, Packaging)</li>
+        </ul>
+        <p style="margin-top:6px;">Add accounts that match your books. Totals calculate automatically per category.</p>
+      </div>
+      <div class="category-grid" id="account-summary-grid"></div>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="account">Add Account <i class="fa-solid fa-plus"></i></button></div>
+    </div>
+    <div id="acc-tab-currency" class="tab-panel">
+      <div class="currency-grid" id="currency-grid"></div>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="currency">Add Currency <i class="fa-solid fa-plus"></i></button></div>
+      <div class="info-box">
+        <p>Multi-Currency Support<br>The system supports transactions in multiple currencies. Exchange rates are updated daily and all transactions are converted to the base currency (GHS) in the general ledger.</p>
+      </div>
+    </div>
+  </div>
+  <!-- Add Modal -->
+  <div id="acc-add-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+    <div class="inv-modal">
+      <div class="inv-modal-header">
+        <h3 id="acc-modal-title">Add</h3>
+        <button type="button" class="inv-modal-close" id="acc-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <form id="acc-add-form" novalidate>
+        <div class="inv-modal-body" id="acc-modal-fields"></div>
+        <div class="inv-modal-footer">
+          <button type="button" class="btn-secondary" id="acc-modal-cancel">Cancel</button>
+          <button type="submit" class="btn-primary">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+<script src="../src/script.js"></script>
+</body>
+</html>

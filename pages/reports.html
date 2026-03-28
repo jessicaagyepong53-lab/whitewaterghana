@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reports &amp; Analytics</title>
+  <link rel="stylesheet" href="../src/script.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+</head>
+<body class="ops-page" data-page="reports">
+<aside class="ops-sidebar" id="ops-sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-with-logo">
+      <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+      <span class="sidebar-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+    </div>
+  </div>
+  <nav class="ops-nav">
+    <a href="dashboard.html"><i class="fa-solid fa-gauge"></i> Dashboard</a>
+    <a href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i> Inventory &amp; Stock</a>
+    <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
+    <a href="vendors.html"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
+    <a href="accounting.html"><i class="fa-solid fa-calculator"></i> Accounting</a>
+    <a href="production.html"><i class="fa-solid fa-industry"></i> Production</a>
+    <a href="reports.html" class="is-active"><i class="fa-solid fa-chart-line"></i> Reports</a>
+    <a href="users.html"><i class="fa-solid fa-users-gear"></i> User Management</a>
+    <a href="../login.html" class="logout-link"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
+  </nav>
+  <div class="sidebar-footer">
+    <hr>
+    <span>&copy; 2026 White Water Factory</span>
+  </div>
+</aside>
+<header class="ops-topbar">
+  <h1>
+    <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+    <span class="brand-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+  </h1>
+</header>
+<main class="ops-main">
+  <div class="page-header">
+    <div class="page-header-row">
+      <div>
+        <h2>Reports &amp; Analytics</h2>
+        <p>Sales trends, financial reports, and operational intelligence in one comprehensive module.</p>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <select id="rep-filter-type" onchange="applyReportsFilter()" style="padding:8px 12px;border:1px solid #c8ddec;border-radius:8px;font-size:13px;background:#fff;cursor:pointer;">
+          <option value="all">All Time</option>
+          <option value="month">Per Month</option>
+          <option value="year">Per Year</option>
+        </select>
+        <input type="month" id="rep-filter-month" onchange="applyReportsFilter()" style="padding:8px 12px;border:1px solid #c8ddec;border-radius:8px;font-size:13px;background:#fff;display:none;">
+        <select id="rep-filter-year" onchange="applyReportsFilter()" style="padding:8px 12px;border:1px solid #c8ddec;border-radius:8px;font-size:13px;background:#fff;cursor:pointer;display:none;"></select>
+        <button type="button" class="btn-print" onclick="window.print()">Export Reports</button>
+      </div>
+    </div>
+  </div>
+  <section class="kpi-grid" id="rep-kpi-grid"></section>
+  <div class="panel">
+    <div class="tab-bar">
+      <button class="tab-btn tab-active" data-tab="sales" onclick="switchTab('rep','sales')">Sales Reports</button>
+      <button class="tab-btn" data-tab="financial" onclick="switchTab('rep','financial')">Financial Reports</button>
+      <button class="tab-btn" data-tab="operations" onclick="switchTab('rep','operations')">Operations</button>
+    </div>
+
+    <div id="rep-tab-sales" class="tab-panel tab-active">
+      <div class="grid-two">
+        <div>
+          <h3>Sales Trends (Revenue + Units)</h3>
+          <div id="chart-sales-trends" class="chart-wrap"></div>
+          <div class="chart-legend">
+            <span><span class="legend-dot blue"></span>Sales (GH)</span>
+            <span><span class="legend-dot green"></span>Units</span>
+          </div>
+        </div>
+        <div>
+          <h3>Daily Shift Sales</h3>
+          <div id="chart-shift-sales" class="chart-wrap"></div>
+        </div>
+      </div>
+      <div class="stats-row" id="sales-summary-cards" style="margin-top:14px"></div>
+    </div>
+
+    <div id="rep-tab-financial" class="tab-panel">
+      <div class="grid-two">
+        <div>
+          <h3>Profit &amp; Loss Statement</h3>
+          <table class="data-table">
+            <thead><tr><th>Line Item</th><th>Amount (GH)</th></tr></thead>
+            <tbody id="pl-tbody"></tbody>
+          </table>
+        </div>
+        <div>
+          <h3>Inventory Distribution</h3>
+          <div class="pie-layout">
+            <div id="inventory-pie" class="chart-wrap" style="min-width:180px"></div>
+            <div id="inventory-pie-legend" class="pie-legend"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="rep-tab-operations" class="tab-panel">
+      <table class="data-table">
+        <thead><tr><th>Cost Centre</th><th>Budget</th><th>Actual</th><th>Variance</th><th>Status</th></tr></thead>
+        <tbody id="cost-centre-tbody"></tbody>
+      </table>
+      <div class="metric-cards" id="ops-metric-cards"></div>
+    </div>
+  </div>
+</main>
+<script src="../src/script.js"></script>
+</body>
+</html>

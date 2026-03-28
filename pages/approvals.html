@@ -1,0 +1,119 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Approvals</title>
+<link rel="stylesheet" href="../src/script.css">
+</head>
+<body>
+
+<nav>
+  <a href="dashboard.html">Dashboard</a> |
+  <a href="inventory.html">Inventory</a> |
+  <a href="machines.html">Machines</a> |
+  <a href="production.html">Production</a> |
+  <a href="sales.html">Sales</a> |
+  <a href="invoices.html">Invoices</a> |
+  <a href="vendors.html">Vendors</a> |
+  <a href="customers.html">Customers</a> |
+  <a href="accounting.html">Accounting</a> |
+  <a href="reports.html">Reports</a> |
+  <a href="approvals.html">Approvals</a> |
+  <a href="users.html">Users</a> |
+  <a href="../login.html" class="logout-link">Logout</a>
+</nav>
+<hr>
+
+<h2>Approval Queue</h2>
+<p>Access: CEO &amp; Manager</p>
+<p><strong>NOTE:</strong> All edit and delete requests submitted by supervisors and staff must be approved here before changes take effect in the system.</p>
+<p>Pending Approvals: <strong>2</strong></p>
+
+<hr>
+<h3>Pending Request 1 of 2</h3>
+<p>
+  <strong>Type:</strong> Edit Request<br>
+  <strong>Submitted By:</strong> Kweku Asare (Supervisor)<br>
+  <strong>Date &amp; Time:</strong> Mar 18, 2026  9:14am<br>
+  <strong>Module:</strong> Inventory
+</p>
+<table border="1" cellpadding="6">
+  <tr><th>Field</th><th>Old Value</th><th>New Value</th></tr>
+  <tr>
+    <td>Item: Sachet Rolls (500m)  Quantity</td>
+    <td>180 rolls</td>
+    <td>120 rolls</td>
+  </tr>
+</table>
+<p><strong>Reason:</strong> Physical stock count conducted at 8am. Correcting system quantity to match actual count.</p>
+<form action="approvals.html">
+  <button type="submit" name="decision" value="approve">Approve</button>
+  <button type="submit" name="decision" value="reject">Reject</button>
+  <button type="submit" name="decision" value="clarify">Request Clarification</button>
+</form>
+
+<hr>
+<h3>Pending Request 2 of 2</h3>
+<p>
+  <strong>Type:</strong> Delete Request<br>
+  <strong>Submitted By:</strong> Abena Frimpong (Supervisor)<br>
+  <strong>Date &amp; Time:</strong> Mar 17, 2026  4:30pm<br>
+  <strong>Module:</strong> Sales Orders
+</p>
+<table border="1" cellpadding="6">
+  <tr><th>Record</th><th>Details</th></tr>
+  <tr>
+    <td>Order: SO-2026-115</td>
+    <td>Customer: Tema Cold Room | Amount: GH 1,750.00</td>
+  </tr>
+</table>
+<p><strong>Reason:</strong> Customer cancelled order before fulfilment. Invoice not yet sent. Requesting removal from register.</p>
+<form action="approvals.html">
+  <button type="submit" name="decision" value="approve">Approve</button>
+  <button type="submit" name="decision" value="reject">Reject</button>
+  <button type="submit" name="decision" value="clarify">Request Clarification</button>
+</form>
+
+<hr>
+<h3>Approval History</h3>
+<table border="1" cellpadding="6">
+  <tr>
+    <th>Date</th>
+    <th>Submitted By</th>
+    <th>Action Type</th>
+    <th>Description</th>
+    <th>Decision</th>
+    <th>Decided By</th>
+  </tr>
+  <tr>
+    <td>Mar 16</td>
+    <td>K. Mensah</td>
+    <td>Edit</td>
+    <td>Updated vendor price  PackRight Ltd</td>
+    <td>Approved</td>
+    <td>CEO</td>
+  </tr>
+  <tr>
+    <td>Mar 14</td>
+    <td>E. Boateng</td>
+    <td>Delete</td>
+    <td>Remove duplicate invoice INV-2026-079</td>
+    <td>Approved</td>
+    <td>CEO</td>
+  </tr>
+  <tr>
+    <td>Mar 12</td>
+    <td>A. Darko</td>
+    <td>Edit</td>
+    <td>Correct batch output  B-2026-031</td>
+    <td>Rejected</td>
+    <td>CEO</td>
+  </tr>
+</table>
+
+  <script src="../src/script.js"></script>
+</body>
+</html>
+
+
+

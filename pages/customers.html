@@ -1,0 +1,147 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Customers</title>
+<link rel="stylesheet" href="../src/script.css">
+</head>
+<body>
+
+<h1>WHITE WATER WELLS LTD</h1>
+
+<nav>
+  <a href="dashboard.html">Dashboard</a> |
+  <a href="inventory.html">Inventory</a> |
+  <a href="machines.html">Machines</a> |
+  <a href="production.html">Production</a> |
+  <a href="sales.html">Sales</a> |
+  <a href="invoices.html">Invoices</a> |
+  <a href="vendors.html">Vendors</a> |
+  <a href="customers.html">Customers</a> |
+  <a href="accounting.html">Accounting</a> |
+  <a href="reports.html">Reports</a> |
+  <a href="approvals.html">Approvals</a> |
+  <a href="users.html">Users</a> |
+  <a href="../login.html" class="logout-link">Logout</a>
+</nav>
+<hr>
+
+<h2>Customer Management</h2>
+<p>Access: CEO, Manager, Supervisor</p>
+
+<p>
+  <strong>Summary:</strong>
+  Total Customers: 127 |
+  Website Users: 84 |
+  New This Month: 12
+</p>
+
+<h3>Customer Register</h3>
+<table border="1" cellpadding="6">
+  <tr>
+    <th>Customer Name</th>
+    <th>Type</th>
+    <th>Phone</th>
+    <th>Email</th>
+    <th>Total Orders</th>
+    <th>Outstanding (GH)</th>
+    <th>Status</th>
+    <th>Action</th>
+  </tr>
+  <tr>
+    <td>Accra Fresh Drinks</td>
+    <td>Wholesale</td>
+    <td>024-XXX-XXXX</td>
+    <td>accrafresh@email.com</td>
+    <td>42</td>
+    <td>0.00</td>
+    <td>Active</td>
+    <td><a href="sales.html">View Orders</a></td>
+  </tr>
+  <tr>
+    <td>Kwame Distributors</td>
+    <td>Wholesale</td>
+    <td>020-XXX-XXXX</td>
+    <td>kwame@email.com</td>
+    <td>28</td>
+    <td>800.00</td>
+    <td>Active</td>
+    <td><a href="sales.html">View Orders</a></td>
+  </tr>
+  <tr>
+    <td>GH Water Depot</td>
+    <td>Retail Chain</td>
+    <td>026-XXX-XXXX</td>
+    <td>ghwater@email.com</td>
+    <td>55</td>
+    <td>2,400.00</td>
+    <td>Owing</td>
+    <td><a href="invoices.html">View Invoice</a></td>
+  </tr>
+  <tr>
+    <td>Tema Cold Room</td>
+    <td>Retail</td>
+    <td>050-XXX-XXXX</td>
+    <td>tema@email.com</td>
+    <td>19</td>
+    <td>0.00</td>
+    <td>Active</td>
+    <td><a href="sales.html">View Orders</a></td>
+  </tr>
+  <tr>
+    <td>KNUST Campus Store</td>
+    <td>Institutional</td>
+    <td>032-XXX-XXXX</td>
+    <td>knust@email.com</td>
+    <td>11</td>
+    <td>1,580.00</td>
+    <td>Suspended</td>
+    <td><a href="invoices.html">View Invoice</a></td>
+  </tr>
+</table>
+
+<h3>Add New Customer</h3>
+<form action="customers.html">
+  <p>
+    <label>Customer / Company Name:<br>
+    <input type="text" name="name" placeholder="Full name or company">
+    </label>
+  </p>
+  <p>
+    <label>Customer Type:<br>
+    <select name="type">
+      <option>Wholesale</option>
+      <option>Retail</option>
+      <option>Retail Chain</option>
+      <option>Institutional</option>
+      <option>Individual</option>
+    </select>
+    </label>
+  </p>
+  <p>
+    <label>Phone:<br>
+    <input type="tel" name="phone" placeholder="0XX-XXX-XXXX">
+    </label>
+  </p>
+  <p>
+    <label>Email:<br>
+    <input type="email" name="email" placeholder="customer@email.com">
+    </label>
+  </p>
+  <p>
+    <label>Address:<br>
+    <textarea name="address" rows="2" cols="50" placeholder="Customer address"></textarea>
+    </label>
+  </p>
+  <p>
+    <button type="submit">Add Customer</button>
+    <button type="reset">Clear</button>
+  </p>
+</form>
+
+  <script src="../src/script.js"></script>
+</body>
+</html>
+
+
+

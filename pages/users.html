@@ -1,0 +1,220 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>User Management</title>
+<link rel="stylesheet" href="../src/script.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+</head>
+<body class="ops-page" data-page="users">
+<aside class="ops-sidebar" id="ops-sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-with-logo">
+      <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+      <span class="sidebar-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+    </div>
+  </div>
+  <nav class="ops-nav">
+    <a href="dashboard.html"><i class="fa-solid fa-gauge"></i> Dashboard</a>
+    <a href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i> Inventory &amp; Stock</a>
+    <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
+    <a href="vendors.html"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
+    <a href="accounting.html"><i class="fa-solid fa-calculator"></i> Accounting</a>
+    <a href="production.html"><i class="fa-solid fa-industry"></i> Production</a>
+    <a href="reports.html"><i class="fa-solid fa-chart-line"></i> Reports</a>
+    <a href="users.html" class="is-active"><i class="fa-solid fa-users-gear"></i> User Management</a>
+    <a href="../login.html" class="logout-link"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
+  </nav>
+  <div class="sidebar-footer">
+    <hr>
+    <span>&copy; 2026 White Water Factory</span>
+  </div>
+</aside>
+<header class="ops-topbar">
+  <h1>
+    <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+    <span class="brand-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+  </h1>
+</header>
+<main class="ops-main">
+  <div class="page-header">
+    <div class="page-header-row">
+      <div>
+        <h2>User Management</h2>
+        <p>Manage system users, roles, and access permissions. CEO &amp; Manager access.</p>
+      </div>
+    </div>
+  </div>
+
+  <section class="stats-row" id="users-stats-row">
+    <div class="stat-card"><div class="s-icon"><i class="fa-solid fa-users"></i></div><p class="s-label">Total Users</p><p class="s-value" id="stat-total-users">0</p><p class="s-meta">Active accounts</p></div>
+    <div class="stat-card"><div class="s-icon"><i class="fa-solid fa-user-shield"></i></div><p class="s-label">Roles</p><p class="s-value">2</p><p class="s-meta">CEO/Manager, Supervisor/Staff</p></div>
+  </section>
+
+  <div class="panel">
+    <div class="tab-bar">
+      <button class="tab-btn tab-active" data-tab="users-list" onclick="switchTab('um','users-list')">System Users</button>
+      <button class="tab-btn" data-tab="permissions" onclick="switchTab('um','permissions')">Permissions Matrix</button>
+    </div>
+    <div id="um-tab-users-list" class="tab-panel tab-active">
+      <table class="data-table">
+        <thead>
+          <tr><th>Name</th><th>Email</th><th>Role</th><th>Access Level</th><th>Status</th><th>Last Login</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="users-tbody"></tbody>
+      </table>
+      <div class="table-tools table-tools-bottom">
+        <button type="button" class="btn-secondary" id="um-add-user-btn">Add User <i class="fa-solid fa-plus"></i></button>
+      </div>
+    </div>
+    <div id="um-tab-permissions" class="tab-panel">
+      <table class="data-table">
+        <thead>
+          <tr><th>Module</th><th>CEO / Manager</th><th>Supervisor / Staff</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Dashboard</td><td>Yes</td><td>No</td></tr>
+          <tr><td>Inventory &amp; Stock</td><td>Full</td><td>Add only</td></tr>
+          <tr><td>Sales &amp; Invoicing</td><td>Full</td><td>Add only</td></tr>
+          <tr><td>Purchase &amp; Vendors</td><td>Full</td><td>Add only</td></tr>
+          <tr><td>Accounting</td><td>Full</td><td>No</td></tr>
+          <tr><td>Production</td><td>Full</td><td>No</td></tr>
+          <tr><td>Reports &amp; Analytics</td><td>Full</td><td>No</td></tr>
+          <tr><td>User Management</td><td>Full</td><td>No</td></tr>
+        </tbody>
+      </table>
+      <div class="info-box">
+        <p>Supervisors and staff can submit edit/delete requests which go to the CEO Approval Queue before taking effect.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add User Modal -->
+  <div id="um-add-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+    <div class="inv-modal">
+      <div class="inv-modal-header">
+        <h3>Add New User</h3>
+        <button type="button" class="inv-modal-close" id="um-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <form id="um-add-form" novalidate>
+        <div class="inv-modal-body">
+          <div class="inv-modal-field"><label for="um-name">Full Name <span class="req">*</span></label><input id="um-name" type="text" required placeholder="Full name"></div>
+          <div class="inv-modal-field"><label for="um-email">Email <span class="req">*</span></label><input id="um-email" type="email" required placeholder="user@whitewater.com"></div>
+          <div class="inv-modal-field"><label for="um-role">Role <span class="req">*</span></label><select id="um-role" required><option value="Manager">Manager</option><option value="Supervisor">Supervisor</option><option value="Staff">Staff</option></select></div>
+          <div class="inv-modal-field"><label for="um-password">Temporary Password <span class="req">*</span></label><input id="um-password" type="password" required placeholder="Set initial password" minlength="6"></div>
+        </div>
+        <div class="inv-modal-footer">
+          <button type="button" class="btn-secondary" id="um-modal-cancel">Cancel</button>
+          <button type="submit" class="btn-primary">Create User</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+<script src="../src/script.js"></script>
+<script>
+(function() {
+  const ACCESS_LEVELS = {
+    Ceo: 'Full Access — All Modules',
+    Manager: 'Full Access — All Modules',
+    Supervisor: 'Inventory, Sales, Purchase (Add only)',
+    Staff: 'Inventory, Sales, Purchase (Add only)',
+  };
+
+  const usersTbody = document.getElementById('users-tbody');
+  const totalStat = document.getElementById('stat-total-users');
+
+  var editingUserIdx = -1;
+
+  function renderUsersTable() {
+    const users = getSystemUsers();
+    if (!usersTbody) return;
+    if (users.length === 0) {
+      usersTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No users yet — users appear here when they sign up or log in.</td></tr>';
+    } else {
+      usersTbody.innerHTML = users.map(function(u, idx) {
+        const access = ACCESS_LEVELS[u.role] || 'Per role defaults';
+        return '<tr>' +
+          '<td>' + u.name + '</td>' +
+          '<td>' + u.email + '</td>' +
+          '<td>' + u.role + '</td>' +
+          '<td>' + access + '</td>' +
+          '<td><span class="status-pill ' + (u.status === 'Active' ? 'pill-success' : 'pill-warning') + '">' + u.status + '</span></td>' +
+          '<td>' + (u.lastLogin || 'Never') + '</td>' +
+          '<td><div class="row-actions"><button class="btn-edit um-edit-btn" data-idx="' + idx + '"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete um-delete-btn" data-idx="' + idx + '"><i class="fa-solid fa-trash"></i></button></div></td>' +
+        '</tr>';
+      }).join('');
+    }
+    if (totalStat) totalStat.textContent = users.length;
+  }
+
+  renderUsersTable();
+
+  const addBtn = document.getElementById('um-add-user-btn');
+  const modal = document.getElementById('um-add-modal');
+  const form = document.getElementById('um-add-form');
+  const closeBtn = document.getElementById('um-modal-close');
+  const cancelBtn = document.getElementById('um-modal-cancel');
+
+  function closeModal() { editingUserIdx = -1; if (modal) modal.style.display = 'none'; if (form) form.reset(); var h = modal && modal.querySelector('.inv-modal-header h3'); if (h) h.textContent = 'Add New User'; }
+  if (addBtn) addBtn.addEventListener('click', function() { editingUserIdx = -1; if (modal) modal.style.display = 'flex'; });
+  if (closeBtn) closeBtn.addEventListener('click', closeModal);
+  if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
+  if (modal) modal.addEventListener('click', function(e) { if (e.target === modal) closeModal(); });
+
+  if (usersTbody) usersTbody.addEventListener('click', function(e) {
+    var editBtn = e.target.closest('.um-edit-btn');
+    var deleteBtn = e.target.closest('.um-delete-btn');
+    if (editBtn) {
+      var idx = parseInt(editBtn.dataset.idx);
+      var users = getSystemUsers();
+      if (idx < 0 || idx >= users.length) return;
+      editingUserIdx = idx;
+      var u = users[idx];
+      if (modal) modal.style.display = 'flex';
+      var h = modal && modal.querySelector('.inv-modal-header h3'); if (h) h.textContent = 'Edit User';
+      document.getElementById('um-name').value = u.name || '';
+      document.getElementById('um-email').value = u.email || '';
+      document.getElementById('um-role').value = u.role.charAt(0).toUpperCase() + u.role.slice(1);
+      document.getElementById('um-password').value = '';
+    }
+    if (deleteBtn) {
+      var idx2 = parseInt(deleteBtn.dataset.idx);
+      var users2 = getSystemUsers();
+      if (idx2 < 0 || idx2 >= users2.length) return;
+      if (!confirm('Delete user "' + users2[idx2].name + '"?')) return;
+      users2.splice(idx2, 1);
+      localStorage.setItem('ww_system_users', JSON.stringify(users2));
+      renderUsersTable();
+    }
+  });
+
+  if (form) form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var name = document.getElementById('um-name').value.trim();
+    var email = document.getElementById('um-email').value.trim();
+    var role = document.getElementById('um-role').value;
+    if (!name || !email) return;
+
+    if (editingUserIdx >= 0) {
+      var users = getSystemUsers();
+      if (editingUserIdx < users.length) {
+        users[editingUserIdx].name = name;
+        users[editingUserIdx].email = email;
+        users[editingUserIdx].role = role.toLowerCase();
+        localStorage.setItem('ww_system_users', JSON.stringify(users));
+      }
+    } else {
+      upsertSystemUser(name, email, role.toLowerCase());
+    }
+    renderUsersTable();
+    closeModal();
+  });
+})();
+</script>
+</body>
+</html>
+
+
+

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Login</title>
+<link rel="stylesheet" href="src/script.css">
+</head>
+<body class="auth-page">
+<main class="auth-shell">
+  <section class="auth-card">
+    <h1>WHITE WATER WELLS LTD</h1>
+    <h2>Management System - Login</h2>
+    <p class="muted">For users who already have access to the system.</p>
+
+    <form class="auth-form" action="/pages/dashboard.html" method="get">
+      <label>Email Address
+        <input type="email" name="email" placeholder="Enter your email" required>
+      </label>
+
+      <label>Password
+        <input type="password" name="password" placeholder="Enter your password" required>
+      </label>
+
+      <label>Login As
+        <select name="role" required>
+          <option value="ceo">CEO</option>
+          <option value="manager">Manager</option>
+          <option value="supervisor">Supervisor</option>
+          <option value="employee">Employee</option>
+        </select>
+      </label>
+
+      <button type="submit">Sign In</button>
+    </form>
+
+    <div class="auth-links" aria-label="Password help links">
+      <button type="button" class="text-link" data-toggle-target="forgot-password-panel">Forgot password?</button>
+      <button type="button" class="text-link" data-toggle-target="reset-password-panel">Reset password</button>
+    </div>
+
+    <section id="forgot-password-panel" class="auth-panel" hidden>
+      <h3>Forgot Password</h3>
+      <form id="forgot-password-form" class="auth-form auth-form-compact">
+        <label>Email Address
+          <input type="email" name="email" placeholder="Enter your email" required>
+        </label>
+        <button type="submit">Send Reset Help</button>
+      </form>
+    </section>
+
+    <section id="reset-password-panel" class="auth-panel" hidden>
+      <h3>Reset Password</h3>
+      <form id="reset-password-form" class="auth-form auth-form-compact">
+        <label>Email Address
+          <input type="email" name="email" placeholder="Enter your email" required>
+        </label>
+        <label>New Password
+          <input type="password" name="newPassword" placeholder="Enter new password" required>
+        </label>
+        <label>Confirm New Password
+          <input type="password" name="confirmPassword" placeholder="Confirm new password" required>
+        </label>
+        <button type="submit">Reset Password</button>
+      </form>
+    </section>
+
+    <p id="auth-message" class="auth-message" aria-live="polite"></p>
+
+    <p class="auth-switch">New here? <a href="index.html">Create an account</a></p>
+  </section>
+</main>
+<script src="src/script.js"></script>
+</body>
+</html>

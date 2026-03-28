@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inventory & Stock</title>
+  <link rel="stylesheet" href="../src/script.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+</head>
+<body class="ops-page" data-page="inventory">
+<aside class="ops-sidebar" id="ops-sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-with-logo">
+      <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+      <span class="sidebar-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+    </div>
+  </div>
+  <nav class="ops-nav">
+    <a href="dashboard.html"><i class="fa-solid fa-gauge"></i> Dashboard</a>
+    <a href="inventory.html" class="is-active"><i class="fa-solid fa-boxes-stacked"></i> Inventory &amp; Stock</a>
+    <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
+    <a href="vendors.html"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
+    <a href="accounting.html"><i class="fa-solid fa-calculator"></i> Accounting</a>
+    <a href="production.html"><i class="fa-solid fa-industry"></i> Production</a>
+    <a href="reports.html"><i class="fa-solid fa-chart-line"></i> Reports</a>
+    <a href="users.html"><i class="fa-solid fa-users-gear"></i> User Management</a>
+    <a href="../login.html" class="logout-link"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
+  </nav>
+  <div class="sidebar-footer">
+    <hr>
+    <span>&copy; 2026 White Water Factory</span>
+  </div>
+</aside>
+<header class="ops-topbar">
+  <h1>
+    <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+    <span class="brand-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+  </h1>
+</header>
+<main class="ops-main">
+  <div class="page-header">
+    <h2>Inventory & Stock Control</h2>
+    <p>Track raw materials, finished goods, equipment states, and customer distribution.</p>
+  </div>
+  <section class="stats-row" id="inv-stats-row"></section>
+  <div class="panel">
+    <div class="tab-bar">
+      <button class="tab-btn tab-active" data-tab="materials" onclick="switchTab('inv','materials')">Raw Materials</button>
+      <button class="tab-btn" data-tab="products" onclick="switchTab('inv','products')">Finished Products</button>
+      <button class="tab-btn" data-tab="equipment" onclick="switchTab('inv','equipment')">Equipment</button>
+      <button class="tab-btn" data-tab="customers" onclick="switchTab('inv','customers')">Customers</button>
+    </div>
+    <div id="inv-tab-materials" class="tab-panel tab-active">
+      <table class="data-table">
+        <thead><tr><th>Material</th><th>In Stock</th><th>Min Level</th><th>Supplier</th><th>Last Restocked</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="inv-materials-tbody"></tbody>
+      </table>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary table-add-btn" data-add-entity="material">Add Raw Material <i class="fa-solid fa-plus"></i></button></div>
+    </div>
+    <div id="inv-tab-products" class="tab-panel">
+      <table class="data-table">
+        <thead><tr><th>Production</th><th>Quantity</th><th>Location</th><th>Distribution Status</th><th>Actions</th></tr></thead>
+        <tbody id="inv-products-tbody"></tbody>
+      </table>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary table-add-btn" data-add-entity="product">Add Product <i class="fa-solid fa-plus"></i></button></div>
+    </div>
+    <div id="inv-tab-equipment" class="tab-panel">
+      <table class="data-table">
+        <thead><tr><th>Code</th><th>Equipment</th><th>Status</th><th>Issues</th><th>Last Maintenance</th><th>Next Maintenance</th><th>Actions</th></tr></thead>
+        <tbody id="inv-equipment-tbody"></tbody>
+      </table>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary table-add-btn" data-add-entity="equipment">Add Equipment <i class="fa-solid fa-plus"></i></button></div>
+      <div id="inv-deviation-box" class="info-box" style="display:none"></div>
+    </div>
+    <div id="inv-tab-customers" class="tab-panel">
+      <div class="table-tools"><button type="button" class="btn-secondary table-add-btn" data-add-entity="customer">Add Customer</button></div>
+      <table class="data-table">
+        <thead><tr><th>Customer</th><th>Contact</th><th>Total Orders</th><th>Last Order</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="inv-customers-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+  <!-- Add Row Modal -->
+  <div id="inv-add-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+    <div class="inv-modal">
+      <div class="inv-modal-header">
+        <h3 id="inv-modal-title">Add</h3>
+        <button type="button" class="inv-modal-close" id="inv-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <form id="inv-add-form" novalidate>
+        <div class="inv-modal-body" id="inv-modal-fields"></div>
+        <div class="inv-modal-footer">
+          <button type="button" class="btn-secondary" id="inv-modal-cancel">Cancel</button>
+          <button type="submit" class="btn-primary">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+<script src="../src/script.js"></script>
+</body>
+</html>

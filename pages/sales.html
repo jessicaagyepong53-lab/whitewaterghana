@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sales & Invoicing</title>
+  <link rel="stylesheet" href="../src/script.css">
+</head>
+<body class="ops-page" data-page="sales">
+<header class="ops-topbar">
+  <h1>White Water Wells LTD</h1>
+  <nav class="ops-nav">
+    <a href="dashboard.html">Dashboard</a>
+    <a href="inventory.html">Inventory & Stock</a>
+    <a href="invoices.html" class="is-active">Sales & Invoicing</a>
+    <a href="vendors.html">Purchase & Vendors</a>
+    <a href="accounting.html">Accounting</a>
+    <a href="production.html">Production</a>
+    <a href="reports.html">Reports</a>
+    <a href="../login.html" class="logout-link">Logout</a>
+  </nav>
+</header>
+<main class="ops-main">
+  <div class="page-header">
+    <h2>Sales & Invoicing</h2>
+    <p>This page mirrors the Sales & Invoicing module for compatibility with existing routes.</p>
+  </div>
+  <section class="stats-row" id="si-stats-row"></section>
+  <div class="panel">
+    <div class="tab-bar">
+      <button class="tab-btn tab-active" data-tab="invoices" onclick="switchTab('si','invoices')">Invoices</button>
+      <button class="tab-btn" data-tab="orders" onclick="switchTab('si','orders')">Sales Orders</button>
+    </div>
+    <div id="si-tab-invoices" class="tab-panel tab-active">
+      <div class="two-panel">
+        <div class="two-panel-left">
+          <h3>Invoice Register</h3>
+          <table class="data-table">
+            <thead><tr><th>Invoice #</th><th>Customer</th><th>Date</th><th>Due</th><th>Amount (GH)</th><th>Status</th></tr></thead>
+            <tbody id="invoice-tbody"></tbody>
+          </table>
+        </div>
+        <div class="two-panel-right">
+          <h3>Invoice Detail</h3>
+          <div id="invoice-detail-content"><p class="detail-placeholder">&#128196; Select an invoice to view details</p></div>
+        </div>
+      </div>
+    </div>
+    <div id="si-tab-orders" class="tab-panel">
+      <table class="data-table">
+        <thead><tr><th>Order ID</th><th>Customer</th><th>Order Date</th><th>Delivery Date</th><th>Amount (GH)</th><th>Status</th></tr></thead>
+        <tbody id="orders-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+<script src="../src/script.js"></script>
+</body>
+</html>

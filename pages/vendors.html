@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Purchase &amp; Vendors - White Water Ghana</title>
+  <link rel="stylesheet" href="../src/script.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+</head>
+<body class="ops-page" data-page="vendors">
+<aside class="ops-sidebar" id="ops-sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-with-logo">
+      <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+      <span class="sidebar-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+    </div>
+  </div>
+  <nav class="ops-nav">
+    <a href="dashboard.html"><i class="fa-solid fa-gauge"></i> Dashboard</a>
+    <a href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i> Inventory &amp; Stock</a>
+    <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
+    <a href="vendors.html" class="is-active"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
+    <a href="accounting.html"><i class="fa-solid fa-calculator"></i> Accounting</a>
+    <a href="production.html"><i class="fa-solid fa-industry"></i> Production</a>
+    <a href="reports.html"><i class="fa-solid fa-chart-line"></i> Reports</a>
+    <a href="users.html"><i class="fa-solid fa-users-gear"></i> User Management</a>
+    <a href="../login.html" class="logout-link"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
+  </nav>
+  <div class="sidebar-footer">
+    <hr>
+    <span>&copy; 2026 White Water Factory</span>
+  </div>
+</aside>
+<header class="ops-topbar">
+  <h1>
+    <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+    <span class="brand-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+  </h1>
+</header>
+<main class="ops-main">
+  <div class="page-header">
+    <h2>Purchase &amp; Vendor Management</h2>
+    <p>Track purchase orders, manage supplier relationships, monitor payment terms, and link open POs to Accounts Payable.</p>
+  </div>
+  <section class="stats-row" id="pu-stats-row"></section>
+  <div class="panel">
+    <div class="tab-bar">
+      <button class="tab-btn tab-active" data-tab="pos" onclick="switchTab('pu','pos')">Purchase Orders</button>
+      <button class="tab-btn" data-tab="suppliers" onclick="switchTab('pu','suppliers')">Suppliers</button>
+    </div>
+    <div id="pu-tab-pos" class="tab-panel tab-active">
+      <div class="two-panel">
+        <div class="two-panel-left">
+          <h3>Purchase Order Tracking</h3>
+          <table class="data-table">
+            <thead><tr><th>PO ID</th><th>Supplier</th><th>Date</th><th>Expected</th><th>Amount (GH)</th><th>Status</th><th></th></tr></thead>
+            <tbody id="po-tbody"></tbody>
+          </table>
+          <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary pu-add-btn" data-add-entity="po">Add Purchase Order <i class="fa-solid fa-plus"></i></button></div>
+          <div class="info-box">
+            <p>Click a PO row to see item details and supplier terms. Open POs auto-populate Accounts Payable.</p>
+          </div>
+        </div>
+        <div class="two-panel-right">
+          <h3>PO Detail</h3>
+          <div id="po-detail-content">
+            <p class="detail-placeholder">&#128196; Select a PO to view details</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="pu-tab-suppliers" class="tab-panel">
+      <table class="data-table">
+        <thead><tr><th>Supplier</th><th>Contact</th><th>Email</th><th>Materials</th><th>Orders</th><th>Payment Terms</th><th>Rating</th><th></th></tr></thead>
+        <tbody id="suppliers-tbody"></tbody>
+      </table>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary pu-add-btn" data-add-entity="supplier">Add Supplier <i class="fa-solid fa-plus"></i></button></div>
+    </div>
+  </div>
+  <!-- Add Modal -->
+  <div id="pu-add-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+    <div class="inv-modal">
+      <div class="inv-modal-header">
+        <h3 id="pu-modal-title">Add</h3>
+        <button type="button" class="inv-modal-close" id="pu-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <form id="pu-add-form" novalidate>
+        <div class="inv-modal-body" id="pu-modal-fields"></div>
+        <div class="inv-modal-footer">
+          <button type="button" class="btn-secondary" id="pu-modal-cancel">Cancel</button>
+          <button type="submit" class="btn-primary">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+<script src="../src/script.js"></script>
+</body>
+</html>

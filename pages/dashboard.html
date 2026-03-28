@@ -1,0 +1,80 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="../src/script.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+</head>
+<body class="ops-page" data-page="dashboard">
+  <aside class="ops-sidebar" id="ops-sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-with-logo">
+        <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+        <span class="sidebar-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+      </div>
+    </div>
+    <nav class="ops-nav">
+      <a href="dashboard.html" class="is-active"><i class="fa-solid fa-gauge"></i> Dashboard</a>
+      <a href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i> Inventory &amp; Stock</a>
+      <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
+      <a href="vendors.html"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
+      <a href="accounting.html"><i class="fa-solid fa-calculator"></i> Accounting</a>
+      <a href="production.html"><i class="fa-solid fa-industry"></i> Production</a>
+      <a href="reports.html"><i class="fa-solid fa-chart-line"></i> Reports</a>
+      <a href="users.html"><i class="fa-solid fa-users-gear"></i> User Management</a>
+      <a href="../login.html" class="logout-link"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
+    </nav>
+    <div class="sidebar-footer">
+      <hr>
+      <span>&copy; 2026 White Water Factory</span>
+    </div>
+  </aside>
+  <header class="ops-topbar">
+    <h1>
+      <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+      <span class="brand-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+    </h1>
+  </header>
+
+  <main class="ops-main">
+    <div class="page-header">
+      <h2>Dashboard</h2>
+      <p>Welcome to White Water Wells Factory Management System</p>
+      <p>Live view of revenue, production, customer activity, and stock risk indicators. Last updated: <span id="dash-timestamp">--</span></p>
+    </div>
+
+    <section class="kpi-grid" id="dash-kpi-grid"></section>
+
+    <section class="grid-two">
+      <article class="panel">
+        <h3>Revenue vs Costs (6 Months)</h3>
+        <div id="chart-rev-cost" class="chart-wrap"></div>
+        <div class="chart-legend">
+          <span><span class="legend-dot green"></span>Revenue</span>
+          <span><span class="legend-dot yellow"></span>Costs</span>
+        </div>
+      </article>
+      <article class="panel">
+        <h3>Daily Sales (Units)</h3>
+        <div id="chart-daily-sales" class="chart-wrap"></div>
+      </article>
+    </section>
+
+    <section class="grid-two">
+      <article class="panel" id="dash-equipment-panel">
+        <h3>Equipment Status Monitoring</h3>
+        <div id="dash-equipment-content"></div>
+      </article>
+      <article class="panel" id="dash-stock-alerts-panel">
+        <h3>Real-Time Stock Alerts</h3>
+        <ul class="alert-feed" id="dash-alert-feed"></ul>
+      </article>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="../src/script.js"></script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Production</title>
+  <link rel="stylesheet" href="../src/script.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+</head>
+<body class="ops-page" data-page="production">
+<aside class="ops-sidebar" id="ops-sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-with-logo">
+      <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+      <span class="sidebar-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+    </div>
+  </div>
+  <nav class="ops-nav">
+    <a href="dashboard.html"><i class="fa-solid fa-gauge"></i> Dashboard</a>
+    <a href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i> Inventory &amp; Stock</a>
+    <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
+    <a href="vendors.html"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
+    <a href="accounting.html"><i class="fa-solid fa-calculator"></i> Accounting</a>
+    <a href="production.html" class="is-active"><i class="fa-solid fa-industry"></i> Production</a>
+    <a href="reports.html"><i class="fa-solid fa-chart-line"></i> Reports</a>
+    <a href="users.html"><i class="fa-solid fa-users-gear"></i> User Management</a>
+    <a href="../login.html" class="logout-link"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
+  </nav>
+  <div class="sidebar-footer">
+    <hr>
+    <span>&copy; 2026 White Water Factory</span>
+  </div>
+</aside>
+<header class="ops-topbar">
+  <h1>
+    <img src="../images/Final%20Logo.jpg" alt="White Water Wells logo" class="brand-logo">
+    <span class="brand-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+  </h1>
+</header>
+<main class="ops-main">
+  <div class="page-header">
+    <h2>Production &amp; Job Costing</h2>
+    <p>Bill of Materials, production batch tracking, cost analysis, shift efficiency, and profitability per run.</p>
+  </div>
+  <section class="stats-row" id="prod-stats-row"></section>
+  <div class="panel">
+    <div class="tab-bar">
+      <button class="tab-btn tab-active" data-tab="bom" onclick="switchTab('prod','bom')">Bill of Materials</button>
+      <button class="tab-btn" data-tab="batches" onclick="switchTab('prod','batches')">Production Batches</button>
+      <button class="tab-btn" data-tab="costs" onclick="switchTab('prod','costs')">Cost Analysis</button>
+    </div>
+    <div id="prod-tab-bom" class="tab-panel tab-active">
+      <div class="two-panel-bom">
+        <div class="two-panel-left">
+          <h3>Products</h3>
+          <div class="product-selector" id="bom-product-selector"></div>
+        </div>
+        <div class="two-panel-right" id="bom-detail-panel">
+          <h3 id="bom-product-title">Bill of Materials</h3>
+          <table class="data-table">
+            <thead><tr><th>Component</th><th>Qty</th><th>Unit</th><th>Cost (GH)</th><th>Actions</th></tr></thead>
+            <tbody id="bom-tbody"></tbody>
+          </table>
+          <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary" id="bom-add-component-btn">Add Component <i class="fa-solid fa-plus"></i></button></div>
+          <div id="bom-cost-summary" style="margin-top:12px"></div>
+        </div>
+      </div>
+    </div>
+    <div id="prod-tab-batches" class="tab-panel">
+      <table class="data-table">
+        <thead><tr><th>Batch ID</th><th>Product</th><th>Quantity</th><th>Date</th><th>Shift</th><th>Start Time</th><th>Cost (GH)</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="batches-tbody"></tbody>
+      </table>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary" id="batch-add-btn">Add Batch <i class="fa-solid fa-plus"></i></button></div>
+      <div class="cashbook-summary" id="batch-daily-summary"></div>
+    </div>
+    <div id="prod-tab-costs" class="tab-panel">
+      <div class="grid-two">
+        <div>
+          <h3>Cost Breakdown</h3>
+          <div id="cost-breakdown-bars"></div>
+        </div>
+        <div>
+          <h3>Profitability by Batch</h3>
+          <div id="chart-profitability" class="chart-wrap"></div>
+          <div class="chart-legend">
+            <span><span class="legend-dot green"></span>Sales Value</span>
+            <span><span class="legend-dot yellow"></span>Batch Cost</span>
+          </div>
+        </div>
+      </div>
+      <div class="info-box">
+        <p>Cost-to-Sales analysis links batch production costs directly to realized sales revenue. Batches with negative margin are flagged for review.</p>
+      </div>
+    </div>
+  </div>
+  <div class="info-box" style="margin-top:20px">
+    <strong style="display:block;margin-bottom:6px">Cost-to-Sales Integration</strong>
+    <p>All production costs are automatically linked to sales data. The system calculates profitability by comparing actual batch costs with sales revenue, providing real-time margin analysis for each product line.</p>
+  </div>
+</main>
+<!-- Batch Add Modal -->
+<div class="inv-modal-overlay" id="batch-add-modal" role="dialog" aria-modal="true" style="display:none">
+  <div class="inv-modal">
+    <div class="inv-modal-header"><h3>Add Production Batch</h3><button class="inv-modal-close" id="batch-modal-close">&times;</button></div>
+    <form id="batch-add-form" class="inv-modal-body">
+      <div id="batch-modal-fields"></div>
+      <div class="inv-modal-footer"><button type="submit" class="btn-primary">Save</button></div>
+    </form>
+  </div>
+</div>
+<!-- Product Add Modal -->
+<div class="inv-modal-overlay" id="product-add-modal" role="dialog" aria-modal="true" style="display:none">
+  <div class="inv-modal">
+    <div class="inv-modal-header"><h3>Add New Product</h3><button class="inv-modal-close" id="product-modal-close">&times;</button></div>
+    <form id="product-add-form" class="inv-modal-body">
+      <div id="product-modal-fields"></div>
+      <div class="inv-modal-footer"><button type="submit" class="btn-primary">Save Product</button></div>
+    </form>
+  </div>
+</div>
+<!-- BOM Component Add Modal -->
+<div class="inv-modal-overlay" id="bom-comp-modal" role="dialog" aria-modal="true" style="display:none">
+  <div class="inv-modal">
+    <div class="inv-modal-header"><h3 id="bom-comp-modal-title">Add Component</h3><button class="inv-modal-close" id="bom-comp-modal-close">&times;</button></div>
+    <form id="bom-comp-form" class="inv-modal-body">
+      <div id="bom-comp-fields"></div>
+      <div class="inv-modal-footer"><button type="submit" class="btn-primary">Save</button></div>
+    </form>
+  </div>
+</div>
+<script src="../src/script.js"></script>
+</body>
+</html>
