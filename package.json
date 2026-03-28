@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "seed": "node -e \"require('./server/db').initDatabase()\"",
+    "seed": "node -e \"require('./server/db').connectDB().then(() => process.exit(0))\"",
     "test": "echo \"No tests configured\""
   },
   "keywords": [],
@@ -15,11 +15,18 @@
   "type": "commonjs",
   "dependencies": {
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^12.8.0",
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
-    "server.js": "^1.0.0",
+    "mongoose": "^9.3.3",
     "uuid": "^13.0.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jessicaagyepong53-lab/whitewaterghana.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jessicaagyepong53-lab/whitewaterghana/issues"
+  },
+  "homepage": "https://github.com/jessicaagyepong53-lab/whitewaterghana#readme"
 }

@@ -1,3 +1,5 @@
+const API_BASE = window.location.port === '5000' ? '' : 'http://localhost:5000';
+
 function formatCurrency(value) {
 	return `GH ${Number(value || 0).toLocaleString(undefined, {
 		minimumFractionDigits: 2,
@@ -393,7 +395,7 @@ async function resolveCurrentUserRole() {
 	}
 
 	try {
-		const response = await fetch('/api/auth/me', { credentials: 'include' });
+		const response = await fetch(API_BASE + '/api/auth/me', { credentials: 'include' });
 		if (response.ok) {
 			const data = await response.json();
 			const apiRole = normalizeRole(data?.user?.role);
@@ -414,22 +416,28 @@ async function resolveCurrentUserRole() {
 
 // ── Role-Based Access Control ──
 const ROLE_PAGE_ACCESS = {
-	ceo:        ['dashboard', 'inventory', 'invoices', 'vendors', 'accounting', 'production', 'reports', 'users'],
-	manager:    ['dashboard', 'inventory', 'invoices', 'vendors', 'accounting', 'production', 'reports', 'users'],
-	supervisor: ['inventory', 'invoices', 'vendors'],
-	staff:      ['inventory', 'invoices', 'vendors'],
+	ceo:        ['dashboard', 'inventory', 'invoices', 'sales', 'vendors', 'accounting', 'production', 'reports', 'users'],
+	manager:    ['dashboard', 'inventory', 'invoices', 'sales', 'vendors', 'accounting', 'production', 'reports', 'users'],
+	supervisor: ['inventory', 'invoices', 'sales', 'vendors'],
+	staff:      ['inventory', 'invoices', 'sales', 'vendors'],
 };
 
 const PAGE_TO_HREF = {
 	dashboard: 'dashboard.html',
 	inventory: 'inventory.html',
 	invoices: 'invoices.html',
+	sales: 'sales.html',
 	vendors: 'vendors.html',
 	accounting: 'accounting.html',
 	production: 'production.html',
 	reports: 'reports.html',
 	users: 'users.html',
 };
+
+function resolvePageHref(pageKey) {
+	const fileName = PAGE_TO_HREF[pageKey] || 'dashboard.html';
+	return window.location.pathname.includes('/pages/') ? fileName : `pages/${fileName}`;
+}
 
 function canEditDelete(role) {
 	return role === 'ceo' || role === 'manager';
@@ -451,7 +459,7 @@ function enforceRoleAccess() {
 	// Redirect if page not allowed
 	if (!allowed.includes(currentPage)) {
 		const fallback = allowed[0] || 'dashboard';
-		window.location.href = PAGE_TO_HREF[fallback] || 'dashboard.html';
+		window.location.href = resolvePageHref(fallback);
 		return;
 	}
 
@@ -530,11 +538,11 @@ function bindLogoutLinks() {
 		link.addEventListener('click', async (event) => {
 			event.preventDefault();
 			try {
-				await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+				await fetch(API_BASE + '/api/auth/logout', { method: 'POST', credentials: 'include' });
 			} catch (_error) {
 				// Redirect anyway.
 			}
-			window.location.href = '../login.html';
+			window.location.href = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
 		});
 	});
 }
@@ -569,31 +577,98 @@ function upsertSystemUser(name, email, role) {
 	saveSystemUsers(users);
 }
 
+const EYE_CLOSED = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+const EYE_OPEN = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+
+function bindPasswordToggles() {
+	document.querySelectorAll('.pwd-toggle').forEach((btn) => {
+		btn.addEventListener('click', () => {
+			const input = btn.parentElement.querySelector('input');
+			if (!input) return;
+			const visible = input.type === 'text';
+			input.type = visible ? 'password' : 'text';
+			btn.innerHTML = visible ? EYE_CLOSED : EYE_OPEN;
+			btn.classList.toggle('active', !visible);
+			btn.setAttribute('aria-label', visible ? 'Show password' : 'Hide password');
+		});
+	});
+}
+
+function getRoleLandingPage(role) {
+	const ROLE_LANDING = {
+		ceo: 'pages/dashboard.html',
+		manager: 'pages/dashboard.html',
+		supervisor: 'pages/inventory.html',
+		staff: 'pages/inventory.html',
+	};
+	return ROLE_LANDING[role] || 'pages/dashboard.html';
+}
+
 function bindRolePersistenceOnAuthForms() {
-	const roleForm = document.querySelector('form.auth-form[action*="dashboard.html"], form.auth-form[action*="/app"]');
-	if (!roleForm) {
-		return;
+	// ── Login form ──
+	const loginForm = document.getElementById('login-form');
+	if (loginForm) {
+		loginForm.addEventListener('submit', async (event) => {
+			event.preventDefault();
+			const formData = new FormData(loginForm);
+			const email = String(formData.get('email') || '').trim();
+			const password = String(formData.get('password') || '');
+			const submitBtn = loginForm.querySelector('button[type="submit"]');
+
+			try {
+				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Signing in…'; }
+				const data = await postJson('/api/auth/login', { email, password });
+				const role = normalizeRole(data.user?.role);
+				localStorage.setItem('ww_user_role', role);
+				upsertSystemUser(data.user?.name || '', email, role);
+				setAuthMessage('Login successful! Redirecting…', false);
+				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Redirecting…'; }
+				setTimeout(() => { window.location.href = getRoleLandingPage(role); }, 1000);
+			} catch (error) {
+				setAuthMessage(error.message || 'Invalid email or password.', true);
+				if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Sign In'; }
+			}
+		});
 	}
 
-	roleForm.addEventListener('submit', () => {
-		const roleSelect = roleForm.querySelector('select[name="role"]');
-		if (!roleSelect) {
-			return;
-		}
-		const selectedRole = normalizeRole(roleSelect.value);
-		if (selectedRole) {
-			localStorage.setItem('ww_user_role', selectedRole);
-		}
+	// ── Register form ──
+	const registerForm = document.getElementById('register-form');
+	if (registerForm) {
+		registerForm.addEventListener('submit', async (event) => {
+			event.preventDefault();
+			const formData = new FormData(registerForm);
+			const name = String(formData.get('full_name') || '').trim();
+			const email = String(formData.get('email') || '').trim();
+			const selectedRole = String(formData.get('role') || '');
+			const password = String(formData.get('password') || '');
+			const confirmPassword = String(formData.get('confirm_password') || '');
+			const submitBtn = registerForm.querySelector('button[type="submit"]');
 
-		// Save user to system users list
-		const emailInput = roleForm.querySelector('input[name="email"]');
-		const nameInput = roleForm.querySelector('input[name="full_name"]');
-		const email = emailInput ? emailInput.value.trim() : '';
-		const name = nameInput ? nameInput.value.trim() : '';
-		if (email) {
-			upsertSystemUser(name, email, selectedRole || 'staff');
-		}
-	});
+			if (!selectedRole) {
+				setAuthMessage('Please select your role.', true);
+				return;
+			}
+
+			if (password !== confirmPassword) {
+				setAuthMessage('Passwords do not match.', true);
+				return;
+			}
+
+			try {
+				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Creating account…'; }
+				const data = await postJson('/api/auth/register', { name, email, password, role: selectedRole });
+				const role = normalizeRole(data.user?.role);
+				localStorage.setItem('ww_user_role', role);
+				upsertSystemUser(name, email, role);
+				setAuthMessage('Account created! Redirecting…', false);
+				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Redirecting…'; }
+				setTimeout(() => { window.location.href = getRoleLandingPage(role); }, 1000);
+			} catch (error) {
+				setAuthMessage(error.message || 'Registration failed.', true);
+				if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Create Account'; }
+			}
+		});
+	}
 }
 
 function getTodayDateStr() {
@@ -822,11 +897,11 @@ function initDashboardPage() {
 			{ icon: '<i class="fa-solid fa-cedi-sign"></i>', label: 'Total Revenue', value: formatCurrency(revenueMtd), meta: revenueMtd > 0 ? `${revChange >= 0 ? '+' : ''}${revChange}% vs previous month` : 'No sales data yet', color: 'blue', link: null },
 			{ icon: '<i class="fa-solid fa-box"></i>', label: 'Units Produced', value: formatNumber(unitsProduced), meta: calcWeeklyEfficiencyLabel(dailyLog, todayStr), color: 'green', link: null },
 			{ icon: '<i class="fa-solid fa-users"></i>', label: 'Active Customers', value: formatNumber(activeCustomers), meta: activeCustomers > 0 ? 'Unique customers from sales' : 'No customers yet', color: 'purple', link: null },
-			{ icon: '<i class="fa-solid fa-triangle-exclamation"></i>', label: 'Stock Alerts', value: String(stockAlertCount), meta: `${stockCriticalCount} critically low \u2014 needs reorder`, color: stockCriticalCount > 0 ? 'red' : 'yellow', link: 'inventory.html?tab=materials' },
+			{ icon: '<i class="fa-solid fa-triangle-exclamation"></i>', label: 'Stock Alerts', value: String(stockAlertCount), meta: `${stockCriticalCount} critically low \u2014 needs reorder`, color: stockCriticalCount > 0 ? 'red' : 'yellow', link: `${resolvePageHref('inventory')}?tab=materials` },
 		];
 
 		// Fetch online store stats (non-blocking)
-		fetch('/api/store/admin/stats').then((r) => r.ok ? r.json() : null).then((stats) => {
+		fetch(API_BASE + '/api/store/admin/stats').then((r) => r.ok ? r.json() : null).then((stats) => {
 			if (!stats) return;
 			const onlineKpi = document.getElementById('kpi-online-orders');
 			if (onlineKpi) {
@@ -852,7 +927,7 @@ function initDashboardPage() {
 						</div>
 						<p class="kpi-meta">${stats.orderCount} total · ${stats.customerCount} customers</p>
 					`;
-					card.addEventListener('click', () => { window.location.href = 'invoices.html'; });
+					card.addEventListener('click', () => { window.location.href = resolvePageHref('invoices'); });
 					kpiGrid.appendChild(card);
 				}
 			}
@@ -2198,7 +2273,7 @@ async function loadOnlineOrders() {
 	if (!tbody) return;
 
 	try {
-		const res = await fetch('/api/store/admin/orders');
+		const res = await fetch(API_BASE + '/api/store/admin/orders');
 		if (!res.ok) {
 			tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#587289;padding:24px">Unable to load online orders. Make sure you are logged in.</td></tr>';
 			return;
@@ -2251,7 +2326,7 @@ window.loadOnlineOrders = loadOnlineOrders;
 
 async function updateOnlineOrderStatus(orderId, newStatus) {
 	try {
-		const res = await fetch(`/api/store/admin/orders/${orderId}/status`, {
+		const res = await fetch(API_BASE + `/api/store/admin/orders/${orderId}/status`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ status: newStatus }),
@@ -4099,11 +4174,15 @@ function setAuthMessage(message, isError) {
 		return;
 	}
 	messageNode.textContent = message;
-	messageNode.style.color = isError ? '#b42318' : '';
+	if (isError) {
+		messageNode.style.cssText = 'color:#b42318;background:#fef3f2;border:1px solid #fecdca;padding:10px 14px;border-radius:8px;font-weight:500;margin-top:12px;';
+	} else {
+		messageNode.style.cssText = 'color:#027a48;background:#ecfdf3;border:1px solid #a6f4c5;padding:10px 14px;border-radius:8px;font-weight:500;margin-top:12px;';
+	}
 }
 
 async function postJson(url, payload) {
-	const response = await fetch(url, {
+	const response = await fetch(API_BASE + url, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		credentials: 'include',
@@ -4136,6 +4215,14 @@ function bindPasswordAssistanceForms() {
 				const data = await postJson('/api/auth/forgot-password', { email });
 				setAuthMessage(data.message || 'Password assistance sent.', false);
 				forgotForm.reset();
+				// Auto-open the reset password panel so user can proceed
+				const forgotPanel = document.getElementById('forgot-password-panel');
+				const resetPanel = document.getElementById('reset-password-panel');
+				if (forgotPanel) forgotPanel.hidden = true;
+				if (resetPanel) {
+					resetPanel.hidden = false;
+					resetPanel.scrollIntoView({ behavior: 'smooth' });
+				}
 			} catch (error) {
 				setAuthMessage(error.message || 'Could not process request.', true);
 			}
@@ -4157,8 +4244,20 @@ function bindPasswordAssistanceForms() {
 
 			try {
 				const data = await postJson('/api/auth/reset-password', { email, newPassword });
-				setAuthMessage(data.message || 'Password reset successful.', false);
+				setAuthMessage(data.message || 'Password reset successful. Redirecting to login…', false);
 				resetForm.reset();
+				// Close the reset panel and redirect to login after a short delay
+				const resetPanel = document.getElementById('reset-password-panel');
+				if (resetPanel) resetPanel.hidden = true;
+				setTimeout(() => {
+					const loginHref = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
+					if (window.location.pathname.includes('login')) {
+						// Already on login page — just scroll to login form
+						window.scrollTo({ top: 0, behavior: 'smooth' });
+					} else {
+						window.location.href = loginHref;
+					}
+				}, 1500);
 			} catch (error) {
 				setAuthMessage(error.message || 'Could not reset password.', true);
 			}
@@ -4171,6 +4270,7 @@ document.addEventListener('DOMContentLoaded', () => {
 	bindLogoutLinks();
 	bindAuthPanels();
 	bindRolePersistenceOnAuthForms();
+	bindPasswordToggles();
 	bindPasswordAssistanceForms();
 	enforceRoleAccess();
 	initDashboardPage();

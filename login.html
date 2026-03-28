@@ -13,22 +13,16 @@
     <h2>Management System - Login</h2>
     <p class="muted">For users who already have access to the system.</p>
 
-    <form class="auth-form" action="/pages/dashboard.html" method="get">
+    <form class="auth-form" id="login-form">
       <label>Email Address
         <input type="email" name="email" placeholder="Enter your email" required>
       </label>
 
       <label>Password
-        <input type="password" name="password" placeholder="Enter your password" required>
-      </label>
-
-      <label>Login As
-        <select name="role" required>
-          <option value="ceo">CEO</option>
-          <option value="manager">Manager</option>
-          <option value="supervisor">Supervisor</option>
-          <option value="employee">Employee</option>
-        </select>
+        <span class="password-wrap">
+          <input type="password" name="password" placeholder="Enter your password" required>
+          <button type="button" class="pwd-toggle" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+        </span>
       </label>
 
       <button type="submit">Sign In</button>
@@ -56,10 +50,16 @@
           <input type="email" name="email" placeholder="Enter your email" required>
         </label>
         <label>New Password
-          <input type="password" name="newPassword" placeholder="Enter new password" required>
+          <span class="password-wrap">
+            <input type="password" name="newPassword" placeholder="Enter new password" required>
+            <button type="button" class="pwd-toggle" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+          </span>
         </label>
         <label>Confirm New Password
-          <input type="password" name="confirmPassword" placeholder="Confirm new password" required>
+          <span class="password-wrap">
+            <input type="password" name="confirmPassword" placeholder="Confirm new password" required>
+            <button type="button" class="pwd-toggle" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+          </span>
         </label>
         <button type="submit">Reset Password</button>
       </form>
