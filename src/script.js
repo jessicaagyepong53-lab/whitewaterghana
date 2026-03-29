@@ -2278,6 +2278,7 @@ function renderInvoiceDetail(invoice) {
 		return;
 	}
 
+	const hideMoney = window.__wwUserRole === 'supervisor' || window.__wwUserRole === 'staff';
 	const items = invoice.items && invoice.items.length ? invoice.items : [{ name: invoice.product || 'Sale', qty: 1, unitPrice: Number(invoice.amount || 0) }];
 	const subTotal = items.reduce((sum, it) => sum + (it.qty * it.unitPrice), 0);
 	const deliveryFee = Number(invoice.deliveryFee || 0);
@@ -2331,12 +2332,12 @@ function renderInvoiceDetail(invoice) {
 			<table class="inv-doc-table">
 				<thead><tr><th style="width:8%">S/N</th><th>PRODUCT DESCRIPTION</th><th style="width:10%">QTY</th><th style="width:18%">UNIT PRICE</th><th style="width:18%">TOTAL</th></tr></thead>
 				<tbody>
-					${items.map((it, i) => `<tr><td>${i + 1}</td><td>${it.name}</td><td>${it.qty}</td><td>GH₵${Number(it.unitPrice).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</td><td>GH₵${(it.qty * it.unitPrice).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</td></tr>`).join('')}
+					${items.map((it, i) => `<tr><td>${i + 1}</td><td>${it.name}</td><td>${it.qty}</td><td>${hideMoney ? '—' : 'GH₵' + Number(it.unitPrice).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</td><td>${hideMoney ? '—' : 'GH₵' + (it.qty * it.unitPrice).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</td></tr>`).join('')}
 					${Array(Math.max(0, 5 - items.length)).fill('<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>').join('')}
 				</tbody>
 			</table>
 
-			<div class="inv-doc-totals">
+			<div class="inv-doc-totals" ${hideMoney ? 'style="display:none"' : ''}>
 				<div class="inv-doc-total-row"><span>SUB TOTAL</span><span>GH₵${subTotal.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
 				<div class="inv-doc-total-row"><span>DELIVERY FEE</span><span>GH₵${deliveryFee.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
 				<div class="inv-doc-total-row"><span>TOTAL</span><span>GH₵${total.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
@@ -2865,17 +2866,19 @@ async function initSalesInvoicesPage() {
 			const waybillPending = waybills.filter((w) => !w.received).length;
 			const totalPromoBags = invoiceRows.reduce((sum, inv) => sum + (inv.promo || 0), 0) + orders.reduce((sum, o) => sum + (o.promo || 0), 0);
 			const invoicePromo = invoiceRows.reduce((sum, inv) => sum + (inv.promo || 0), 0);
+			const hideMoney = window.__wwUserRole === 'supervisor' || window.__wwUserRole === 'staff';
 			stats.innerHTML = `
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice"></i></div><p class="s-label">Total Invoices</p><p class="s-value">${totalInvoices}</p><p class="s-meta">${orders.length} sales order${orders.length !== 1 ? 's' : ''}</p></div>
-				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue + salesRevenue)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(invoiceRevenue)}</span><span>Sales: ${formatCurrency(salesRevenue)}</span><span>Waybills: ${formatNumber(waybillTotalQty)} units dispatched</span></p></div>
+				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue + salesRevenue)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(invoiceRevenue)}</span><span>Sales: ${formatCurrency(salesRevenue)}</span><span>Waybills: ${formatNumber(waybillTotalQty)} units dispatched</span></p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-gift"></i></div><p class="s-label">Total Promo Bags</p><p class="s-value">${invoicePromo}</p><p class="s-meta">For orders above 100 bags</p></div>
-				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices + pendingSales)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(pendingInvoices)}</span><span>Sales: ${formatCurrency(pendingSales)}</span><span>Waybills: ${waybillPending} pending delivery</span></p></div>
-				<div class="stat-card ${overdueTotal > 0 ? 'stat-card-alert' : ''}"><div class="s-icon"><i class="fa-solid fa-circle-exclamation"></i></div><p class="s-label">Overdue</p><p class="s-value">${formatCurrency(overdueTotal)}</p><p class="s-meta">${overdueInvAmt > 0 ? 'Inv: ' + formatCurrency(overdueInvAmt) + ' ' : ''}${overdueOrdAmt > 0 ? 'Orders: ' + formatCurrency(overdueOrdAmt) : ''}${overdueTotal === 0 ? 'All clear' : ''}</p></div>
+				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices + pendingSales)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(pendingInvoices)}</span><span>Sales: ${formatCurrency(pendingSales)}</span><span>Waybills: ${waybillPending} pending delivery</span></p></div>
+				<div class="stat-card ${overdueTotal > 0 ? 'stat-card-alert' : ''}" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-circle-exclamation"></i></div><p class="s-label">Overdue</p><p class="s-value">${formatCurrency(overdueTotal)}</p><p class="s-meta">${overdueInvAmt > 0 ? 'Inv: ' + formatCurrency(overdueInvAmt) + ' ' : ''}${overdueOrdAmt > 0 ? 'Orders: ' + formatCurrency(overdueOrdAmt) : ''}${overdueTotal === 0 ? 'All clear' : ''}</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-truck-fast"></i></div><p class="s-label">Total Waybills</p><p class="s-value" id="wb-stat-count">${waybillCount}</p><p class="s-meta">Dispatch documents</p></div>
 			`;
 		}
 
 		const invoiceBody = document.getElementById('invoice-tbody');
+		const hideMoney = window.__wwUserRole === 'supervisor' || window.__wwUserRole === 'staff';
 		if (invoiceBody) {
 			invoiceBody.innerHTML = invoiceRows.map((invoice, idx) => {
 				const statusLabel = invoice.status === 'pending_approval' ? 'Pending Approval' : invoice.status;
@@ -2888,9 +2891,9 @@ async function initSalesInvoicesPage() {
 						<td>${invoice.customer}</td>
 						<td>${invoice.promo ? invoice.promo + (invoice.promoNote ? ' <small style="color:#6b7280">(' + invoice.promoNote + ')</small>' : '') : ''}</td>
 						<td>${invoice.items && invoice.items[0] ? invoice.items[0].qty : ''}</td>
-						<td>${invoice.rate ? invoice.rate : (invoice.items && invoice.items[0] && invoice.items[0].qty ? (invoice.amount / invoice.items[0].qty).toFixed(1) : '')}</td>
+						<td>${hideMoney ? '—' : (invoice.rate ? invoice.rate : (invoice.items && invoice.items[0] && invoice.items[0].qty ? (invoice.amount / invoice.items[0].qty).toFixed(1) : ''))}</td>
 						<td>${formatDateDisplay(invoice.date)}</td>
-						<td>${formatCurrency(invoice.amount)}</td>
+						<td>${hideMoney ? '—' : formatCurrency(invoice.amount)}</td>
 						<td>${invoice.paymentMode || ''}</td>
 						<td><span class="status-pill ${statusPillClass(invoice.status)}">${statusLabel}</span></td>
 						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="invoice" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="invoice" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td>
@@ -2953,9 +2956,9 @@ async function initSalesInvoicesPage() {
 						<td>${order.customer}</td>
 						<td>${order.promo ? order.promo + (order.promoNote ? ' <small style="color:#6b7280">(' + order.promoNote + ')</small>' : '') : ''}</td>
 						<td>${order.bags || ''}</td>
-						<td>${order.rate ? order.rate : (order.bags && order.amount ? (order.amount / order.bags).toFixed(1) : '')}</td>
+						<td>${hideMoney ? '—' : (order.rate ? order.rate : (order.bags && order.amount ? (order.amount / order.bags).toFixed(1) : ''))}</td>
 						<td>${formatDateDisplay(order.orderDate)}</td>
-						<td>${formatCurrency(order.amount)}</td>
+						<td>${hideMoney ? '—' : formatCurrency(order.amount)}</td>
 						<td>${order.paymentMode || ''}</td>
 						<td><span class="status-pill ${statusPillClass(order.status)}">${statusLabel}</span></td>
 						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="order" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="order" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td>
