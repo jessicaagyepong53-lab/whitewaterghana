@@ -1,5 +1,44 @@
 const API_BASE = '';
 
+/* ── Server persistence helpers ── */
+function syncToServer(key, data) {
+	fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), {
+		method: 'PUT', credentials: 'include',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ data }),
+	}).catch(() => {});
+}
+
+async function loadFromServer(key) {
+	try {
+		const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), { credentials: 'include' });
+		if (res.ok) {
+			const json = await res.json();
+			if (json.data !== null && json.data !== undefined) {
+				localStorage.setItem(key, JSON.stringify(json.data));
+				return json.data;
+			}
+		}
+	} catch (_e) { /* fall back to localStorage */ }
+	return null;
+}
+
+async function loadBulkFromServer(keys) {
+	try {
+		const res = await fetch(API_BASE + '/api/app-data-bulk?keys=' + keys.map(encodeURIComponent).join(','), { credentials: 'include' });
+		if (res.ok) {
+			const json = await res.json();
+			if (json.items) {
+				for (const [k, v] of Object.entries(json.items)) {
+					if (v !== null && v !== undefined) localStorage.setItem(k, JSON.stringify(v));
+				}
+				return json.items;
+			}
+		}
+	} catch (_e) { /* fall back to localStorage */ }
+	return {};
+}
+
 function formatCurrency(value) {
 	return `GH ${Number(value || 0).toLocaleString(undefined, {
 		minimumFractionDigits: 2,
@@ -774,6 +813,7 @@ function loadFinishedProductsFromStorage() {
 
 function saveFinishedProductsToStorage(products) {
 	localStorage.setItem('ww_finished_products', JSON.stringify(products));
+	syncToServer('ww_finished_products', products);
 	rebuildDailyProductionLog(products);
 	// Broadcast instantly to any open inventory/dashboard tab
 	try {
@@ -790,6 +830,7 @@ function rebuildDailyProductionLog(products) {
 		log[date] = (log[date] || 0) + Number(p.qty || 0);
 	});
 	localStorage.setItem('ww_daily_production', JSON.stringify(log));
+	syncToServer('ww_daily_production', log);
 }
 
 function getDailyProductionLog() {
@@ -810,6 +851,7 @@ function loadRawMaterialsFromStorage() {
 
 function saveRawMaterialsToStorage(materials) {
 	localStorage.setItem('ww_raw_materials', JSON.stringify(materials));
+	syncToServer('ww_raw_materials', materials);
 	// Broadcast instantly to any open dashboard/inventory tab
 	try {
 		const bc = new BroadcastChannel('ww_raw_materials_sync');
@@ -830,6 +872,20 @@ function loadEquipmentFromStorage() {
 	return getFactoryEquipment().map((eq) => ({ ...eq }));
 }
 
+async function fetchEquipmentFromServer() {
+	try {
+		const res = await fetch(API_BASE + '/api/factory-equipment', { credentials: 'include' });
+		if (res.ok) {
+			const rows = await res.json();
+			if (Array.isArray(rows) && rows.length) {
+				localStorage.setItem('ww_equipment', JSON.stringify(rows));
+				return rows;
+			}
+		}
+	} catch (_e) { /* fall back to localStorage */ }
+	return loadEquipmentFromStorage();
+}
+
 function saveEquipmentToStorage(equipmentRows) {
 	localStorage.setItem('ww_equipment', JSON.stringify(equipmentRows));
 	// Broadcast instantly to any open dashboard/inventory tab
@@ -838,6 +894,16 @@ function saveEquipmentToStorage(equipmentRows) {
 		bc.postMessage({ type: 'equipment_updated' });
 		bc.close();
 	} catch (_e) { /* BroadcastChannel not supported — storage event is the fallback */ }
+}
+
+function saveOneEquipmentToServer(eq) {
+	if (eq.id) {
+		fetch(API_BASE + '/api/factory-equipment/' + eq.id, {
+			method: 'PUT', credentials: 'include',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ status: eq.status, equipment: eq.equipment, details: eq.details, lastMaintenance: eq.lastMaintenance, nextMaintenance: eq.nextMaintenance }),
+		}).catch(() => {});
+	}
 }
 
 function calcWeeklyEfficiencyLabel(dailyLog, todayStr) {
@@ -975,6 +1041,12 @@ function initDashboardPage() {
 	};
 
 	let equipmentStatus = loadEquipmentFromStorage();
+
+	// Fetch fresh equipment from server and re-render when ready
+	fetchEquipmentFromServer().then((serverEquipment) => {
+		equipmentStatus = serverEquipment;
+		renderDashboardEquipmentStatus();
+	});
 
 	const buildStockAlerts = () => {
 		const liveRawMaterials = loadRawMaterialsFromStorage();
@@ -1232,6 +1304,7 @@ function initDashboardPage() {
 				const idx = Number(sel.dataset.dashEqIdx);
 				if (!equipmentStatus[idx]) return;
 				equipmentStatus[idx].status = sel.value;
+				saveOneEquipmentToServer(equipmentStatus[idx]);
 				saveEquipmentToStorage(equipmentStatus);
 				renderDashboardEquipmentStatus();
 			};
@@ -1332,7 +1405,7 @@ async function initInventoryPage() {
 
 	let rawMaterials = loadRawMaterialsFromStorage();
 	let finishedProducts = loadFinishedProductsFromStorage();
-	let equipment = loadEquipmentFromStorage();
+	let equipment = await fetchEquipmentFromServer();
 	let customers = [];
 
 	const nextNumericId = (rows) => rows.reduce((maxId, row) => Math.max(maxId, Number(row.id || 0)), 0) + 1;
@@ -1488,6 +1561,7 @@ async function initInventoryPage() {
 			const idx = Number(sel.dataset.eqIdx);
 			if (!equipment[idx]) return;
 			equipment[idx].status = sel.value;
+			saveOneEquipmentToServer(equipment[idx]);
 			saveEquipmentToStorage(equipment);
 			rerenderInventory();
 		};
@@ -1756,16 +1830,29 @@ async function initInventoryPage() {
 					equipment[editingIdx].details = getValue('details');
 					equipment[editingIdx].lastMaintenance = getValue('lastMaintenance') || todayForInput;
 					equipment[editingIdx].nextMaintenance = getValue('nextMaintenance') || todayForInput;
+					saveOneEquipmentToServer(equipment[editingIdx]);
 				} else {
 					const code = `EQ-${String(equipment.length + 101).padStart(3, '0')}`;
-					equipment.push({
+					const newEq = {
 						code,
 						equipment: equipmentName,
 						details: getValue('details'),
 						status: 'operational',
 						lastMaintenance: getValue('lastMaintenance') || todayForInput,
 						nextMaintenance: getValue('nextMaintenance') || todayForInput,
-					});
+					};
+					// Create on server and get back the id
+					fetch(API_BASE + '/api/factory-equipment', {
+						method: 'POST', credentials: 'include',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify(newEq),
+					}).then((r) => r.ok ? r.json() : null).then((result) => {
+						if (result && result.id) {
+							newEq.id = result.id;
+							saveEquipmentToStorage(equipment);
+						}
+					}).catch(() => {});
+					equipment.push(newEq);
 				}
 				saveEquipmentToStorage(equipment);
 			}
@@ -1820,7 +1907,14 @@ async function initInventoryPage() {
 				if (!confirm('Delete this ' + entity + '? This cannot be undone.')) return;
 				if (entity === 'material') { rawMaterials.splice(idx, 1); saveRawMaterialsToStorage(rawMaterials); }
 				else if (entity === 'product') { finishedProducts.splice(idx, 1); saveFinishedProductsToStorage(finishedProducts); }
-				else if (entity === 'equipment') { equipment.splice(idx, 1); saveEquipmentToStorage(equipment); }
+				else if (entity === 'equipment') {
+					const removed = equipment[idx];
+					equipment.splice(idx, 1);
+					if (removed && removed.id) {
+						fetch(API_BASE + '/api/factory-equipment/' + removed.id, { method: 'DELETE', credentials: 'include' }).catch(() => {});
+					}
+					saveEquipmentToStorage(equipment);
+				}
 				else if (entity === 'customer') { customers.splice(idx, 1); }
 				rerenderInventory();
 			}
@@ -1861,6 +1955,7 @@ function getSalesMonths() {
 
 function saveSalesMonths(months) {
 	localStorage.setItem(MONTHS_KEY, JSON.stringify(months));
+	syncToServer(MONTHS_KEY, months);
 }
 
 function monthStorageKey(month) {
@@ -2144,7 +2239,9 @@ function seedMarchSalesData() {
 }
 
 function saveSalesDataToStorage() {
-	localStorage.setItem(monthStorageKey(currentSalesMonth), JSON.stringify(salesModuleData));
+	const key = monthStorageKey(currentSalesMonth);
+	localStorage.setItem(key, JSON.stringify(salesModuleData));
+	syncToServer(key, salesModuleData);
 	// Notify other tabs instantly
 	try {
 		if (!window.__wwSalesChannel) window.__wwSalesChannel = new BroadcastChannel('ww_sales_sync');
@@ -2978,7 +3075,7 @@ window.updateOnlineOrderStatus = updateOnlineOrderStatus;
 	function loadWaybills() {
 		try { return JSON.parse(localStorage.getItem(WB_KEY) || '[]'); } catch (_e) { return []; }
 	}
-	function saveWaybills(arr) { localStorage.setItem(WB_KEY, JSON.stringify(arr)); }
+	function saveWaybills(arr) { localStorage.setItem(WB_KEY, JSON.stringify(arr)); syncToServer(WB_KEY, arr); }
 
 	function nextWaybillNo() {
 		const year = new Date().getFullYear();
@@ -3323,6 +3420,7 @@ function loadPurchaseDataFromStorage() {
 
 function savePurchaseDataToStorage() {
 	localStorage.setItem('ww_purchase_data_v2', JSON.stringify(purchaseModuleData));
+	syncToServer('ww_purchase_data_v2', purchaseModuleData);
 	try {
 		if (!window.__wwPurchaseChannel) window.__wwPurchaseChannel = new BroadcastChannel('ww_purchase_sync');
 		window.__wwPurchaseChannel.postMessage({ type: 'purchase_updated' });
@@ -3661,20 +3759,24 @@ function loadAccountingDataFromStorage() {
 	} catch (_e) { /* ignore */ }
 
 	// One-time seed: March 2026 operational costs
-	if (!localStorage.getItem('ww_opscost_march2026_seeded')) {
+	if (!localStorage.getItem('ww_opscost_march2026_seeded') && accountingData.ledger.length === 0) {
 		seedMarchOperationalCosts();
 		localStorage.setItem('ww_opscost_march2026_seeded', '1');
 		saveAccountingDataToStorage();
+	} else if (!localStorage.getItem('ww_opscost_march2026_seeded')) {
+		localStorage.setItem('ww_opscost_march2026_seeded', '1');
 	}
 
 	// One-time seed: March 2026 salaries (v3 = weekly structure)
-	if (!localStorage.getItem('ww_salaries_march2026_v3')) {
+	if (!localStorage.getItem('ww_salaries_march2026_v3') && accountingData.salaries.length === 0) {
 		// Remove old salary entries from ledger
 		accountingData.ledger = accountingData.ledger.filter(e => !(e.account === 'Salaries' && e.desc && e.desc.startsWith('Salary —')));
 		accountingData.salaries = [];
 		seedMarchSalaries();
 		localStorage.setItem('ww_salaries_march2026_v3', '1');
 		saveAccountingDataToStorage();
+	} else if (!localStorage.getItem('ww_salaries_march2026_v3')) {
+		localStorage.setItem('ww_salaries_march2026_v3', '1');
 	}
 }
 
@@ -3791,6 +3893,7 @@ function seedMarchSalaries() {
 
 function saveAccountingDataToStorage() {
 	localStorage.setItem('ww_accounting_data_v2', JSON.stringify(accountingData));
+	syncToServer('ww_accounting_data_v2', accountingData);
 	try {
 		if (!window.__wwAcctChannel) window.__wwAcctChannel = new BroadcastChannel('ww_accounting_sync');
 		window.__wwAcctChannel.postMessage({ type: 'accounting_updated' });
@@ -4310,7 +4413,7 @@ function initProductionPage() {
 		const stored = JSON.parse(localStorage.getItem(BOM_KEY));
 		if (stored && typeof stored === 'object' && !Array.isArray(stored)) billOfMaterials = stored;
 	} catch (_) { /* ignore */ }
-	function saveBom() { localStorage.setItem(BOM_KEY, JSON.stringify(billOfMaterials)); }
+	function saveBom() { localStorage.setItem(BOM_KEY, JSON.stringify(billOfMaterials)); syncToServer(BOM_KEY, billOfMaterials); }
 	/* ---- Production Batches (localStorage) ---- */
 	const BATCH_KEY = 'ww_production_batches';
 	let prodBatches = [];
@@ -4320,6 +4423,7 @@ function initProductionPage() {
 	} catch (_) { /* ignore */ }
 	function saveBatches() {
 		localStorage.setItem(BATCH_KEY, JSON.stringify(prodBatches));
+		syncToServer(BATCH_KEY, prodBatches);
 		/* Sync daily production log from batches (dashboard reads this) */
 		const dailyLog = {};
 		for (const b of prodBatches) {
@@ -4328,6 +4432,7 @@ function initProductionPage() {
 			dailyLog[d] = (dailyLog[d] || 0) + (Number(b.qty) || 0);
 		}
 		localStorage.setItem('ww_daily_production', JSON.stringify(dailyLog));
+		syncToServer('ww_daily_production', dailyLog);
 		/* Sync finished products from completed batches (inventory reads this) */
 		const existing = (() => { try { return JSON.parse(localStorage.getItem('ww_finished_products') || '[]'); } catch(_) { return []; } })();
 		const nonBatch = existing.filter((p) => !p._fromBatch);
@@ -4339,7 +4444,9 @@ function initProductionPage() {
 			addedDate: b.date,
 			_fromBatch: true,
 		}));
-		localStorage.setItem('ww_finished_products', JSON.stringify([...nonBatch, ...fromBatch]));
+		const mergedProducts = [...nonBatch, ...fromBatch];
+		localStorage.setItem('ww_finished_products', JSON.stringify(mergedProducts));
+		syncToServer('ww_finished_products', mergedProducts);
 		/* Broadcast changes so other tabs (inventory, dashboard) refresh */
 		try {
 			const bc1 = new BroadcastChannel('ww_finished_products_sync');
@@ -5320,6 +5427,7 @@ function renderReportsData() {
 			const stored = JSON.parse(localStorage.getItem('ww_cost_centre_budgets') || '{}');
 			stored[centre] = amt;
 			localStorage.setItem('ww_cost_centre_budgets', JSON.stringify(stored));
+			syncToServer('ww_cost_centre_budgets', stored);
 			document.getElementById('budget-modal').style.display = 'none';
 			renderReportsData();
 		});
@@ -5462,7 +5570,7 @@ function bindPasswordAssistanceForms() {
 	}
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
 	initSidebarToggle();
 	bindLogoutLinks();
 	bindAuthPanels();
@@ -5470,6 +5578,25 @@ document.addEventListener('DOMContentLoaded', () => {
 	bindPasswordToggles();
 	bindPasswordAssistanceForms();
 	enforceRoleAccess();
+
+	// Hydrate localStorage from server before page inits
+	try {
+		const salesMonths = getSalesMonths();
+		const salesKeys = salesMonths.map((m) => 'ww_sales_' + m);
+		await loadBulkFromServer([
+			'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
+			'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
+			'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data', 'ww_sales_months',
+			...salesKeys,
+		]);
+		// Re-load sales months in case server had more
+		const serverMonths = getSalesMonths();
+		if (serverMonths.length > salesMonths.length) {
+			const extraKeys = serverMonths.filter((m) => !salesMonths.includes(m)).map((m) => 'ww_sales_' + m);
+			if (extraKeys.length) await loadBulkFromServer(extraKeys);
+		}
+	} catch (_e) { /* proceed with localStorage data */ }
+
 	initDashboardPage();
 	initInventoryPage();
 	initSalesInvoicesPage();

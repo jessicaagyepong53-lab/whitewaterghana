@@ -26,6 +26,8 @@ const {
   StoreOrder,
   StoreProduct,
   StoreSession,
+  FactoryEquipment,
+  AppData,
 } = require('./server/db');
 
 const app = express();
@@ -814,6 +816,99 @@ app.put('/api/machines/:id/status', ensureAuthenticated, ensureRole('machines'),
     requireFields(req.body, ['status']);
     await Machine.updateOne({ _id: req.params.id }, { status: req.body.status });
     res.json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+/* ═══════════════════════════════════════════════
+   FACTORY EQUIPMENT (inventory equipment tab)
+   ═══════════════════════════════════════════════ */
+
+app.get('/api/factory-equipment', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const rows = await FactoryEquipment.find().sort({ code: 1 }).lean();
+    res.json(rows.map(r => ({
+      id: r._id, code: r.code, equipment: r.equipment, details: r.details,
+      status: r.status, lastMaintenance: r.lastMaintenance, nextMaintenance: r.nextMaintenance,
+    })));
+  } catch (error) { next(error); }
+});
+
+app.put('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const update = {};
+    if (req.body.status) update.status = req.body.status;
+    if (req.body.equipment) update.equipment = req.body.equipment;
+    if (req.body.details !== undefined) update.details = req.body.details;
+    if (req.body.lastMaintenance !== undefined) update.lastMaintenance = req.body.lastMaintenance;
+    if (req.body.nextMaintenance !== undefined) update.nextMaintenance = req.body.nextMaintenance;
+    await FactoryEquipment.updateOne({ _id: req.params.id }, update);
+    res.json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/factory-equipment', ensureAuthenticated, async (req, res, next) => {
+  try {
+    requireFields(req.body, ['code', 'equipment', 'status']);
+    const doc = await FactoryEquipment.create({
+      code: req.body.code, equipment: req.body.equipment,
+      details: req.body.details || '', status: req.body.status,
+      lastMaintenance: req.body.lastMaintenance || null,
+      nextMaintenance: req.body.nextMaintenance || null,
+    });
+    res.status(201).json({ id: doc._id, code: doc.code });
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, next) => {
+  try {
+    await FactoryEquipment.deleteOne({ _id: req.params.id });
+    res.json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+/* ═══════════════════════════════════════════════
+   APP DATA (generic key-value persistence)
+   ═══════════════════════════════════════════════ */
+
+const ALLOWED_DATA_KEYS = [
+  'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
+  'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
+  'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data',
+  'ww_sales_months',
+];
+
+function isAllowedDataKey(key) {
+  if (ALLOWED_DATA_KEYS.includes(key)) return true;
+  if (/^ww_sales_\d{4}-\d{2}$/.test(key)) return true;
+  return false;
+}
+
+app.get('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const key = req.params.key;
+    if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
+    const doc = await AppData.findOne({ key }).lean();
+    res.json({ key, data: doc ? doc.data : null });
+  } catch (error) { next(error); }
+});
+
+app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const key = req.params.key;
+    if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
+    await AppData.updateOne({ key }, { key, data: req.body.data }, { upsert: true });
+    res.json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const keys = (req.query.keys || '').split(',').filter(k => isAllowedDataKey(k));
+    if (!keys.length) return res.json({ items: [] });
+    const docs = await AppData.find({ key: { $in: keys } }).lean();
+    const map = {};
+    docs.forEach(d => { map[d.key] = d.data; });
+    res.json({ items: map });
   } catch (error) { next(error); }
 });
 

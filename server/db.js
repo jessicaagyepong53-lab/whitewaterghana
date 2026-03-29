@@ -188,6 +188,20 @@ const storeSessionSchema = new mongoose.Schema({
   expires_at:  { type: String, required: true },
 }, { timestamps: true, toJSON: toJSONOpts });
 
+const factoryEquipmentSchema = new mongoose.Schema({
+  code:             { type: String, required: true, unique: true },
+  equipment:        { type: String, required: true },
+  details:          { type: String, default: '' },
+  status:           { type: String, required: true },
+  lastMaintenance:  { type: String, default: null },
+  nextMaintenance:  { type: String, default: null },
+}, { timestamps: true, toJSON: toJSONOpts });
+
+const appDataSchema = new mongoose.Schema({
+  key:  { type: String, required: true, unique: true },
+  data: { type: mongoose.Schema.Types.Mixed, default: null },
+}, { timestamps: true, toJSON: toJSONOpts });
+
 /* ── Register models ── */
 
 const User            = mongoose.model('User', userSchema);
@@ -206,6 +220,8 @@ const StoreCustomer   = mongoose.model('StoreCustomer', storeCustomerSchema);
 const StoreOrder      = mongoose.model('StoreOrder', storeOrderSchema);
 const StoreProduct    = mongoose.model('StoreProduct', storeProductSchema);
 const StoreSession    = mongoose.model('StoreSession', storeSessionSchema);
+const FactoryEquipment = mongoose.model('FactoryEquipment', factoryEquipmentSchema);
+const AppData          = mongoose.model('AppData', appDataSchema);
 
 /* ═══════════════════════════════════════════════
    HELPER FUNCTIONS
@@ -240,6 +256,21 @@ async function refreshInventoryStatuses() {
    ═══════════════════════════════════════════════ */
 
 async function seedDatabase() {
+  // Always seed factory equipment if missing
+  const eqCount = await FactoryEquipment.countDocuments();
+  if (eqCount === 0) {
+    await FactoryEquipment.insertMany([
+      { code: 'EQ-101', equipment: 'Koyo Packaging Machine #1', details: 'with UV, pump, and stainless housing', status: 'operational', lastMaintenance: '2026-03-18', nextMaintenance: '2026-04-18' },
+      { code: 'EQ-102', equipment: 'Koyo Packaging Machine #2', details: 'with UV, pump, and stainless housing', status: 'operational', lastMaintenance: '2026-03-17', nextMaintenance: '2026-04-17' },
+      { code: 'EQ-103', equipment: 'Koyo Packaging Machine #3', details: 'with UV, pump, and stainless housing', status: 'operational', lastMaintenance: '2026-03-16', nextMaintenance: '2026-04-16' },
+      { code: 'EQ-104', equipment: 'Koyo Packaging Machine #4', details: 'with UV, pump, and stainless housing', status: 'needs_repair', lastMaintenance: '2026-03-09', nextMaintenance: '2026-04-09' },
+      { code: 'EQ-105', equipment: 'Koyo Packaging Machine #5', details: 'with UV, pump, and stainless housing', status: 'operational', lastMaintenance: '2026-03-14', nextMaintenance: '2026-04-14' },
+      { code: 'EQ-106', equipment: 'Reverse Osmosis (R/O) Machine', details: '4-ton capacity incl. filtration apparatus', status: 'operational', lastMaintenance: '2026-03-12', nextMaintenance: '2026-04-12' },
+      { code: 'EQ-107', equipment: 'Reverse Osmosis (R/O) Machine', details: '6-ton capacity incl. filtration apparatus', status: 'faulty', lastMaintenance: '2026-03-05', nextMaintenance: '2026-04-05' },
+    ]);
+    console.log('Factory equipment seeded');
+  }
+
   const count = await Customer.countDocuments();
   if (count > 0) {
     await refreshCustomerStats();
@@ -393,4 +424,6 @@ module.exports = {
   StoreOrder,
   StoreProduct,
   StoreSession,
+  FactoryEquipment,
+  AppData,
 };
