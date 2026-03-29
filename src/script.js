@@ -1905,15 +1905,17 @@ function loadSalesDataFromStorage() {
 	/* Ensure March 2026 month exists */
 	ensureMonthExists('2026-03');
 
-	/* Seed March if it has no data yet */
+	/* Seed March if it has no data yet, or re-seed if version changed */
 	const marchKey = monthStorageKey('2026-03');
+	const MARCH_SEED_VER = 'ww_march2026_seed_v2';
 	let marchData = null;
 	try { marchData = JSON.parse(localStorage.getItem(marchKey)); } catch(_e) {}
-	if (!marchData || !marchData.invoices || marchData.invoices.length === 0) {
+	if (!marchData || !marchData.invoices || marchData.invoices.length === 0 || !localStorage.getItem(MARCH_SEED_VER)) {
 		currentSalesMonth = '2026-03';
 		salesModuleData.invoices = [];
 		salesModuleData.salesOrders = [];
 		seedMarchSalesData();
+		localStorage.setItem(MARCH_SEED_VER, '1');
 		return; /* seedMarchSalesData calls saveSalesDataToStorage, data is already in salesModuleData */
 	}
 
@@ -2020,20 +2022,20 @@ function seedMarchSalesData() {
 	const rows = [
 		// 16/03/26
 		{ d:'2026-03-16', c:'Mon (driver)', b:60, r:7.5, a:450, s:'paid' },
-		{ d:'2026-03-16', c:'Mon (driver)', b:15, r:7.5, a:113, s:'pending' },
-		{ d:'2026-03-16', c:'Charlotte', b:950, r:6, a:5700, s:'pending' },
+		{ d:'2026-03-16', c:'Mon (driver)', b:15, r:7.5, a:113, s:'paid' },
+		{ d:'2026-03-16', c:'Charlotte', b:950, r:6, a:5700, s:'paid' },
 		{ d:'2026-03-16', c:'JMK', b:745, r:0, a:1500, s:'paid' },
 		// 17/03/26
-		{ d:'2026-03-17', c:'Client', b:1, r:7.5, a:7.50, s:'pending' },
-		{ d:'2026-03-17', c:'Charlotte', b:500, r:6, a:3000, s:'pending', pr:20 },
-		{ d:'2026-03-17', c:'Musa', b:250, r:6.5, a:1500, s:'pending', pr:12 },
+		{ d:'2026-03-17', c:'Client', b:1, r:7.5, a:7.50, s:'paid' },
+		{ d:'2026-03-17', c:'Charlotte', b:500, r:6, a:3000, s:'paid', pr:20 },
+		{ d:'2026-03-17', c:'Musa', b:250, r:6.5, a:1500, s:'paid', pr:12 },
 		{ d:'2026-03-17', c:'Flarc', b:15, r:0, a:112.50, s:'paid' },
-		{ d:'2026-03-17', c:'Chef', b:3, r:7.5, a:22.50, s:'pending' },
-		{ d:'2026-03-17', c:'Charlotte / Stzpr', b:250, r:0, a:4500, s:'pending', pr:8 },
-		{ d:'2026-03-17', c:'Aboboyaa', b:110, r:0, a:660, s:'pending', pr:4 },
+		{ d:'2026-03-17', c:'Chef', b:3, r:7.5, a:22.50, s:'paid' },
+		{ d:'2026-03-17', c:'Charlotte / Stzpr', b:250, r:0, a:4500, s:'paid', pr:8 },
+		{ d:'2026-03-17', c:'Aboboyaa', b:110, r:0, a:660, s:'paid', pr:4 },
 		// 18/03/26
-		{ d:'2026-03-18', c:'Michael Defadu', b:80, r:7, a:560, s:'pending' },
-		{ d:'2026-03-18', c:'Michael Defadu', b:50, r:7.5, a:365, s:'pending' },
+		{ d:'2026-03-18', c:'Michael Defadu', b:80, r:7, a:560, s:'paid' },
+		{ d:'2026-03-18', c:'Michael Defadu', b:50, r:7.5, a:365, s:'paid' },
 		{ d:'2026-03-18', c:'Charlotte', b:500, r:6, a:2520, s:'paid', pr:20 },
 		{ d:'2026-03-18', c:'Aboboyaa', b:110, r:6, a:660, s:'paid' },
 		{ d:'2026-03-18', c:'Aboboyaa', b:110, r:6, a:660, s:'paid', pr:4 },
@@ -2046,7 +2048,7 @@ function seedMarchSalesData() {
 		{ d:'2026-03-19', c:'Individual', b:5, r:7, a:35, s:'paid' },
 		// 20/03/26
 		{ d:'2026-03-20', c:'Kia', b:50, r:6, a:300, s:'paid' },
-		{ d:'2026-03-20', c:'Charlotte', b:500, r:6, a:3000, s:'pending' },
+		{ d:'2026-03-20', c:'Charlotte', b:500, r:6, a:3000, s:'paid' },
 		{ d:'2026-03-20', c:'Michael Dze', b:50, r:7.5, a:375, s:'paid', p:'Cash + Momo' },
 		{ d:'2026-03-20', c:'Carida', b:16, r:7.5, a:120, s:'paid' },
 		// 21/03/26
@@ -2056,67 +2058,67 @@ function seedMarchSalesData() {
 		{ d:'2026-03-21', c:'Kukua', b:6, r:6, a:36, s:'paid' },
 		{ d:'2026-03-21', c:'Christpha', b:2, r:6, a:12, s:'paid' },
 		{ d:'2026-03-21', c:'Dzepedu', b:20, r:7.5, a:150, s:'paid' },
-		{ d:'2026-03-21', c:'Individual', b:110, r:6, a:660, s:'pending' },
+		{ d:'2026-03-21', c:'Individual', b:110, r:6, a:660, s:'paid' },
 		// 23/03/26
-		{ d:'2026-03-23', c:'Charlotte', b:350, r:6, a:2100, s:'pending', pr:14 },
-		{ d:'2026-03-23', c:'Charlotte', b:134, r:6, a:804, s:'pending', pr:10 },
-		{ d:'2026-03-23', c:'Aboboyaa', b:40, r:6, a:240, s:'pending', pr:1 },
-		{ d:'2026-03-23', c:'Apostle Dab', b:20, r:7.5, a:150, s:'pending' },
-		{ d:'2026-03-23', c:'Individual', b:5, r:7.5, a:37.50, s:'pending' },
+		{ d:'2026-03-23', c:'Charlotte', b:350, r:6, a:2100, s:'paid', pr:14 },
+		{ d:'2026-03-23', c:'Charlotte', b:134, r:6, a:804, s:'paid', pr:10 },
+		{ d:'2026-03-23', c:'Aboboyaa', b:40, r:6, a:240, s:'paid', pr:1 },
+		{ d:'2026-03-23', c:'Apostle Dab', b:20, r:7.5, a:150, s:'paid' },
+		{ d:'2026-03-23', c:'Individual', b:5, r:7.5, a:37.50, s:'paid' },
 		// 24/03/26
 		{ d:'2026-03-24', c:'Charlotte', b:350, r:6, a:2100, s:'paid', pr:14 },
-		{ d:'2026-03-24', c:'Charlotte', b:100, r:6, a:2400, s:'pending', pr:16 },
-		{ d:'2026-03-24', c:'Boyit', b:7, r:6, a:42, s:'pending' },
+		{ d:'2026-03-24', c:'Charlotte', b:100, r:6, a:2400, s:'paid', pr:16 },
+		{ d:'2026-03-24', c:'Boyit', b:7, r:6, a:42, s:'paid' },
 		{ d:'2026-03-24', c:'Aboboyaa', b:110, r:6, a:660, s:'paid', p:'Momo', pr:6 },
 		{ d:'2026-03-24', c:'Individual', b:20, r:7, a:140, s:'paid' },
 		// 25/03/26
-		{ d:'2026-03-25', c:'Charlotte', b:400, r:6, a:2400, s:'pending', pr:16 },
-		{ d:'2026-03-25', c:'Dafadu', b:70, r:7.5, a:525, s:'pending' },
-		{ d:'2026-03-25', c:'Dagadu', b:100, r:7.5, a:750, s:'pending', p:'Cash + Momo' },
-		{ d:'2026-03-25', c:'Client (walk-in)', b:20, r:7.5, a:150, s:'pending' },
-		{ d:'2026-03-25', c:'Client', b:10, r:7.5, a:75, s:'pending' },
-		{ d:'2026-03-25', c:'Walk-in', b:1, r:6, a:6, s:'pending' },
 		{ d:'2026-03-25', c:'Charlotte', b:400, r:6, a:2400, s:'paid', pr:16 },
-		{ d:'2026-03-25', c:'Dafadu', b:70, r:7.5, a:525, s:'pending' },
-		{ d:'2026-03-25', c:'Dafadu', b:50, r:7.5, a:375, s:'pending' },
+		{ d:'2026-03-25', c:'Dafadu', b:70, r:7.5, a:525, s:'paid' },
+		{ d:'2026-03-25', c:'Dagadu', b:100, r:7.5, a:750, s:'paid', p:'Cash + Momo' },
+		{ d:'2026-03-25', c:'Client (walk-in)', b:20, r:7.5, a:150, s:'paid' },
+		{ d:'2026-03-25', c:'Client', b:10, r:7.5, a:75, s:'paid' },
+		{ d:'2026-03-25', c:'Walk-in', b:1, r:6, a:6, s:'paid' },
+		{ d:'2026-03-25', c:'Charlotte', b:400, r:6, a:2400, s:'paid', pr:16 },
+		{ d:'2026-03-25', c:'Dafadu', b:70, r:7.5, a:525, s:'paid' },
+		{ d:'2026-03-25', c:'Dafadu', b:50, r:7.5, a:375, s:'paid' },
 		// 26/03/26
-		{ d:'2026-03-26', c:'Grace MTN (Eve)', b:20, r:7.5, a:150, s:'pending' },
-		{ d:'2026-03-26', c:'Charlotte', b:400, r:6, a:2400, s:'pending', pr:16 },
-		{ d:'2026-03-26', c:'Walk-in', b:4, r:6, a:24, s:'pending' },
-		{ d:'2026-03-26', c:'Walk-in', b:4, r:6, a:24, s:'pending' },
+		{ d:'2026-03-26', c:'Grace MTN (Eve)', b:20, r:7.5, a:150, s:'paid' },
+		{ d:'2026-03-26', c:'Charlotte', b:400, r:6, a:2400, s:'paid', pr:16 },
+		{ d:'2026-03-26', c:'Walk-in', b:4, r:6, a:24, s:'paid' },
+		{ d:'2026-03-26', c:'Walk-in', b:4, r:6, a:24, s:'paid' },
 		{ d:'2026-03-26', c:'Madam Mamuko / Apmpzn Mofe Dztlts', b:100, r:7.5, a:750, s:'paid', p:'Momo', pr:4 },
 		{ d:'2026-03-26', c:'Walk-in (Delney)', b:3, r:7.5, a:22.50, s:'paid', p:'Momo' },
-		{ d:'2026-03-26', c:'Michael', b:50, r:7, a:250, s:'pending' },
-		{ d:'2026-03-26', c:'Aboboyaa', b:100, r:6, a:600, s:'pending', pr:6 },
-		{ d:'2026-03-26', c:'Walk-in', b:4, r:6, a:24, s:'pending' },
+		{ d:'2026-03-26', c:'Michael', b:50, r:7, a:250, s:'paid' },
+		{ d:'2026-03-26', c:'Aboboyaa', b:100, r:6, a:600, s:'paid', pr:6 },
+		{ d:'2026-03-26', c:'Walk-in', b:4, r:6, a:24, s:'paid' },
 		// 27/03/26
-		{ d:'2026-03-27', c:'Charlotte', b:450, r:6, a:2700, s:'pending' },
+		{ d:'2026-03-27', c:'Charlotte', b:450, r:6, a:2700, s:'paid' },
 		{ d:'2026-03-27', c:'Walk-in', b:4, r:6, a:24, s:'paid', p:'Momo' },
-		{ d:'2026-03-27', c:'Walk-in', b:7, r:6, a:42, s:'pending' },
-		{ d:'2026-03-27', c:'Client', b:15, r:7.5, a:112.50, s:'pending' },
-		{ d:'2026-03-27', c:'Laulas', b:8, r:6, a:0, s:'pending' },
-		{ d:'2026-03-27', c:'Charlotte', b:350, r:6, a:2000, s:'pending' },
-		{ d:'2026-03-27', c:'Aboboyaa', b:100, r:6, a:600, s:'pending' },
+		{ d:'2026-03-27', c:'Walk-in', b:7, r:6, a:42, s:'paid' },
+		{ d:'2026-03-27', c:'Client', b:15, r:7.5, a:112.50, s:'paid' },
+		{ d:'2026-03-27', c:'Laulas', b:8, r:6, a:0, s:'paid' },
+		{ d:'2026-03-27', c:'Charlotte', b:350, r:6, a:2000, s:'paid' },
+		{ d:'2026-03-27', c:'Aboboyaa', b:100, r:6, a:600, s:'paid' },
 		// 28/03/26
-		{ d:'2026-03-28', c:'Charlotte', b:450, r:6, a:2700, s:'pending', pr:16 },
-		{ d:'2026-03-28', c:'Amos', b:100, r:7, a:700, s:'pending', pr:16 },
-		{ d:'2026-03-28', c:'Aboboyaa', b:110, r:6, a:660, s:'pending', pr:6 },
-		{ d:'2026-03-28', c:'Aboboyaa', b:100, r:6, a:600, s:'pending', pr:6 },
-		{ d:'2026-03-28', c:'Walk-in', b:3, r:6, a:18, s:'pending' },
-		{ d:'2026-03-28', c:'Walk-in', b:10, r:6, a:60, s:'pending' },
-		{ d:'2026-03-28', c:'Walk-in', b:6, r:7, a:40, s:'pending' },
-		{ d:'2026-03-28', c:'Carida Okadaahu', b:10, r:7.5, a:75, s:'pending' },
-		{ d:'2026-03-28', c:'Charlotte', b:375, r:6, a:2250, s:'pending', pr:14 },
-		{ d:'2026-03-28', c:'Aboboyaa', b:110, r:6, a:660, s:'pending' },
-		{ d:'2026-03-28', c:'Aboboyaa', b:100, r:6, a:600, s:'pending' },
-		{ d:'2026-03-28', c:'Walk-in / Police', b:6, r:5, a:30, s:'pending' },
-		{ d:'2026-03-28', c:'Daapaadu', b:47, r:7.5, a:352.50, s:'pending' },
-		{ d:'2026-03-28', c:'Amos', b:7, r:7.5, a:42, s:'pending' },
-		{ d:'2026-03-28', c:'Amos', b:44, r:7, a:208, s:'pending' },
-		{ d:'2026-03-28', c:'Aboboyaa', b:100, r:6, a:600, s:'pending', pr:6 },
-		{ d:'2026-03-28', c:'Walk-in', b:10, r:7.5, a:75, s:'pending' },
-		{ d:'2026-03-28', c:'Walk-in', b:6, r:6, a:36, s:'pending' },
-		{ d:'2026-03-28', c:'Walk-in', b:1, r:6, a:6, s:'pending' },
+		{ d:'2026-03-28', c:'Charlotte', b:450, r:6, a:2700, s:'paid', pr:16 },
+		{ d:'2026-03-28', c:'Amos', b:100, r:7, a:700, s:'paid', pr:16 },
+		{ d:'2026-03-28', c:'Aboboyaa', b:110, r:6, a:660, s:'paid', pr:6 },
+		{ d:'2026-03-28', c:'Aboboyaa', b:100, r:6, a:600, s:'paid', pr:6 },
+		{ d:'2026-03-28', c:'Walk-in', b:3, r:6, a:18, s:'paid' },
+		{ d:'2026-03-28', c:'Walk-in', b:10, r:6, a:60, s:'paid' },
+		{ d:'2026-03-28', c:'Walk-in', b:6, r:7, a:40, s:'paid' },
+		{ d:'2026-03-28', c:'Carida Okadaahu', b:10, r:7.5, a:75, s:'paid' },
+		{ d:'2026-03-28', c:'Charlotte', b:375, r:6, a:2250, s:'paid', pr:14 },
+		{ d:'2026-03-28', c:'Aboboyaa', b:110, r:6, a:660, s:'paid' },
+		{ d:'2026-03-28', c:'Aboboyaa', b:100, r:6, a:600, s:'paid' },
+		{ d:'2026-03-28', c:'Walk-in / Police', b:6, r:5, a:30, s:'paid' },
+		{ d:'2026-03-28', c:'Daapaadu', b:47, r:7.5, a:352.50, s:'paid' },
+		{ d:'2026-03-28', c:'Amos', b:7, r:7.5, a:42, s:'paid' },
+		{ d:'2026-03-28', c:'Amos', b:44, r:7, a:208, s:'paid' },
+		{ d:'2026-03-28', c:'Aboboyaa', b:100, r:6, a:600, s:'paid', pr:6 },
+		{ d:'2026-03-28', c:'Walk-in', b:10, r:7.5, a:75, s:'paid' },
+		{ d:'2026-03-28', c:'Walk-in', b:6, r:6, a:36, s:'paid' },
+		{ d:'2026-03-28', c:'Walk-in', b:1, r:6, a:6, s:'paid' },
 	];
 	const product = '500ml Sachet Water (500 pcs/bag)';
 	rows.forEach((r, i) => {
