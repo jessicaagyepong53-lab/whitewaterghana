@@ -4255,9 +4255,10 @@ function initAccountingPage() {
 
 		const revenue = (revCat ? revCat.total : 0) + salesRevenue;
 		const expense = expCat ? expCat.total : 0;
-		const assets = assCat ? assCat.total : 0;
+		const assetsSheetTotal = accountingData.assets.reduce((s, a) => s + (a.value || 0), 0);
+		const assets = (assCat ? assCat.total : 0) + assetsSheetTotal;
 		const liabilities = liaCat ? liaCat.total : 0;
-		const profitLoss = revenue - expense;
+		const profitLoss = revenue - expense + assetsSheetTotal;
 		const plClass = profitLoss >= 0 ? 'color:#22c55e' : 'color:#ef4444';
 
 		const stats = document.getElementById('acc-stats-row');
