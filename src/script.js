@@ -3742,7 +3742,7 @@ function initPurchasePage() {
 }
 
 /* ---- Accounting Data Persistence ---- */
-const accountingData = { ledger: [], cashbook: [], summary: [], currencies: [], salaries: [] };
+const accountingData = { ledger: [], cashbook: [], summary: [], currencies: [], salaries: [], assets: [] };
 
 (function() { localStorage.removeItem('ww_accounting_data'); })();
 
@@ -3755,6 +3755,7 @@ function loadAccountingDataFromStorage() {
 			accountingData.summary = Array.isArray(stored.summary) ? stored.summary : [];
 			accountingData.currencies = Array.isArray(stored.currencies) ? stored.currencies : [];
 			accountingData.salaries = Array.isArray(stored.salaries) ? stored.salaries : [];
+			accountingData.assets = Array.isArray(stored.assets) ? stored.assets : [];
 		}
 	} catch (_e) { /* ignore */ }
 
@@ -3767,16 +3768,19 @@ function loadAccountingDataFromStorage() {
 		localStorage.setItem('ww_opscost_march2026_seeded', '1');
 	}
 
-	// One-time seed: March 2026 salaries (v3 = weekly structure)
-	if (!localStorage.getItem('ww_salaries_march2026_v3') && accountingData.salaries.length === 0) {
-		// Remove old salary entries from ledger
+	// One-time seed: March 2026 salaries (v5 = 18k/week on Assets sheet)
+	if (!localStorage.getItem('ww_salaries_march2026_v5')) {
+		// Remove old individual salary ledger entries
 		accountingData.ledger = accountingData.ledger.filter(e => !(e.account === 'Salaries' && e.desc && e.desc.startsWith('Salary —')));
+		// Remove old aggregate salary ledger/cashbook entries
+		accountingData.ledger = accountingData.ledger.filter(e => !(e.account === 'Salaries & Wages'));
+		accountingData.cashbook = accountingData.cashbook.filter(e => !(e.desc && e.desc.startsWith('Salaries & Wages')));
+		// Remove old salary assets (if any from v4)
+		accountingData.assets = accountingData.assets.filter(e => !(e.category === 'Salaries & Wages'));
 		accountingData.salaries = [];
 		seedMarchSalaries();
-		localStorage.setItem('ww_salaries_march2026_v3', '1');
+		localStorage.setItem('ww_salaries_march2026_v5', '1');
 		saveAccountingDataToStorage();
-	} else if (!localStorage.getItem('ww_salaries_march2026_v3')) {
-		localStorage.setItem('ww_salaries_march2026_v3', '1');
 	}
 }
 
@@ -3872,6 +3876,7 @@ function seedMarchSalaries() {
 		{ d:'2026-03-28', name:'Alfred (Loader)', week:'2026-03-23', amt:700, note:'' },
 	];
 
+	// Individual salary breakdown (salary tab only — not added to ledger)
 	for (const r of rows) {
 		accountingData.salaries.push({
 			date: r.d,
@@ -3880,13 +3885,20 @@ function seedMarchSalaries() {
 			amount: r.amt,
 			note: r.note
 		});
-		accountingData.ledger.push({
-			date: r.d,
-			desc: `Salary — ${r.name}`,
-			account: 'Salaries',
-			type: 'expense',
-			debit: r.amt,
-			credit: 0
+	}
+
+	// Aggregate Salaries & Wages — 18k per week → Assets sheet
+	const weeklyTotals = [
+		{ d:'2026-03-21', desc:'Salaries & Wages — Week 1 (16/03 – 22/03)', amt:18000 },
+		{ d:'2026-03-28', desc:'Salaries & Wages — Week 2 (23/03 – 29/03)', amt:18000 },
+	];
+	for (const w of weeklyTotals) {
+		accountingData.assets.push({
+			date: w.d,
+			name: w.desc,
+			category: 'Salaries & Wages',
+			value: w.amt,
+			note: ''
 		});
 	}
 }
@@ -3955,6 +3967,16 @@ function initAccountingPage() {
 				{ id: 'note', label: 'Notes', type: 'text', placeholder: 'e.g. Deductions, adjustments' },
 			],
 		},
+		'asset-item': {
+			title: 'Add Asset',
+			fields: [
+				{ id: 'date', label: 'Date', type: 'date', defaultValue: todayStr, required: true },
+				{ id: 'name', label: 'Asset Name', type: 'text', required: true, placeholder: 'e.g. Salaries & Wages — Week 1' },
+				{ id: 'category', label: 'Category', type: 'select', options: ['Salaries & Wages', 'Equipment', 'Vehicles', 'Property', 'Inventory', 'Furniture', 'Other'], required: true },
+				{ id: 'value', label: 'Value (GH)', type: 'number', min: '0', step: '0.01', required: true },
+				{ id: 'note', label: 'Notes', type: 'text', placeholder: 'e.g. Week 1 payroll' },
+			],
+		},
 	};
 
 	/* Helper: get Monday of the week for a given date string */
@@ -4013,6 +4035,7 @@ function initAccountingPage() {
 			else if (entity === 'account') row = accountingData.summary[editingAccIdx];
 			else if (entity === 'currency') row = accountingData.currencies[editingAccIdx];
 			else if (entity === 'salary') row = accountingData.salaries[editingAccIdx];
+			else if (entity === 'asset-item') row = accountingData.assets[editingAccIdx];
 			if (row) {
 				const setVal = (id, v) => { const el = document.getElementById('acc-field-' + id); if (el && v !== undefined) el.value = v; };
 				Object.keys(row).forEach((k) => setVal(k, row[k]));
@@ -4118,6 +4141,23 @@ function initAccountingPage() {
 				currentSalaryWeek = weekStart;
 			}
 
+			if (currentEntity === 'asset-item') {
+				const name = getValue('name');
+				if (!name) return;
+				const data = {
+					date: getValue('date') || todayStr,
+					name,
+					category: getValue('category') || 'Other',
+					value: getNum('value'),
+					note: getValue('note') || '',
+				};
+				if (editingAccIdx >= 0 && accountingData.assets[editingAccIdx]) {
+					Object.assign(accountingData.assets[editingAccIdx], data);
+				} else {
+					accountingData.assets.push(data);
+				}
+			}
+
 			saveAccountingDataToStorage();
 			closeModal();
 			renderAccountingPage();
@@ -4151,6 +4191,7 @@ function initAccountingPage() {
 				}
 				accountingData.salaries.splice(idx, 1);
 			}
+			else if (entity === 'asset-item') accountingData.assets.splice(idx, 1);
 			saveAccountingDataToStorage();
 			renderAccountingPage();
 		}
@@ -4331,6 +4372,50 @@ function initAccountingPage() {
 					const icon = CURRENCY_ICONS[cur.code] || 'fa-solid fa-coins';
 					return `<div class="currency-card"><div class="cur-top"><div class="cur-left"><span class="cur-globe"><i class="fa-solid fa-globe"></i></span><div><p class="cur-code">${cur.code}</p><p class="cur-name">${cur.name}</p></div></div><span class="cur-symbol"><i class="${icon}"></i></span></div><p class="cur-rate">1 ${cur.code} = ${cur.rate.toFixed(2)} GHS</p><p class="cur-sample">100 GHS ≈ ${sample} ${cur.code}</p></div>`;
 				}).join('');
+		}
+
+		/* Assets Sheet */
+		const assetsArr = accountingData.assets;
+		const assetsBody = document.getElementById('assets-tbody');
+		if (assetsBody) {
+			if (assetsArr.length === 0) {
+				assetsBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No assets yet. Click "Add Asset" to start.</td></tr>';
+			} else {
+				const sorted = assetsArr.map((a, i) => ({ ...a, _idx: i })).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+				let html = '';
+				let grandTotal = 0;
+				// Group by category
+				const byCat = {};
+				for (const a of sorted) {
+					const cat = a.category || 'Other';
+					if (!byCat[cat]) byCat[cat] = [];
+					byCat[cat].push(a);
+				}
+				for (const cat of Object.keys(byCat).sort()) {
+					let catTotal = 0;
+					html += `<tr><td colspan="6" style="background:#f0f4ff;font-weight:700;color:#1e40af;padding:10px 14px;border-top:2px solid #bfdbfe;font-size:0.95rem;"><i class="fa-solid fa-box" style="margin-right:6px;"></i>${cat}</td></tr>`;
+					for (const a of byCat[cat]) {
+						catTotal += a.value || 0;
+						grandTotal += a.value || 0;
+						html += `<tr><td>${a.date}</td><td style="font-weight:600;">${a.name}</td><td>${a.category}</td><td>${formatCurrency(a.value)}</td><td style="color:#64748b;font-size:0.85rem;">${a.note || '—'}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="asset-item" data-edit-idx="${a._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="asset-item" data-delete-idx="${a._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
+					}
+					html += `<tr><td colspan="3" style="text-align:right;font-weight:700;background:#f8fafc;color:#475569;padding:8px 14px;">Subtotal — ${cat}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(catTotal)}</td><td colspan="2" style="background:#f8fafc;"></td></tr>`;
+				}
+				html += `<tr><td colspan="3" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">TOTAL ASSETS</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandTotal)}</td><td colspan="2" style="background:#1e40af;"></td></tr>`;
+				assetsBody.innerHTML = html;
+			}
+			const assetsSummary = document.getElementById('assets-summary-cards');
+			if (assetsSummary) {
+				const total = assetsArr.reduce((s, a) => s + (a.value || 0), 0);
+				const cats = new Set(assetsArr.map(a => a.category || 'Other')).size;
+				assetsSummary.innerHTML = `
+					<div style="display:flex;gap:16px;flex-wrap:wrap;">
+						<div class="cashbook-card"><p class="cb-label">Total Assets Value</p><p class="cb-val">${formatCurrency(total)}</p></div>
+						<div class="cashbook-card"><p class="cb-label">Items</p><p class="cb-val">${assetsArr.length}</p></div>
+						<div class="cashbook-card"><p class="cb-label">Categories</p><p class="cb-val">${cats}</p></div>
+					</div>
+				`;
+			}
 		}
 
 		/* Salaries — filtered by selected week */

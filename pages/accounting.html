@@ -48,6 +48,7 @@
       <button class="tab-btn tab-active" data-tab="ledger" onclick="switchTab('acc','ledger')">General Ledger</button>
       <button class="tab-btn" data-tab="cashbook" onclick="switchTab('acc','cashbook')">Cashbook</button>
       <button class="tab-btn" data-tab="salaries" onclick="switchTab('acc','salaries')">Salaries</button>
+      <button class="tab-btn" data-tab="assets" onclick="switchTab('acc','assets')">Assets</button>
       <button class="tab-btn" data-tab="summary" onclick="switchTab('acc','summary')">Account Summary</button>
       <button class="tab-btn" data-tab="currency" onclick="switchTab('acc','currency')">Multi-Currency</button>
     </div>
@@ -95,6 +96,17 @@
       </table>
       <div id="salaries-summary-cards" style="margin-top:14px;"></div>
       <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="salary">Add Salary <i class="fa-solid fa-plus"></i></button></div>
+    </div>
+    <div id="acc-tab-assets" class="tab-panel">
+      <div class="info-box" style="margin-bottom:14px;">
+        <p><strong>Assets</strong> — Track company-owned assets such as equipment, vehicles, property, and other valuables. Each entry records the asset name, date acquired, value, and any notes.</p>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Date</th><th>Asset Name</th><th>Category</th><th>Value (GH₵)</th><th>Notes</th><th>Actions</th></tr></thead>
+        <tbody id="assets-tbody"></tbody>
+      </table>
+      <div id="assets-summary-cards" style="margin-top:14px;"></div>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="asset-item">Add Asset <i class="fa-solid fa-plus"></i></button></div>
     </div>
     <div id="acc-tab-summary" class="tab-panel">
       <div class="info-box" style="margin-bottom:14px;">
