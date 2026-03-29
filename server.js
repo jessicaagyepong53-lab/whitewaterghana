@@ -1094,10 +1094,14 @@ app.use((error, _req, res, _next) => {
 });
 
 connectDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`White Water Ghana app running on http://localhost:${PORT}`);
-  });
+  if (!process.env.VERCEL) {
+    app.listen(PORT, () => {
+      console.log(`White Water Ghana app running on http://localhost:${PORT}`);
+    });
+  }
 }).catch((err) => {
   console.error('Failed to connect to MongoDB:', err.message);
   process.exit(1);
 });
+
+module.exports = app;
