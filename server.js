@@ -477,6 +477,11 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, timestamp: nowIso() });
 });
 
+// GET handlers for auth routes — silences browser/extension prefetch probes
+app.get('/api/auth/register', (_req, res) => { res.json({ message: 'Use POST.' }); });
+app.get('/api/auth/login', (_req, res) => { res.json({ message: 'Use POST.' }); });
+app.get('/api/auth/reset-password', (_req, res) => { res.json({ message: 'Use POST.' }); });
+
 app.post('/api/auth/register', async (req, res, next) => {
   try {
     requireFields(req.body, ['name', 'email', 'password', 'role']);
@@ -555,6 +560,7 @@ app.post('/api/auth/logout', ensureAuthenticated, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/auth/forgot-password', (_req, res) => { res.json({ message: 'Use POST to submit a forgot-password request.' }); });
 app.post('/api/auth/forgot-password', async (req, res, next) => {
   try {
     requireFields(req.body, ['email']);
