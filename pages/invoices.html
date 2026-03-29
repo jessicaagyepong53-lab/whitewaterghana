@@ -50,20 +50,27 @@
       </div>
     </div>
   </div>
+  <section class="month-selector-bar" id="month-selector-bar">
+    <div class="month-selector-left">
+      <label>Month:</label>
+      <select id="sales-month-select"></select>
+    </div>
+    <button type="button" class="btn-secondary" id="new-month-btn"><i class="fa-solid fa-plus"></i> New Month</button>
+  </section>
   <section class="stats-row" id="si-stats-row"></section>
   <div class="panel">
     <div class="tab-bar">
       <button class="tab-btn tab-active" data-tab="invoices" onclick="switchTab('si','invoices')">Invoices</button>
       <button class="tab-btn" data-tab="orders" onclick="switchTab('si','orders')">Sales Orders</button>
       <button class="tab-btn" data-tab="online" onclick="switchTab('si','online')">Online Orders <span class="online-badge" id="online-orders-badge" style="display:none">0</span></button>
-      <button class="tab-btn" data-tab="waybill" onclick="switchTab('si','waybill')">Waybill</button>
+      <!-- <button class="tab-btn" data-tab="waybill" onclick="switchTab('si','waybill')">Waybill</button> -->
     </div>
     <div id="si-tab-invoices" class="tab-panel tab-active">
       <div class="two-panel">
         <div class="two-panel-left">
           <h3>Invoice Register</h3>
           <table class="data-table">
-            <thead><tr><th>Invoice #</th><th>Customer</th><th>Date</th><th>Due</th><th>Amount (GH)</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Invoice #</th><th>Customer</th><th>Promo</th><th>Bags</th><th>Price (₵)</th><th>Date</th><th>Total (₵)</th><th>Payment</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody id="invoice-tbody"></tbody>
           </table>
           <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary si-add-btn" data-add-entity="invoice">Add Invoice <i class="fa-solid fa-plus"></i></button></div>
@@ -81,7 +88,7 @@
     </div>
     <div id="si-tab-orders" class="tab-panel">
       <table class="data-table">
-        <thead><tr><th>Order ID</th><th>Customer</th><th>Order Date</th><th>Delivery Date</th><th>Amount (GH)</th><th>Status</th><th>Action</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Order ID</th><th>Customer</th><th>Promo</th><th>Bags</th><th>Price (₵)</th><th>Date</th><th>Total (₵)</th><th>Payment</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody id="orders-tbody"></tbody>
       </table>
       <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary si-add-btn" data-add-entity="order">Add Sales Order <i class="fa-solid fa-plus"></i></button></div>
@@ -125,91 +132,9 @@
       </div>
     </div>
 
-    <!-- Waybill Tab -->
-    <div id="si-tab-waybill" class="tab-panel">
-      <div class="waybill-toolbar">
-        <button type="button" class="btn-secondary" id="wb-new-btn"><i class="fa-solid fa-plus"></i> New Waybill</button>
-      </div>
-
-      <!-- Two-panel: list left, detail right -->
-      <div id="wb-list-section" class="two-panel">
-        <div class="two-panel-left">
-          <h3>Waybill Register</h3>
-          <table class="data-table">
-            <thead><tr><th>Waybill No.</th><th>To</th><th>Driver</th><th>Car No.</th><th>Date</th><th>Items</th><th>Status</th><th>Actions</th></tr></thead>
-            <tbody id="wb-list-tbody"></tbody>
-          </table>
-        </div>
-        <div class="two-panel-right">
-          <h3>Waybill Detail</h3>
-          <div id="wb-detail-content">
-            <p class="detail-placeholder">&#128666; Select a waybill to view full details</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Waybill form/editor (hidden by default) -->
-      <div id="wb-editor" style="display:none">
-        <div class="waybill-doc" id="wb-document">
-          <!-- Header -->
-          <div class="wb-header">
-            <div class="wb-logo-area">
-              <img src="../images/Final%20Logo.jpg" alt="Logo" class="wb-logo">
-            </div>
-            <div class="wb-company-info">
-              <h2 class="wb-company-name">White Water Wells LTD</h2>
-              <p>P.O. Box 18204, Accra</p>
-              <p>Location: Comm 25 Peace B Down</p>
-              <p>Accra-Prampram Road</p>
-              <p>GPS Address: GN-0709-4736</p>
-              <p>Mobile: 0243108878 / 0244483793</p>
-              <p>E-mail: whitewaterwellscompanyltd@gmail.com</p>
-            </div>
-            <div class="wb-number-area">
-              <label>No:</label>
-              <span class="wb-no-display" id="wb-no-display"></span>
-            </div>
-          </div>
-
-          <h3 class="wb-title">WAYBILL</h3>
-
-          <!-- Recipient info -->
-          <div class="wb-field-group">
-            <div class="wb-field wb-field-full"><label>TO:</label><input id="wb-to" type="text" class="wb-input" placeholder="Recipient name / company"></div>
-            <div class="wb-field wb-field-full"><label>Driver's Name:</label><input id="wb-driver" type="text" class="wb-input" placeholder="Driver's full name"></div>
-            <div class="wb-field wb-field-full"><label>Address:</label><input id="wb-address" type="text" class="wb-input" placeholder="Delivery address"></div>
-            <div class="wb-field-row">
-              <div class="wb-field"><label>Car Number:</label><input id="wb-car" type="text" class="wb-input" placeholder="e.g. GR-1234-21"></div>
-              <div class="wb-field"><label>Date:</label><input id="wb-date" type="date" class="wb-input"></div>
-            </div>
-          </div>
-
-          <!-- Items table -->
-          <table class="wb-items-table">
-            <thead><tr><th style="width:18%">Quantity</th><th style="width:52%">Description</th><th style="width:30%">Remarks</th></tr></thead>
-            <tbody id="wb-items-tbody">
-              <tr><td><input type="text" class="wb-input wb-item-qty" placeholder="0"></td><td><input type="text" class="wb-input wb-item-desc" placeholder="Item description"></td><td><input type="text" class="wb-input wb-item-rem" placeholder="Remarks"></td></tr>
-            </tbody>
-          </table>
-          <button type="button" class="btn-secondary wb-add-row-btn" id="wb-add-row"><i class="fa-solid fa-plus"></i> Add Row</button>
-
-          <!-- Footer signatures -->
-          <div class="wb-signatures">
-            <div class="wb-sig-field"><label>Despatched By:</label><input id="wb-despatched" type="text" class="wb-input" placeholder="Name"></div>
-            <div class="wb-sig-field"><label>Received By:</label><input id="wb-received" type="text" class="wb-input" placeholder="Name"></div>
-            <div class="wb-sig-field"><label>Driver's Signature:</label><div class="wb-sig-line"></div></div>
-          </div>
-
-          <p class="wb-tagline">Pure. Reliable. Refreshing.</p>
-        </div>
-
-        <div class="wb-form-actions">
-          <button type="button" class="btn-secondary" id="wb-cancel-btn">Cancel</button>
-          <button type="button" class="btn-primary" id="wb-save-btn"><i class="fa-solid fa-floppy-disk"></i> Save Waybill</button>
-        </div>
-      </div>
-    </div>
+    <!-- Waybill Tab (disabled) -->
   </div>
+
   <!-- Add Modal -->
   <div id="si-add-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
     <div class="inv-modal">

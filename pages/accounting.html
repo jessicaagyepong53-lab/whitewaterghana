@@ -47,6 +47,7 @@
     <div class="tab-bar">
       <button class="tab-btn tab-active" data-tab="ledger" onclick="switchTab('acc','ledger')">General Ledger</button>
       <button class="tab-btn" data-tab="cashbook" onclick="switchTab('acc','cashbook')">Cashbook</button>
+      <button class="tab-btn" data-tab="salaries" onclick="switchTab('acc','salaries')">Salaries</button>
       <button class="tab-btn" data-tab="summary" onclick="switchTab('acc','summary')">Account Summary</button>
       <button class="tab-btn" data-tab="currency" onclick="switchTab('acc','currency')">Multi-Currency</button>
     </div>
@@ -70,19 +71,30 @@
     </div>
     <div id="acc-tab-cashbook" class="tab-panel">
       <div class="info-box" style="margin-bottom:14px;">
-        <p><strong>Cashbook</strong> tracks all money coming in and going out of the business. The running balance updates automatically.</p>
-        <ul style="margin:6px 0 0 18px;line-height:1.7;">
-          <li><strong>Receipt</strong> — Money received (customer payments, cash sales, bank deposits, capital injections)</li>
-          <li><strong>Payment</strong> — Money spent (supplier payments, utility bills, transport costs, salaries)</li>
-        </ul>
-        <p style="margin-top:6px;">Totals for receipts, payments, and current balance are shown below the table.</p>
+        <p><strong>Cashbook</strong> tracks all expenditure and costs. Each entry is recorded with a date, description, and amount. Running totals update automatically.</p>
       </div>
       <table class="data-table">
-        <thead><tr><th>Date</th><th>Description</th><th>Type</th><th>Amount (GH)</th><th>Running Balance</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Date</th><th>Description</th><th>Amount (GH)</th><th>Running Total</th><th>Actions</th></tr></thead>
         <tbody id="cashbook-tbody"></tbody>
       </table>
       <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="cashbook">Add Entry <i class="fa-solid fa-plus"></i></button></div>
       <div class="cashbook-summary" id="cashbook-summary-cards"></div>
+    </div>
+    <div id="acc-tab-salaries" class="tab-panel">
+      <div class="info-box" style="margin-bottom:14px;">
+        <p><strong>Salaries</strong> — Staff payment records on a weekly basis. Select a week to view or add payments.</p>
+      </div>
+      <div class="month-selector-bar" id="salary-week-bar" style="margin-bottom:14px;">
+        <label for="salary-week-select" style="font-weight:600;margin-right:8px;">Week:</label>
+        <select id="salary-week-select" class="form-control" style="max-width:300px;"></select>
+        <span style="margin-left:8px;color:#64748b;font-size:0.85rem;" id="salary-week-range"></span>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Date Paid</th><th>Employee</th><th>Week</th><th>Amount (GH)</th><th>Notes</th><th>Actions</th></tr></thead>
+        <tbody id="salaries-tbody"></tbody>
+      </table>
+      <div id="salaries-summary-cards" style="margin-top:14px;"></div>
+      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="salary">Add Salary <i class="fa-solid fa-plus"></i></button></div>
     </div>
     <div id="acc-tab-summary" class="tab-panel">
       <div class="info-box" style="margin-bottom:14px;">

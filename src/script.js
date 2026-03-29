@@ -162,7 +162,7 @@ function renderDashboardCharts(revenueData, dailySales) {
 	}
 
 	window.__dashRevCostChart = new Chart(revCtx, {
-		type: 'line',
+		type: 'bar',
 		data: {
 			labels: revenueData.map((d) => d.month),
 			datasets: [
@@ -170,21 +170,17 @@ function renderDashboardCharts(revenueData, dailySales) {
 					label: 'Revenue',
 					data: revenueData.map((d) => d.revenue),
 					borderColor: '#16a34a',
-					backgroundColor: 'rgba(22,163,74,0.12)',
-					tension: 0.35,
-					pointRadius: 3,
-					pointHoverRadius: 5,
-					fill: true,
+					backgroundColor: 'rgba(22,163,74,0.7)',
+					borderWidth: 1,
+					borderRadius: 6,
 				},
 				{
 					label: 'Costs',
 					data: revenueData.map((d) => d.cost),
 					borderColor: '#f59e0b',
-					backgroundColor: 'rgba(245,158,11,0.1)',
-					tension: 0.35,
-					pointRadius: 3,
-					pointHoverRadius: 5,
-					fill: true,
+					backgroundColor: 'rgba(245,158,11,0.7)',
+					borderWidth: 1,
+					borderRadius: 6,
 				},
 			],
 		},
@@ -242,6 +238,99 @@ function renderDashboardCharts(revenueData, dailySales) {
 					ticks: {
 						callback: (value) => formatNumber(value),
 					},
+				},
+			},
+		},
+	});
+}
+
+function renderProfitLossChart(revenueData) {
+	const plContainer = document.getElementById('chart-profit-loss');
+	const plSummary = document.getElementById('dash-pl-summary');
+	if (!plContainer) return;
+
+	const totalRevenue = revenueData.reduce((s, d) => s + d.revenue, 0);
+	const totalCost = revenueData.reduce((s, d) => s + d.cost, 0);
+	const totalPL = totalRevenue - totalCost;
+	const plClass = totalPL >= 0 ? 'color:#22c55e' : 'color:#ef4444';
+
+	if (plSummary) {
+		plSummary.innerHTML = `
+			<div style="display:flex;flex-direction:column;gap:14px;padding:10px 0;">
+				<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#f0fdf4;border-radius:10px;">
+					<span style="font-weight:600;color:#334155;">Total Revenue</span>
+					<span style="font-weight:700;color:#16a34a;font-size:1.15rem;">${formatCurrency(totalRevenue)}</span>
+				</div>
+				<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#fef3c7;border-radius:10px;">
+					<span style="font-weight:600;color:#334155;">Total Costs</span>
+					<span style="font-weight:700;color:#d97706;font-size:1.15rem;">${formatCurrency(totalCost)}</span>
+				</div>
+				<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:${totalPL >= 0 ? '#f0fdf4' : '#fef2f2'};border-radius:10px;border:2px solid ${totalPL >= 0 ? '#22c55e' : '#ef4444'};">
+					<span style="font-weight:700;color:#0f172a;font-size:1.05rem;">${totalPL >= 0 ? 'Net Profit' : 'Net Loss'}</span>
+					<span style="font-weight:800;${plClass};font-size:1.3rem;">${formatCurrency(Math.abs(totalPL))}</span>
+				</div>
+				<div style="font-size:12px;color:#64748b;text-align:center;">Margin: ${totalRevenue > 0 ? ((totalPL / totalRevenue) * 100).toFixed(1) : '0.0'}%</div>
+			</div>
+		`;
+	}
+
+	if (typeof Chart === 'undefined') {
+		// Fallback: simple bar rendering
+		const maxAbs = Math.max(...revenueData.map((d) => Math.abs(d.profitLoss)), 1);
+		plContainer.innerHTML = revenueData.map((row) => {
+			const isProfit = row.profitLoss >= 0;
+			const pct = (Math.abs(row.profitLoss) / maxAbs) * 100;
+			const color = isProfit ? '#22c55e' : '#ef4444';
+			return `
+				<div style="margin-bottom:8px;padding:6px 8px;border-radius:8px;">
+					<div style="display:flex;justify-content:space-between;font-size:12px;color:#334155;margin-bottom:4px;"><strong>${row.month}</strong><span style="color:${color};font-weight:600;">${isProfit ? '+' : ''}${formatCurrency(row.profitLoss)}</span></div>
+					<div style="height:8px;background:#e2e8f0;border-radius:999px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${color};border-radius:999px;"></div></div>
+				</div>
+			`;
+		}).join('');
+		return;
+	}
+
+	plContainer.innerHTML = '<canvas id="pl-canvas" aria-label="Profit and Loss chart"></canvas>';
+	const plCtx = document.getElementById('pl-canvas');
+	if (!plCtx) return;
+
+	if (window.__dashPLChart) window.__dashPLChart.destroy();
+
+	const plValues = revenueData.map((d) => d.profitLoss);
+	const barColors = plValues.map((v) => v >= 0 ? 'rgba(34,197,94,0.75)' : 'rgba(239,68,68,0.75)');
+	const borderColors = plValues.map((v) => v >= 0 ? '#16a34a' : '#dc2626');
+
+	window.__dashPLChart = new Chart(plCtx, {
+		type: 'bar',
+		data: {
+			labels: revenueData.map((d) => d.month),
+			datasets: [{
+				label: 'Profit / Loss',
+				data: plValues,
+				backgroundColor: barColors,
+				borderColor: borderColors,
+				borderWidth: 1,
+				borderRadius: 6,
+			}],
+		},
+		options: {
+			responsive: true,
+			maintainAspectRatio: false,
+			plugins: {
+				legend: { display: false },
+				tooltip: {
+					callbacks: {
+						label: (ctx) => {
+							const v = ctx.parsed.y;
+							return `${v >= 0 ? 'Profit' : 'Loss'}: ${formatCurrency(Math.abs(v))}`;
+						},
+					},
+				},
+			},
+			scales: {
+				y: {
+					ticks: { callback: (value) => formatCurrency(value) },
 				},
 			},
 		},
@@ -686,6 +775,12 @@ function loadFinishedProductsFromStorage() {
 function saveFinishedProductsToStorage(products) {
 	localStorage.setItem('ww_finished_products', JSON.stringify(products));
 	rebuildDailyProductionLog(products);
+	// Broadcast instantly to any open inventory/dashboard tab
+	try {
+		const bc = new BroadcastChannel('ww_finished_products_sync');
+		bc.postMessage({ type: 'finished_products_updated' });
+		bc.close();
+	} catch (_e) { /* BroadcastChannel not supported — storage event is the fallback */ }
 }
 
 function rebuildDailyProductionLog(products) {
@@ -789,44 +884,58 @@ function initDashboardPage() {
 		return;
 	}
 
-	// ── Build revenue/cost chart from real sales + production data ──
+	// ── Build revenue/cost chart from sales + production + accounting data ──
 	const buildRevenueData = () => {
-		const salesData = JSON.parse(localStorage.getItem('ww_sales_data') || '{"invoices":[],"salesOrders":[]}');
+		const salesData = getAllSalesData();
 		const batches = JSON.parse(localStorage.getItem('ww_production_batches') || '[]');
 		const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 		const byMonth = {};
+		const ensureMonth = (key) => { if (!byMonth[key]) byMonth[key] = { revenue: 0, cost: 0 }; };
 
+		// Revenue from invoices (amount field — includes all order types)
 		for (const inv of salesData.invoices) {
 			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
 			const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
-			if (!byMonth[key]) byMonth[key] = { revenue: 0, cost: 0 };
-			byMonth[key].revenue += (inv.items || []).reduce((s, it) => s + (it.qty * it.unitPrice), 0);
+			ensureMonth(key);
+			byMonth[key].revenue += Number(inv.amount) || 0;
 		}
-		for (const ord of salesData.salesOrders) {
-			const d = new Date(ord.orderDate);
-			if (isNaN(d)) continue;
-			const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
-			if (!byMonth[key]) byMonth[key] = { revenue: 0, cost: 0 };
-			byMonth[key].revenue += Number(ord.amount) || 0;
-		}
+		// (Sales orders mirror invoices — skip to avoid double-counting)
+		// Production batch costs
 		for (const b of batches) {
 			const d = new Date(b.date);
 			if (isNaN(d)) continue;
 			const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
-			if (!byMonth[key]) byMonth[key] = { revenue: 0, cost: 0 };
+			ensureMonth(key);
 			byMonth[key].cost += Number(b.cost) || 0;
 		}
+		// Accounting ledger expenses (operational costs, salaries mirrored to ledger)
+		let acctData;
+		try { acctData = JSON.parse(localStorage.getItem('ww_accounting_data_v2') || 'null'); } catch (_) { acctData = null; }
+		if (acctData) {
+			const expenseAccounts = ['Transport', 'Production', 'Maintenance', 'Utilities', 'Administration', 'Marketing', 'Salaries', 'Salaries & Wages'];
+			for (const entry of (acctData.ledger || [])) {
+				if (!expenseAccounts.includes(entry.account)) continue;
+				const d = new Date(entry.date);
+				if (isNaN(d)) continue;
+				const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
+				ensureMonth(key);
+				byMonth[key].cost += Number(entry.debit || entry.amount) || 0;
+			}
+		}
 
-		return Object.keys(byMonth).sort().slice(-6).map((key) => {
+		const keys = Object.keys(byMonth).sort();
+		const limit = keys.length <= 1 ? 1 : keys.length <= 3 ? 3 : keys.length <= 6 ? 6 : 12;
+		return keys.slice(-limit).map((key) => {
 			const mIdx = parseInt(key.split('-')[1], 10);
-			return { month: monthNames[mIdx], revenue: byMonth[key].revenue, cost: byMonth[key].cost };
+			const pl = byMonth[key].revenue - byMonth[key].cost;
+			return { month: monthNames[mIdx], revenue: byMonth[key].revenue, cost: byMonth[key].cost, profitLoss: pl };
 		});
 	};
 
 	// ── Build daily sales from last 7 days of sales data ──
 	const buildDailySales = () => {
-		const salesData = JSON.parse(localStorage.getItem('ww_sales_data') || '{"invoices":[],"salesOrders":[]}');
+		const salesData = getAllSalesData();
 		const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 		const now = new Date();
 		const buckets = {};
@@ -855,13 +964,13 @@ function initDashboardPage() {
 		return Object.values(buckets);
 	};
 
-	// ── Count unique active customers from sales data ──
+	// ── Count active customers (appearing more than 5 times) from sales data ──
 	const countActiveCustomers = () => {
-		const salesData = JSON.parse(localStorage.getItem('ww_sales_data') || '{"invoices":[],"salesOrders":[]}');
-		const names = new Set();
-		salesData.invoices.forEach((inv) => { if (inv.customer) names.add(inv.customer.toLowerCase().trim()); });
-		salesData.salesOrders.forEach((ord) => { if (ord.customer) names.add(ord.customer.toLowerCase().trim()); });
-		return names.size;
+		const salesData = getAllSalesData();
+		const counts = {};
+		salesData.invoices.forEach((inv) => { if (inv.customer) { const k = inv.customer.toLowerCase().trim(); counts[k] = (counts[k] || 0) + 1; } });
+		salesData.salesOrders.forEach((ord) => { if (ord.customer) { const k = ord.customer.toLowerCase().trim(); counts[k] = (counts[k] || 0) + 1; } });
+		return Object.values(counts).filter((c) => c > 5).length;
 	};
 
 	let equipmentStatus = loadEquipmentFromStorage();
@@ -1031,7 +1140,9 @@ function initDashboardPage() {
 
 	renderDashboardLiveSummary();
 
-	renderDashboardCharts(buildRevenueData(), buildDailySales());
+	const revData = buildRevenueData();
+	renderDashboardCharts(revData, buildDailySales());
+	renderProfitLossChart(revData);
 
 	const equipmentPanel = document.getElementById('dash-equipment-panel');
 	const equipmentContent = document.getElementById('dash-equipment-content');
@@ -1132,13 +1243,26 @@ function initDashboardPage() {
 
 		// Cross-tab: localStorage storage event
 		window.addEventListener('storage', (event) => {
-			const dashKeys = ['ww_raw_materials', 'ww_daily_production', 'ww_equipment', 'ww_sales_data', 'ww_production_batches'];
-			if (dashKeys.includes(event.key)) {
+			const dashKeys = ['ww_raw_materials', 'ww_daily_production', 'ww_equipment', 'ww_production_batches', 'ww_accounting_data_v2', 'ww_purchase_data_v2'];
+			if (dashKeys.includes(event.key) || (event.key && event.key.startsWith('ww_sales_'))) {
+				const rd = buildRevenueData();
 				renderDashboardLiveSummary();
 				renderDashboardEquipmentStatus();
-				renderDashboardCharts(buildRevenueData(), buildDailySales());
+				renderDashboardCharts(rd, buildDailySales());
+				renderProfitLossChart(rd);
 			}
 		});
+
+		// Instant cross-tab via BroadcastChannel for sales updates
+		try {
+			const salesDashChannel = new BroadcastChannel('ww_sales_sync');
+			salesDashChannel.onmessage = () => {
+				const rd = buildRevenueData();
+				renderDashboardLiveSummary();
+				renderDashboardCharts(rd, buildDailySales());
+				renderProfitLossChart(rd);
+			};
+		} catch (_e) { /* ignore */ }
 
 		// Instant cross-tab via BroadcastChannel (fires the moment inventory saves)
 		try {
@@ -1160,6 +1284,28 @@ function initDashboardPage() {
 			};
 			window.__wwRawChannel = rawChannel;
 		} catch (_e) { /* fallback to storage event */ }
+
+		// Instant cross-tab: accounting changes
+		try {
+			const acctChannel = new BroadcastChannel('ww_accounting_sync');
+			acctChannel.onmessage = () => {
+				const rd = buildRevenueData();
+				renderDashboardLiveSummary();
+				renderDashboardCharts(rd, buildDailySales());
+				renderProfitLossChart(rd);
+			};
+		} catch (_e) { /* fallback to storage event */ }
+
+		// Instant cross-tab: purchase changes
+		try {
+			const purchChannel = new BroadcastChannel('ww_purchase_sync');
+			purchChannel.onmessage = () => {
+				const rd = buildRevenueData();
+				renderDashboardLiveSummary();
+				renderDashboardCharts(rd, buildDailySales());
+				renderProfitLossChart(rd);
+			};
+		} catch (_e) { /* fallback to storage event */ }
 	}
 
 	// Fallback poll every 3 s (same-tab or unsupported browsers)
@@ -1167,9 +1313,11 @@ function initDashboardPage() {
 		clearInterval(window.__wwDashboardLiveTimer);
 	}
 	window.__wwDashboardLiveTimer = setInterval(() => {
+		const rd = buildRevenueData();
 		renderDashboardLiveSummary();
 		renderDashboardEquipmentStatus();
-		renderDashboardCharts(buildRevenueData(), buildDailySales());
+		renderDashboardCharts(rd, buildDailySales());
+		renderProfitLossChart(rd);
 	}, 3000);
 }
 
@@ -1677,6 +1825,24 @@ async function initInventoryPage() {
 			}
 		});
 	}
+
+	/* ── Cross-tab sync: refresh inventory when another tab changes data ── */
+	const reloadAndRerender = () => {
+		rawMaterials = loadRawMaterialsFromStorage();
+		finishedProducts = loadFinishedProductsFromStorage();
+		equipment = loadEquipmentFromStorage();
+		rerenderInventory();
+	};
+	window.addEventListener('storage', (e) => {
+		if (['ww_raw_materials', 'ww_finished_products', 'ww_equipment'].includes(e.key)) {
+			reloadAndRerender();
+		}
+	});
+	try {
+		new BroadcastChannel('ww_raw_materials_sync').onmessage = reloadAndRerender;
+		new BroadcastChannel('ww_finished_products_sync').onmessage = reloadAndRerender;
+		new BroadcastChannel('ww_equipment_sync').onmessage = reloadAndRerender;
+	} catch (_e) { /* BroadcastChannel not supported */ }
 }
 
 const salesModuleData = {
@@ -1684,18 +1850,303 @@ const salesModuleData = {
 	salesOrders: [],
 };
 
+/* ── Monthly storage helpers ── */
+const MONTHS_KEY = 'ww_sales_months';
+let currentSalesMonth = '';
+
+function getSalesMonths() {
+	try { return JSON.parse(localStorage.getItem(MONTHS_KEY) || '[]'); } catch (_e) { return []; }
+}
+
+function saveSalesMonths(months) {
+	localStorage.setItem(MONTHS_KEY, JSON.stringify(months));
+}
+
+function monthStorageKey(month) {
+	return `ww_sales_${month}`;
+}
+
+function monthLabel(month) {
+	const [y, m] = month.split('-');
+	const names = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
+	return `${names[parseInt(m, 10)] || m} ${y}`;
+}
+
+/** Aggregate invoices + salesOrders across ALL months (used by Dashboard, Reports, etc.) */
+function getAllSalesData() {
+	const months = getSalesMonths();
+	const allInvoices = [];
+	const allOrders = [];
+	for (const m of months) {
+		try {
+			const stored = JSON.parse(localStorage.getItem(monthStorageKey(m)) || 'null');
+			if (stored && typeof stored === 'object') {
+				if (Array.isArray(stored.invoices)) allInvoices.push(...stored.invoices);
+				if (Array.isArray(stored.salesOrders)) allOrders.push(...stored.salesOrders);
+			}
+		} catch (_e) { /* skip */ }
+	}
+	return { invoices: allInvoices, salesOrders: allOrders };
+}
+
+function ensureMonthExists(month) {
+	const months = getSalesMonths();
+	if (!months.includes(month)) {
+		months.push(month);
+		months.sort();
+		saveSalesMonths(months);
+	}
+}
+
 function loadSalesDataFromStorage() {
+	/* Clean up any old key */
+	try { localStorage.removeItem('ww_sales_data'); } catch(_e) {}
+
+	/* Ensure March 2026 month exists */
+	ensureMonthExists('2026-03');
+
+	/* Seed March if it has no data yet */
+	const marchKey = monthStorageKey('2026-03');
+	let marchData = null;
+	try { marchData = JSON.parse(localStorage.getItem(marchKey)); } catch(_e) {}
+	if (!marchData || !marchData.invoices || marchData.invoices.length === 0) {
+		currentSalesMonth = '2026-03';
+		salesModuleData.invoices = [];
+		salesModuleData.salesOrders = [];
+		seedMarchSalesData();
+		return; /* seedMarchSalesData calls saveSalesDataToStorage, data is already in salesModuleData */
+	}
+
+	/* Pick the month to display */
+	if (!currentSalesMonth) {
+		const now = new Date();
+		const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+		const allMonths = getSalesMonths();
+		currentSalesMonth = allMonths.includes(thisMonth) ? thisMonth : (allMonths[allMonths.length - 1] || '2026-03');
+	}
+
+	loadMonthData(currentSalesMonth);
+}
+
+function loadMonthData(month) {
+	currentSalesMonth = month;
+	salesModuleData.invoices = [];
+	salesModuleData.salesOrders = [];
 	try {
-		const stored = JSON.parse(localStorage.getItem('ww_sales_data') || 'null');
+		const stored = JSON.parse(localStorage.getItem(monthStorageKey(month)) || 'null');
 		if (stored && typeof stored === 'object') {
 			salesModuleData.invoices = Array.isArray(stored.invoices) ? stored.invoices : [];
 			salesModuleData.salesOrders = Array.isArray(stored.salesOrders) ? stored.salesOrders : [];
 		}
 	} catch (_e) { /* ignore */ }
+
+	/* ── one-time sync: ensure invoices ↔ salesOrders are mirrored ── */
+	let dirty = false;
+	const soMap = {};
+	salesModuleData.salesOrders.forEach(o => { soMap[o.id] = o; });
+	const invMap = {};
+	salesModuleData.invoices.forEach(v => { invMap[v.id] = v; });
+
+	// For every invoice, create or update matching SO
+	salesModuleData.invoices.forEach(inv => {
+		const soId = 'SO' + inv.id.slice(3); // INV-2026-040 → SO-2026-040
+		if (!soMap[soId]) {
+			// create missing SO
+			const so = {
+				id: soId,
+				customer: inv.customer,
+				orderDate: inv.date || inv.orderDate,
+				deliveryDate: inv.date || inv.orderDate,
+				amount: inv.amount,
+				status: inv.status,
+				bags: inv.bags,
+				rate: inv.rate,
+				promo: inv.promo,
+				promoNote: inv.promoNote || '',
+				paymentMode: inv.paymentMode || '',
+				paidDate: inv.paidDate || '',
+				items: JSON.parse(JSON.stringify(inv.items || []))
+			};
+			salesModuleData.salesOrders.push(so);
+			soMap[soId] = so;
+			dirty = true;
+		} else {
+			// update existing SO to match invoice
+			const so = soMap[soId];
+			so.customer = inv.customer;
+			so.orderDate = inv.date || inv.orderDate;
+			so.deliveryDate = inv.date || inv.orderDate;
+			so.amount = inv.amount;
+			so.status = inv.status;
+			so.bags = inv.bags;
+			so.rate = inv.rate;
+			so.promo = inv.promo;
+			so.promoNote = inv.promoNote || '';
+			so.paymentMode = inv.paymentMode || '';
+			so.paidDate = inv.paidDate || '';
+			so.items = JSON.parse(JSON.stringify(inv.items || []));
+			dirty = true;
+		}
+	});
+
+	// For every SO without a matching invoice, create one
+	salesModuleData.salesOrders.forEach(so => {
+		const invId = 'INV' + so.id.slice(2); // SO-2026-040 → INV-2026-040
+		if (!invMap[invId]) {
+			const inv = {
+				id: invId,
+				customer: so.customer,
+				date: so.orderDate || so.deliveryDate,
+				amount: so.amount,
+				status: so.status,
+				bags: so.bags,
+				rate: so.rate,
+				promo: so.promo,
+				promoNote: so.promoNote || '',
+				paymentMode: so.paymentMode || '',
+				paidDate: so.paidDate || '',
+				items: JSON.parse(JSON.stringify(so.items || []))
+			};
+			salesModuleData.invoices.push(inv);
+			invMap[invId] = inv;
+			dirty = true;
+		}
+	});
+
+	if (dirty) saveSalesDataToStorage();
+}
+
+function seedMarchSalesData() {
+	const rows = [
+		// 16/03/26
+		{ d:'2026-03-16', c:'Mon (driver)', b:60, r:7.5, a:450, s:'paid' },
+		{ d:'2026-03-16', c:'Mon (driver)', b:15, r:7.5, a:113, s:'pending' },
+		{ d:'2026-03-16', c:'Charlotte', b:950, r:6, a:5700, s:'pending' },
+		{ d:'2026-03-16', c:'JMK', b:745, r:0, a:1500, s:'paid' },
+		// 17/03/26
+		{ d:'2026-03-17', c:'Client', b:1, r:7.5, a:7.50, s:'pending' },
+		{ d:'2026-03-17', c:'Charlotte', b:500, r:6, a:3000, s:'pending', pr:20 },
+		{ d:'2026-03-17', c:'Musa', b:250, r:6.5, a:1500, s:'pending', pr:12 },
+		{ d:'2026-03-17', c:'Flarc', b:15, r:0, a:112.50, s:'paid' },
+		{ d:'2026-03-17', c:'Chef', b:3, r:7.5, a:22.50, s:'pending' },
+		{ d:'2026-03-17', c:'Charlotte / Stzpr', b:250, r:0, a:4500, s:'pending', pr:8 },
+		{ d:'2026-03-17', c:'Aboboyaa', b:110, r:0, a:660, s:'pending', pr:4 },
+		// 18/03/26
+		{ d:'2026-03-18', c:'Michael Defadu', b:80, r:7, a:560, s:'pending' },
+		{ d:'2026-03-18', c:'Michael Defadu', b:50, r:7.5, a:365, s:'pending' },
+		{ d:'2026-03-18', c:'Charlotte', b:500, r:6, a:2520, s:'paid', pr:20 },
+		{ d:'2026-03-18', c:'Aboboyaa', b:110, r:6, a:660, s:'paid' },
+		{ d:'2026-03-18', c:'Aboboyaa', b:110, r:6, a:660, s:'paid', pr:4 },
+		{ d:'2026-03-18', c:'Ismael', b:25, r:7.5, a:187.50, s:'paid', p:'Momo + Cash' },
+		// 19/03/26
+		{ d:'2026-03-19', c:'Michael Dafadu', b:80, r:7, a:560, s:'paid' },
+		{ d:'2026-03-19', c:'Charlotte', b:300, r:6, a:1800, s:'paid', pr:11 },
+		{ d:'2026-03-19', c:'Aboboyaa', b:120, r:6, a:720, s:'paid', pr:4 },
+		{ d:'2026-03-19', c:'Aboboyaa', b:110, r:6, a:660, s:'paid', pr:4 },
+		{ d:'2026-03-19', c:'Individual', b:5, r:7, a:35, s:'paid' },
+		// 20/03/26
+		{ d:'2026-03-20', c:'Kia', b:50, r:6, a:300, s:'paid' },
+		{ d:'2026-03-20', c:'Charlotte', b:500, r:6, a:3000, s:'pending' },
+		{ d:'2026-03-20', c:'Michael Dze', b:50, r:7.5, a:375, s:'paid', p:'Cash + Momo' },
+		{ d:'2026-03-20', c:'Carida', b:16, r:7.5, a:120, s:'paid' },
+		// 21/03/26
+		{ d:'2026-03-21', c:'Charlotte', b:500, r:6, a:3000, s:'paid', pr:208 },
+		{ d:'2026-03-21', c:'Dafadu', b:20, r:7.5, a:150, s:'paid' },
+		{ d:'2026-03-21', c:'Dzepedu', b:4, r:7.5, a:30, s:'paid' },
+		{ d:'2026-03-21', c:'Kukua', b:6, r:6, a:36, s:'paid' },
+		{ d:'2026-03-21', c:'Christpha', b:2, r:6, a:12, s:'paid' },
+		{ d:'2026-03-21', c:'Dzepedu', b:20, r:7.5, a:150, s:'paid' },
+		{ d:'2026-03-21', c:'Individual', b:110, r:6, a:660, s:'pending' },
+		// 23/03/26
+		{ d:'2026-03-23', c:'Charlotte', b:350, r:6, a:2100, s:'pending', pr:14 },
+		{ d:'2026-03-23', c:'Charlotte', b:134, r:6, a:804, s:'pending', pr:10 },
+		{ d:'2026-03-23', c:'Aboboyaa', b:40, r:6, a:240, s:'pending', pr:1 },
+		{ d:'2026-03-23', c:'Apostle Dab', b:20, r:7.5, a:150, s:'pending' },
+		{ d:'2026-03-23', c:'Individual', b:5, r:7.5, a:37.50, s:'pending' },
+		// 24/03/26
+		{ d:'2026-03-24', c:'Charlotte', b:350, r:6, a:2100, s:'paid', pr:14 },
+		{ d:'2026-03-24', c:'Charlotte', b:100, r:6, a:2400, s:'pending', pr:16 },
+		{ d:'2026-03-24', c:'Boyit', b:7, r:6, a:42, s:'pending' },
+		{ d:'2026-03-24', c:'Aboboyaa', b:110, r:6, a:660, s:'paid', p:'Momo', pr:6 },
+		{ d:'2026-03-24', c:'Individual', b:20, r:7, a:140, s:'paid' },
+		// 25/03/26
+		{ d:'2026-03-25', c:'Charlotte', b:400, r:6, a:2400, s:'pending', pr:16 },
+		{ d:'2026-03-25', c:'Dafadu', b:70, r:7.5, a:525, s:'pending' },
+		{ d:'2026-03-25', c:'Dagadu', b:100, r:7.5, a:750, s:'pending', p:'Cash + Momo' },
+		{ d:'2026-03-25', c:'Client (walk-in)', b:20, r:7.5, a:150, s:'pending' },
+		{ d:'2026-03-25', c:'Client', b:10, r:7.5, a:75, s:'pending' },
+		{ d:'2026-03-25', c:'Walk-in', b:1, r:6, a:6, s:'pending' },
+		{ d:'2026-03-25', c:'Charlotte', b:400, r:6, a:2400, s:'paid', pr:16 },
+		{ d:'2026-03-25', c:'Dafadu', b:70, r:7.5, a:525, s:'pending' },
+		{ d:'2026-03-25', c:'Dafadu', b:50, r:7.5, a:375, s:'pending' },
+		// 26/03/26
+		{ d:'2026-03-26', c:'Grace MTN (Eve)', b:20, r:7.5, a:150, s:'pending' },
+		{ d:'2026-03-26', c:'Charlotte', b:400, r:6, a:2400, s:'pending', pr:16 },
+		{ d:'2026-03-26', c:'Walk-in', b:4, r:6, a:24, s:'pending' },
+		{ d:'2026-03-26', c:'Walk-in', b:4, r:6, a:24, s:'pending' },
+		{ d:'2026-03-26', c:'Madam Mamuko / Apmpzn Mofe Dztlts', b:100, r:7.5, a:750, s:'paid', p:'Momo', pr:4 },
+		{ d:'2026-03-26', c:'Walk-in (Delney)', b:3, r:7.5, a:22.50, s:'paid', p:'Momo' },
+		{ d:'2026-03-26', c:'Michael', b:50, r:7, a:250, s:'pending' },
+		{ d:'2026-03-26', c:'Aboboyaa', b:100, r:6, a:600, s:'pending', pr:6 },
+		{ d:'2026-03-26', c:'Walk-in', b:4, r:6, a:24, s:'pending' },
+		// 27/03/26
+		{ d:'2026-03-27', c:'Charlotte', b:450, r:6, a:2700, s:'pending' },
+		{ d:'2026-03-27', c:'Walk-in', b:4, r:6, a:24, s:'paid', p:'Momo' },
+		{ d:'2026-03-27', c:'Walk-in', b:7, r:6, a:42, s:'pending' },
+		{ d:'2026-03-27', c:'Client', b:15, r:7.5, a:112.50, s:'pending' },
+		{ d:'2026-03-27', c:'Laulas', b:8, r:6, a:0, s:'pending' },
+		{ d:'2026-03-27', c:'Charlotte', b:350, r:6, a:2000, s:'pending' },
+		{ d:'2026-03-27', c:'Aboboyaa', b:100, r:6, a:600, s:'pending' },
+		// 28/03/26
+		{ d:'2026-03-28', c:'Charlotte', b:450, r:6, a:2700, s:'pending', pr:16 },
+		{ d:'2026-03-28', c:'Amos', b:100, r:7, a:700, s:'pending', pr:16 },
+		{ d:'2026-03-28', c:'Aboboyaa', b:110, r:6, a:660, s:'pending', pr:6 },
+		{ d:'2026-03-28', c:'Aboboyaa', b:100, r:6, a:600, s:'pending', pr:6 },
+		{ d:'2026-03-28', c:'Walk-in', b:3, r:6, a:18, s:'pending' },
+		{ d:'2026-03-28', c:'Walk-in', b:10, r:6, a:60, s:'pending' },
+		{ d:'2026-03-28', c:'Walk-in', b:6, r:7, a:40, s:'pending' },
+		{ d:'2026-03-28', c:'Carida Okadaahu', b:10, r:7.5, a:75, s:'pending' },
+		{ d:'2026-03-28', c:'Charlotte', b:375, r:6, a:2250, s:'pending', pr:14 },
+		{ d:'2026-03-28', c:'Aboboyaa', b:110, r:6, a:660, s:'pending' },
+		{ d:'2026-03-28', c:'Aboboyaa', b:100, r:6, a:600, s:'pending' },
+		{ d:'2026-03-28', c:'Walk-in / Police', b:6, r:5, a:30, s:'pending' },
+		{ d:'2026-03-28', c:'Daapaadu', b:47, r:7.5, a:352.50, s:'pending' },
+		{ d:'2026-03-28', c:'Amos', b:7, r:7.5, a:42, s:'pending' },
+		{ d:'2026-03-28', c:'Amos', b:44, r:7, a:208, s:'pending' },
+		{ d:'2026-03-28', c:'Aboboyaa', b:100, r:6, a:600, s:'pending', pr:6 },
+		{ d:'2026-03-28', c:'Walk-in', b:10, r:7.5, a:75, s:'pending' },
+		{ d:'2026-03-28', c:'Walk-in', b:6, r:6, a:36, s:'pending' },
+		{ d:'2026-03-28', c:'Walk-in', b:1, r:6, a:6, s:'pending' },
+	];
+	const product = '500ml Sachet Water (500 pcs/bag)';
+	rows.forEach((r, i) => {
+		const idx = String(i + 1).padStart(3, '0');
+		const rate = r.r > 0 ? r.r : (r.b > 0 ? +(r.a / r.b).toFixed(2) : 0);
+		const promo = r.pr !== undefined ? r.pr : (r.b > 100 ? Math.floor(r.b / 100) * 4 : 0);
+		salesModuleData.invoices.push({
+			id: `INV-2026-${idx}`, customer: r.c, product,
+			date: r.d, paidDate: r.s === 'paid' ? r.d : '', status: r.s, amount: r.a, rate,
+			paymentMode: r.p || '', promo,
+			items: [{ name: product, qty: r.b, unitPrice: rate }],
+			deliveryFee: 0,
+		});
+		salesModuleData.salesOrders.push({
+			id: `SO-2026-${idx}`, customer: r.c,
+			orderDate: r.d, deliveryDate: r.d,
+			amount: r.a, bags: r.b, rate, paymentMode: r.p || '', promo,
+			status: r.s === 'paid' ? 'delivered' : 'pending',
+		});
+	});
+	saveSalesDataToStorage();
 }
 
 function saveSalesDataToStorage() {
-	localStorage.setItem('ww_sales_data', JSON.stringify(salesModuleData));
+	localStorage.setItem(monthStorageKey(currentSalesMonth), JSON.stringify(salesModuleData));
+	// Notify other tabs instantly
+	try {
+		if (!window.__wwSalesChannel) window.__wwSalesChannel = new BroadcastChannel('ww_sales_sync');
+		window.__wwSalesChannel.postMessage({ type: 'sales_updated', month: currentSalesMonth });
+	} catch (_e) { /* fallback to storage event */ }
 }
 
 function nextInvoiceId() {
@@ -1773,7 +2224,7 @@ function renderInvoiceDetail(invoice) {
 				<div class="inv-doc-numbers">
 					<div class="inv-doc-num-row"><span>Invoice no:</span><strong>${invNo}</strong></div>
 					<div class="inv-doc-num-row"><span>Date:</span><strong>${fmtDate(invoice.date)}</strong></div>
-					<div class="inv-doc-num-row"><span>Due date:</span><strong>${fmtDate(invoice.dueDate)}</strong></div>
+					<div class="inv-doc-num-row"><span>Paid date:</span><strong>${invoice.paidDate ? fmtDate(invoice.paidDate) : '—'}</strong></div>
 				</div>
 			</div>
 
@@ -1866,6 +2317,7 @@ function renderInvoiceDetail(invoice) {
 }
 
 async function initSalesInvoicesPage() {
+  try {
 	const page = document.body.getAttribute('data-page');
 	if (page !== 'invoices' && page !== 'sales') {
 		return;
@@ -1875,6 +2327,70 @@ async function initSalesInvoicesPage() {
 	const isApprover = canEditDelete(userRole);
 
 	loadSalesDataFromStorage();
+	console.log('[Sales] Loaded month:', currentSalesMonth, '| Invoices:', salesModuleData.invoices.length, '| Orders:', salesModuleData.salesOrders.length);
+
+	/* ── Cross-tab live sync ── */
+	if (!window.__wwSalesSyncBound) {
+		window.__wwSalesSyncBound = true;
+		// BroadcastChannel (instant, same origin)
+		try {
+			if (!window.__wwSalesChannel) window.__wwSalesChannel = new BroadcastChannel('ww_sales_sync');
+			window.__wwSalesChannel.onmessage = (e) => {
+				if (e.data && e.data.type === 'sales_updated') {
+					loadMonthData(currentSalesMonth);
+					renderSalesPage();
+				}
+			};
+		} catch (_e) { /* ignore */ }
+		// Fallback: storage event (fires when another tab writes localStorage)
+		window.addEventListener('storage', (event) => {
+			if (event.key && event.key.startsWith('ww_sales_')) {
+				loadMonthData(currentSalesMonth);
+				renderSalesPage();
+			}
+		});
+	}
+
+	/* ── Month selector setup ── */
+	const monthSelect = document.getElementById('sales-month-select');
+	const newMonthBtn = document.getElementById('new-month-btn');
+
+	function populateMonthSelect() {
+		if (!monthSelect) return;
+		const months = getSalesMonths();
+		monthSelect.innerHTML = months.map((m) =>
+			`<option value="${m}" ${m === currentSalesMonth ? 'selected' : ''}>${monthLabel(m)}</option>`
+		).join('');
+	}
+	populateMonthSelect();
+
+	if (monthSelect) {
+		monthSelect.addEventListener('change', () => {
+			loadMonthData(monthSelect.value);
+			renderSalesPage();
+		});
+	}
+
+	if (newMonthBtn) {
+		newMonthBtn.addEventListener('click', () => {
+			const input = prompt('Enter month (YYYY-MM):', (() => {
+				const d = new Date();
+				return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+			})());
+			if (!input || !/^\d{4}-\d{2}$/.test(input.trim())) return;
+			const month = input.trim();
+			const months = getSalesMonths();
+			if (months.includes(month)) {
+				loadMonthData(month);
+			} else {
+				ensureMonthExists(month);
+				loadMonthData(month);
+				saveSalesDataToStorage();
+			}
+			populateMonthSelect();
+			renderSalesPage();
+		});
+	}
 
 	const todayStr = getTodayDateStr();
 
@@ -1887,11 +2403,14 @@ async function initSalesInvoicesPage() {
 				{ id: 'phone', label: 'Telephone', type: 'text', placeholder: '000-000-0000' },
 				{ id: 'product', label: 'Product', type: 'text', required: true, placeholder: 'e.g. Mobile Water 500ml' },
 				{ id: 'qty', label: 'Quantity', type: 'number', min: '1', required: true },
+				{ id: 'promo', label: 'Promo', type: 'number', min: '0', defaultValue: '0' },
+				{ id: 'promoNote', label: 'Promo Note', type: 'text', placeholder: 'e.g. leakage, retained' },
 				{ id: 'unitPrice', label: 'Unit Price (GH)', type: 'number', min: '0', step: '0.01', required: true },
 				{ id: 'deliveryFee', label: 'Delivery Fee (GH)', type: 'number', min: '0', step: '0.01', defaultValue: '0' },
 				{ id: 'date', label: 'Invoice Date', type: 'date', defaultValue: todayStr, required: true },
-				{ id: 'dueDate', label: 'Due Date', type: 'date', required: true },
+				{ id: 'paidDate', label: 'Paid Date', type: 'date' },
 				{ id: 'status', label: 'Status', type: 'select', options: ['pending', 'paid', 'overdue'], required: true },
+				{ id: 'paymentMode', label: 'Payment Mode', type: 'select', options: ['', 'Cash', 'Momo', 'Cash + Momo'] },
 			],
 		},
 		order: {
@@ -1901,7 +2420,10 @@ async function initSalesInvoicesPage() {
 				{ id: 'orderDate', label: 'Order Date', type: 'date', defaultValue: todayStr, required: true },
 				{ id: 'deliveryDate', label: 'Delivery Date', type: 'date', required: true },
 				{ id: 'amount', label: 'Amount (GH)', type: 'number', min: '0', step: '0.01', required: true },
+				{ id: 'promo', label: 'Promo', type: 'number', min: '0', defaultValue: '0' },
+				{ id: 'promoNote', label: 'Promo Note', type: 'text', placeholder: 'e.g. leakage, retained' },
 				{ id: 'status', label: 'Status', type: 'select', options: ['confirmed', 'processing', 'shipped', 'delivered'], required: true },
+				{ id: 'paymentMode', label: 'Payment Mode', type: 'select', options: ['', 'Cash', 'Momo', 'Cash + Momo'] },
 			],
 		},
 	};
@@ -1968,10 +2490,13 @@ async function initSalesInvoicesPage() {
 					setVal('product', row.product || (row.items && row.items[0] ? row.items[0].name : ''));
 					setVal('qty', row.items && row.items[0] ? row.items[0].qty : 1);
 					setVal('unitPrice', row.items && row.items[0] ? row.items[0].unitPrice : row.amount);
+					setVal('promo', row.promo || 0);
+					setVal('promoNote', row.promoNote || '');
 					setVal('deliveryFee', row.deliveryFee || 0);
 					setVal('date', row.date);
-					setVal('dueDate', row.dueDate);
+					setVal('paidDate', row.paidDate);
 					setVal('status', row.status);
+					setVal('paymentMode', row.paymentMode);
 				}
 			} else if (entity === 'order') {
 				row = salesModuleData.salesOrders[editingSiIdx];
@@ -1981,11 +2506,23 @@ async function initSalesInvoicesPage() {
 					setVal('orderDate', row.orderDate);
 					setVal('deliveryDate', row.deliveryDate);
 					setVal('amount', row.amount);
+					setVal('promo', row.promo || 0);
+					setVal('promoNote', row.promoNote || '');
 					setVal('status', row.status);
+					setVal('paymentMode', row.paymentMode);
 				}
 			}
 		}
 		addModal.style.display = 'flex';
+		/* Auto-calculate promo when qty changes: 4 bags per 100 */
+		const qtyField = document.getElementById('si-field-qty');
+		const promoField = document.getElementById('si-field-promo');
+		if (qtyField && promoField) {
+			qtyField.addEventListener('input', () => {
+				const qty = parseInt(qtyField.value) || 0;
+				promoField.value = qty > 100 ? Math.floor(qty / 100) * 4 : 0;
+			});
+		}
 		const firstInput = modalFieldsEl && modalFieldsEl.querySelector('input, select');
 		if (firstInput) firstInput.focus();
 	};
@@ -2013,25 +2550,49 @@ async function initSalesInvoicesPage() {
 				const customer = getValue('customer');
 				const product = getValue('product');
 				if (!customer || !product) return;
+				const invDate = getValue('date') || todayStr;
 				const chosenStatus = getValue('status') || 'pending';
 				const invData = {
 					customer,
 					address: getValue('address'),
 					phone: getValue('phone'),
-					date: getValue('date') || todayStr,
-					dueDate: getValue('dueDate') || todayStr,
+					date: invDate,
+					paidDate: getValue('paidDate') || (chosenStatus === 'paid' ? invDate : ''),
 					status: isApprover ? chosenStatus : 'pending_approval',
 					requestedStatus: isApprover ? undefined : chosenStatus,
+					paymentMode: getValue('paymentMode'),
+					promo: getNum('promo'),
+					promoNote: getValue('promoNote'),
 					product,
 					items: [{ name: product, qty: getNum('qty') || 1, unitPrice: getNum('unitPrice') }],
 					deliveryFee: getNum('deliveryFee'),
 				};
+				invData.rate = invData.items[0].unitPrice;
 				invData.amount = invData.items[0].qty * invData.items[0].unitPrice;
 				if (editingSiIdx >= 0 && salesModuleData.invoices[editingSiIdx]) {
 					Object.assign(salesModuleData.invoices[editingSiIdx], invData);
+					/* Sync matching sales order */
+					const matchIdx = salesModuleData.salesOrders.findIndex((o) => o.id === 'SO' + salesModuleData.invoices[editingSiIdx].id.slice(3));
+					if (matchIdx >= 0) {
+						Object.assign(salesModuleData.salesOrders[matchIdx], {
+							customer: invData.customer, orderDate: invData.date, deliveryDate: invData.date,
+							amount: invData.amount, bags: invData.items[0].qty, rate: invData.rate,
+							paymentMode: invData.paymentMode, promo: invData.promo, promoNote: invData.promoNote,
+							status: invData.status === 'paid' ? 'delivered' : invData.status === 'overdue' ? 'overdue' : 'pending',
+						});
+					}
 				} else {
 					invData.id = nextInvoiceId();
 					salesModuleData.invoices.push(invData);
+					/* Auto-create matching sales order */
+					const soId = 'SO' + invData.id.slice(3);
+					salesModuleData.salesOrders.push({
+						id: soId, customer: invData.customer,
+						orderDate: invData.date, deliveryDate: invData.date,
+						amount: invData.amount, bags: invData.items[0].qty, rate: invData.rate,
+						paymentMode: invData.paymentMode, promo: invData.promo, promoNote: invData.promoNote,
+						status: invData.status === 'paid' ? 'delivered' : 'pending',
+					});
 				}
 				if (!isApprover) {
 					alert('Invoice saved as "Pending Approval". A Manager or CEO will review and approve it.');
@@ -2047,14 +2608,43 @@ async function initSalesInvoicesPage() {
 					orderDate: getValue('orderDate') || todayStr,
 					deliveryDate: getValue('deliveryDate') || todayStr,
 					amount: getNum('amount'),
+					promo: getNum('promo'),
+					promoNote: getValue('promoNote'),
+					paymentMode: getValue('paymentMode'),
 					status: isApprover ? chosenStatus : 'pending_approval',
 					requestedStatus: isApprover ? undefined : chosenStatus,
 				};
 				if (editingSiIdx >= 0 && salesModuleData.salesOrders[editingSiIdx]) {
 					Object.assign(salesModuleData.salesOrders[editingSiIdx], ordData);
+					/* Sync matching invoice */
+					const matchIdx = salesModuleData.invoices.findIndex((inv) => inv.id === 'INV' + salesModuleData.salesOrders[editingSiIdx].id.slice(2));
+					if (matchIdx >= 0) {
+						const inv = salesModuleData.invoices[matchIdx];
+						inv.customer = ordData.customer;
+						inv.date = ordData.orderDate;
+						inv.amount = ordData.amount;
+						inv.paymentMode = ordData.paymentMode;
+						inv.promo = ordData.promo;
+						inv.promoNote = ordData.promoNote;
+						inv.status = ordData.status === 'delivered' ? 'paid' : ordData.status === 'overdue' ? 'overdue' : 'pending';
+						inv.paidDate = inv.status === 'paid' ? inv.date : '';
+					}
 				} else {
 					ordData.id = nextOrderId();
 					salesModuleData.salesOrders.push(ordData);
+					/* Auto-create matching invoice */
+					const invId = 'INV' + ordData.id.slice(2);
+					const product = '500ml Sachet Water (500 pcs/bag)';
+					const rate = ordData.amount && ordData.bags ? +(ordData.amount / ordData.bags).toFixed(2) : 0;
+					salesModuleData.invoices.push({
+						id: invId, customer: ordData.customer, product,
+						date: ordData.orderDate, paidDate: ordData.status === 'delivered' ? ordData.orderDate : '',
+						status: ordData.status === 'delivered' ? 'paid' : 'pending',
+						amount: ordData.amount, rate, paymentMode: ordData.paymentMode,
+						promo: ordData.promo, promoNote: ordData.promoNote,
+						items: [{ name: product, qty: ordData.bags || 1, unitPrice: rate }],
+						deliveryFee: 0,
+					});
 				}
 				if (!isApprover) {
 					alert('Sales Order saved as "Pending Approval". A Manager or CEO will review and approve it.');
@@ -2083,8 +2673,25 @@ async function initSalesInvoicesPage() {
 			const idx = Number(deleteBtn.getAttribute('data-delete-idx'));
 			const label = entity === 'invoice' ? 'invoice' : 'sales order';
 			if (!confirm('Delete this ' + label + '? This cannot be undone.')) return;
-			if (entity === 'invoice') salesModuleData.invoices.splice(idx, 1);
-			else if (entity === 'order') salesModuleData.salesOrders.splice(idx, 1);
+			if (entity === 'invoice') {
+				const inv = salesModuleData.invoices[idx];
+				salesModuleData.invoices.splice(idx, 1);
+				// Also remove matching sales order
+				if (inv) {
+					const soId = 'SO' + inv.id.slice(3);
+					const soIdx = salesModuleData.salesOrders.findIndex(o => o.id === soId);
+					if (soIdx !== -1) salesModuleData.salesOrders.splice(soIdx, 1);
+				}
+			} else if (entity === 'order') {
+				const ord = salesModuleData.salesOrders[idx];
+				salesModuleData.salesOrders.splice(idx, 1);
+				// Also remove matching invoice
+				if (ord) {
+					const invId = 'INV' + ord.id.slice(2);
+					const invIdx = salesModuleData.invoices.findIndex(v => v.id === invId);
+					if (invIdx !== -1) salesModuleData.invoices.splice(invIdx, 1);
+				}
+			}
 			saveSalesDataToStorage();
 			renderSalesPage();
 		}
@@ -2110,7 +2717,7 @@ async function initSalesInvoicesPage() {
 	function autoDetectOverdue() {
 		const today = new Date(todayStr);
 		salesModuleData.invoices.forEach((inv) => {
-			if (inv.status === 'pending' && inv.dueDate && new Date(inv.dueDate) < today) {
+			if (inv.status === 'pending' && inv.paidDate && new Date(inv.paidDate) < today) {
 				inv.status = 'overdue';
 			}
 		});
@@ -2156,9 +2763,12 @@ async function initSalesInvoicesPage() {
 			const waybillCount = waybills.length;
 			const waybillTotalQty = waybills.reduce((s, w) => s + (w.items || []).reduce((q, i) => q + (parseFloat(i.qty) || 0), 0), 0);
 			const waybillPending = waybills.filter((w) => !w.received).length;
+			const totalPromoBags = invoiceRows.reduce((sum, inv) => sum + (inv.promo || 0), 0) + orders.reduce((sum, o) => sum + (o.promo || 0), 0);
+			const invoicePromo = invoiceRows.reduce((sum, inv) => sum + (inv.promo || 0), 0);
 			stats.innerHTML = `
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice"></i></div><p class="s-label">Total Invoices</p><p class="s-value">${totalInvoices}</p><p class="s-meta">${orders.length} sales order${orders.length !== 1 ? 's' : ''}</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue + salesRevenue)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(invoiceRevenue)}</span><span>Sales: ${formatCurrency(salesRevenue)}</span><span>Waybills: ${formatNumber(waybillTotalQty)} units dispatched</span></p></div>
+				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-gift"></i></div><p class="s-label">Total Promo Bags</p><p class="s-value">${invoicePromo}</p><p class="s-meta">For orders above 100 bags</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices + pendingSales)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(pendingInvoices)}</span><span>Sales: ${formatCurrency(pendingSales)}</span><span>Waybills: ${waybillPending} pending delivery</span></p></div>
 				<div class="stat-card ${overdueTotal > 0 ? 'stat-card-alert' : ''}"><div class="s-icon"><i class="fa-solid fa-circle-exclamation"></i></div><p class="s-label">Overdue</p><p class="s-value">${formatCurrency(overdueTotal)}</p><p class="s-meta">${overdueInvAmt > 0 ? 'Inv: ' + formatCurrency(overdueInvAmt) + ' ' : ''}${overdueOrdAmt > 0 ? 'Orders: ' + formatCurrency(overdueOrdAmt) : ''}${overdueTotal === 0 ? 'All clear' : ''}</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-truck-fast"></i></div><p class="s-label">Total Waybills</p><p class="s-value" id="wb-stat-count">${waybillCount}</p><p class="s-meta">Dispatch documents</p></div>
@@ -2176,9 +2786,12 @@ async function initSalesInvoicesPage() {
 					<tr class="selectable" data-invoice-id="${invoice.id}">
 						<td>${invoice.id}</td>
 						<td>${invoice.customer}</td>
-						<td>${invoice.date}</td>
-						<td>${invoice.dueDate}</td>
+						<td>${invoice.promo ? invoice.promo + (invoice.promoNote ? ' <small style="color:#6b7280">(' + invoice.promoNote + ')</small>' : '') : ''}</td>
+						<td>${invoice.items && invoice.items[0] ? invoice.items[0].qty : ''}</td>
+						<td>${invoice.rate ? invoice.rate : (invoice.items && invoice.items[0] && invoice.items[0].qty ? (invoice.amount / invoice.items[0].qty).toFixed(1) : '')}</td>
+						<td>${formatDateDisplay(invoice.date)}</td>
 						<td>${formatCurrency(invoice.amount)}</td>
+						<td>${invoice.paymentMode || ''}</td>
 						<td><span class="status-pill ${statusPillClass(invoice.status)}">${statusLabel}</span></td>
 						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="invoice" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="invoice" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td>
 					</tr>
@@ -2238,11 +2851,13 @@ async function initSalesInvoicesPage() {
 					<tr>
 						<td>${order.id}</td>
 						<td>${order.customer}</td>
-						<td>${order.orderDate}</td>
-						<td>${order.deliveryDate}</td>
+						<td>${order.promo ? order.promo + (order.promoNote ? ' <small style="color:#6b7280">(' + order.promoNote + ')</small>' : '') : ''}</td>
+						<td>${order.bags || ''}</td>
+						<td>${order.rate ? order.rate : (order.bags && order.amount ? (order.amount / order.bags).toFixed(1) : '')}</td>
+						<td>${formatDateDisplay(order.orderDate)}</td>
 						<td>${formatCurrency(order.amount)}</td>
+						<td>${order.paymentMode || ''}</td>
 						<td><span class="status-pill ${statusPillClass(order.status)}">${statusLabel}</span></td>
-						<td>${showFollowUp ? `<button class="btn-follow-up" data-order-id="${order.id}"><i class="fa-solid fa-phone"></i> Follow Up${followUpCount ? ' (' + followUpCount + ')' : ''}</button>` : ''}</td>
 						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="order" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="order" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td>
 					</tr>
 				`;
@@ -2264,6 +2879,9 @@ async function initSalesInvoicesPage() {
 		// Auto-refresh every 30s
 		setInterval(loadOnlineOrders, 30000);
 	}
+  } catch (err) {
+    console.error('[Sales] initSalesInvoicesPage CRASHED:', err);
+  }
 }
 
 // ── Online Store Orders (Management Side) ──
@@ -2702,6 +3320,10 @@ function loadPurchaseDataFromStorage() {
 
 function savePurchaseDataToStorage() {
 	localStorage.setItem('ww_purchase_data_v2', JSON.stringify(purchaseModuleData));
+	try {
+		if (!window.__wwPurchaseChannel) window.__wwPurchaseChannel = new BroadcastChannel('ww_purchase_sync');
+		window.__wwPurchaseChannel.postMessage({ type: 'purchase_updated' });
+	} catch (_e) { /* fallback to storage event */ }
 }
 
 function nextPoId() {
@@ -3019,7 +3641,7 @@ function initPurchasePage() {
 }
 
 /* ---- Accounting Data Persistence ---- */
-const accountingData = { ledger: [], cashbook: [], summary: [], currencies: [] };
+const accountingData = { ledger: [], cashbook: [], summary: [], currencies: [], salaries: [] };
 
 (function() { localStorage.removeItem('ww_accounting_data'); })();
 
@@ -3031,12 +3653,145 @@ function loadAccountingDataFromStorage() {
 			accountingData.cashbook = Array.isArray(stored.cashbook) ? stored.cashbook : [];
 			accountingData.summary = Array.isArray(stored.summary) ? stored.summary : [];
 			accountingData.currencies = Array.isArray(stored.currencies) ? stored.currencies : [];
+			accountingData.salaries = Array.isArray(stored.salaries) ? stored.salaries : [];
 		}
 	} catch (_e) { /* ignore */ }
+
+	// One-time seed: March 2026 operational costs
+	if (!localStorage.getItem('ww_opscost_march2026_seeded')) {
+		seedMarchOperationalCosts();
+		localStorage.setItem('ww_opscost_march2026_seeded', '1');
+		saveAccountingDataToStorage();
+	}
+
+	// One-time seed: March 2026 salaries (v3 = weekly structure)
+	if (!localStorage.getItem('ww_salaries_march2026_v3')) {
+		// Remove old salary entries from ledger
+		accountingData.ledger = accountingData.ledger.filter(e => !(e.account === 'Salaries' && e.desc && e.desc.startsWith('Salary —')));
+		accountingData.salaries = [];
+		seedMarchSalaries();
+		localStorage.setItem('ww_salaries_march2026_v3', '1');
+		saveAccountingDataToStorage();
+	}
+}
+
+function seedMarchOperationalCosts() {
+	const rows = [
+		// 18 March 2026
+		{ d:'2026-03-18', desc:'Fuel for Truck 1 (3.5t)', amt:500, acc:'Transport' },
+		{ d:'2026-03-18', desc:'Plumbing items', amt:335, acc:'Maintenance' },
+		{ d:'2026-03-18', desc:'Filters and delivery', amt:880, acc:'Production' },
+		{ d:'2026-03-18', desc:'Banners and delivery', amt:286, acc:'Marketing' },
+		{ d:'2026-03-18', desc:'Fuel/Maintenance Tricycles', amt:350, acc:'Transport' },
+		{ d:'2026-03-18', desc:'Automated guy', amt:150, acc:'Maintenance' },
+		{ d:'2026-03-18', desc:'Pump Delivery', amt:80, acc:'Transport' },
+		// 19 March 2026
+		{ d:'2026-03-19', desc:'Fuel for Truck 1 (3.0t)', amt:500, acc:'Transport' },
+		{ d:'2026-03-19', desc:'Packaging bags (2 bags) + Delivery', amt:920, acc:'Production', note:'840 + 80' },
+		{ d:'2026-03-19', desc:'Fuel for Lexus', amt:500, acc:'Transport', note:'Crossed out / queried' },
+		// 20 March 2026
+		{ d:'2026-03-20', desc:'Fuel for Truck (3.5t)', amt:500, acc:'Transport' },
+		{ d:'2026-03-20', desc:'Refuse collection', amt:100, acc:'Administration' },
+		{ d:'2026-03-20', desc:'Refreshments for workers', amt:150, acc:'Administration' },
+		{ d:'2026-03-20', desc:'Pump for R.O', amt:4200, acc:'Production', note:'Crossed out; c16131 noted' },
+		// 21 March 2026
+		{ d:'2026-03-21', desc:'Pump Glen for R.O (6.1m)', amt:7200, acc:'Production' },
+		{ d:'2026-03-21', desc:'Bore hole pump 2.0hp', amt:2400, acc:'Production' },
+		{ d:'2026-03-21', desc:'Electricity', amt:5000, acc:'Utilities' },
+		{ d:'2026-03-21', desc:'Truck Clutch (3.0t)', amt:450, acc:'Transport' },
+		// 23 March 2026
+		{ d:'2026-03-23', desc:'Baskets, crocs, tap bowls', amt:2500, acc:'Production' },
+		// 24 March 2026
+		{ d:'2026-03-24', desc:'Road control for Kia Mighty (3.5t) + Talo delivery', amt:175, acc:'Transport' },
+		{ d:'2026-03-24', desc:'Plumbing items / Pipes', amt:278, acc:'Maintenance', note:'21/3/26' },
+		{ d:'2026-03-24', desc:'Plumbing items', amt:270, acc:'Maintenance', note:'23/3/26' },
+		{ d:'2026-03-24', desc:'Automated timer + Workmanship', amt:595, acc:'Maintenance', note:'22/3/26; ₵1318 paid to Expo' },
+		{ d:'2026-03-24', desc:'Health workers log @₵120/wk x 10 workers', amt:1320, acc:'Salaries', note:'4 baggers, 3 loaders, 2 packers, 1 operator, 1 cleaner' },
+		{ d:'2026-03-24', desc:'Transportation', amt:100, acc:'Transport' },
+		// 25 March 2026
+		{ d:'2026-03-25', desc:'Fuel ① (3.5t truck)', amt:500, acc:'Transport' },
+		{ d:'2026-03-25', desc:'Fuel ② (Abofryas)', amt:450, acc:'Transport' },
+		{ d:'2026-03-25', desc:'Packaging bags', amt:6030, acc:'Production' },
+		{ d:'2026-03-25', desc:'Rolls', amt:23101.20, acc:'Production' },
+		{ d:'2026-03-25', desc:'Bank charges', amt:55.60, acc:'Administration' },
+		// 27 March 2026
+		{ d:'2026-03-27', desc:'Fuel (GT 5t) (3.5t)', amt:500, acc:'Transport' },
+		// 28 March 2026
+		{ d:'2026-03-28', desc:'Noah - items for R.O', amt:560, acc:'Production' },
+		{ d:'2026-03-28', desc:'Noah - cleaner & membrane', amt:1200, acc:'Production' },
+		{ d:'2026-03-28', desc:'Fuel - Abofryas', amt:100, acc:'Transport' },
+		{ d:'2026-03-28', desc:'Pump tyres - Abofryas', amt:45, acc:'Transport' },
+		{ d:'2026-03-28', desc:'2pcs Union x2', amt:52, acc:'Maintenance' },
+		{ d:'2026-03-28', desc:'Plumbing supply', amt:46, acc:'Maintenance' },
+		{ d:'2026-03-28', desc:'Fuel ~₵500 (GT 5320-24 small truck)', amt:500, acc:'Transport' },
+	];
+
+	for (const r of rows) {
+		// Add to ledger as expense
+		accountingData.ledger.push({
+			date: r.d,
+			desc: r.note ? `${r.desc} — ${r.note}` : r.desc,
+			account: r.acc,
+			type: 'expense',
+			debit: r.amt,
+			credit: 0
+		});
+		// Add to cashbook as payment
+		accountingData.cashbook.push({
+			date: r.d,
+			desc: r.note ? `${r.desc} — ${r.note}` : r.desc,
+			kind: 'payment',
+			amount: r.amt
+		});
+	}
+}
+
+function seedMarchSalaries() {
+	const rows = [
+		// Week of 16 Mar (Mon 16th – Sun 22nd)
+		{ d:'2026-03-21', name:'Ernest Boateng', week:'2026-03-16', amt:600, note:'Overpaid; 400 bags @120 to be subtracted next salary' },
+		// Week of 23 Mar (Mon 23rd – Sun 29th)
+		{ d:'2026-03-28', name:'Ernest Boateng', week:'2026-03-23', amt:240, note:'1,450 bags − 400 bags last week = ₵315 − ₵75 left = ₵240' },
+		{ d:'2026-03-28', name:'Michael Dagadu', week:'2026-03-23', amt:1095, note:'₵615 (bags) + ₵480 (trips x2) = ₵1,095' },
+		{ d:'2026-03-28', name:'Mary Teye', week:'2026-03-23', amt:829.50, note:'Paid' },
+		{ d:'2026-03-28', name:'Ivy Ekemegbe', week:'2026-03-23', amt:802.50, note:'Paid' },
+		{ d:'2026-03-28', name:'Vida Sackey', week:'2026-03-23', amt:540, note:'Paid' },
+		{ d:'2026-03-28', name:'Love Konotey', week:'2026-03-23', amt:540, note:'Paid' },
+		{ d:'2026-03-28', name:'Christopher Lawer', week:'2026-03-23', amt:915, note:'Paid' },
+		{ d:'2026-03-28', name:'Augustine Konotey', week:'2026-03-23', amt:720, note:'Minus 3 days (19th, 21st, 22nd)' },
+		{ d:'2026-03-28', name:'John Nyarko', week:'2026-03-23', amt:415, note:'Minus 1 day (28th)' },
+		{ d:'2026-03-28', name:'Wisdom Xorlali', week:'2026-03-23', amt:1250, note:'Paid' },
+		{ d:'2026-03-28', name:'Bright Azaglo', week:'2026-03-23', amt:2500, note:'' },
+		{ d:'2026-03-28', name:'Jonas (Loader)', week:'2026-03-23', amt:700, note:'' },
+		{ d:'2026-03-28', name:'Ever (Loader)', week:'2026-03-23', amt:700, note:'' },
+		{ d:'2026-03-28', name:'Alfred (Loader)', week:'2026-03-23', amt:700, note:'' },
+	];
+
+	for (const r of rows) {
+		accountingData.salaries.push({
+			date: r.d,
+			employee: r.name,
+			week: r.week,
+			amount: r.amt,
+			note: r.note
+		});
+		accountingData.ledger.push({
+			date: r.d,
+			desc: `Salary — ${r.name}`,
+			account: 'Salaries',
+			type: 'expense',
+			debit: r.amt,
+			credit: 0
+		});
+	}
 }
 
 function saveAccountingDataToStorage() {
 	localStorage.setItem('ww_accounting_data_v2', JSON.stringify(accountingData));
+	try {
+		if (!window.__wwAcctChannel) window.__wwAcctChannel = new BroadcastChannel('ww_accounting_sync');
+		window.__wwAcctChannel.postMessage({ type: 'accounting_updated' });
+	} catch (_e) { /* fallback to storage event */ }
 }
 
 function initAccountingPage() {
@@ -3064,8 +3819,7 @@ function initAccountingPage() {
 			title: 'Add Cashbook Entry',
 			fields: [
 				{ id: 'date', label: 'Date', type: 'date', defaultValue: todayStr, required: true },
-				{ id: 'desc', label: 'Description', type: 'text', required: true, placeholder: 'e.g. Customer Receipt' },
-				{ id: 'kind', label: 'Type', type: 'select', options: ['receipt', 'payment'], required: true },
+				{ id: 'desc', label: 'Description', type: 'text', required: true, placeholder: 'e.g. Fuel, Packaging, Plumbing' },
 				{ id: 'amount', label: 'Amount (GH)', type: 'number', min: '0', step: '0.01', required: true },
 			],
 		},
@@ -3085,7 +3839,40 @@ function initAccountingPage() {
 				{ id: 'rate', label: 'Rate to GHS', type: 'number', min: '0', step: '0.01', required: true, placeholder: '1 unit = ? GHS' },
 			],
 		},
+		salary: {
+			title: 'Add Salary',
+			fields: [
+				{ id: 'date', label: 'Date Paid', type: 'date', defaultValue: todayStr, required: true },
+				{ id: 'employee', label: 'Employee Name', type: 'text', required: true, placeholder: 'e.g. Ernest Boateng' },
+				{ id: 'week', label: 'Week Starting', type: 'date', required: true, defaultValue: todayStr },
+				{ id: 'amount', label: 'Amount (GH)', type: 'number', min: '0', step: '0.01', required: true },
+				{ id: 'note', label: 'Notes', type: 'text', placeholder: 'e.g. Deductions, adjustments' },
+			],
+		},
 	};
+
+	/* Helper: get Monday of the week for a given date string */
+	function getWeekStart(dateStr) {
+		const d = new Date(dateStr + 'T00:00:00');
+		const day = d.getDay();
+		const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday
+		d.setDate(diff);
+		return d.toISOString().slice(0, 10);
+	}
+	function getWeekEnd(startStr) {
+		const d = new Date(startStr + 'T00:00:00');
+		d.setDate(d.getDate() + 6);
+		return d.toISOString().slice(0, 10);
+	}
+	function weekLabel(startStr) {
+		const s = new Date(startStr + 'T00:00:00');
+		const e = new Date(startStr + 'T00:00:00');
+		e.setDate(e.getDate() + 6);
+		const fmt = (d) => d.toLocaleDateString('en-GB', { day:'numeric', month:'short' });
+		return `${fmt(s)} – ${fmt(e)}, ${s.getFullYear()}`;
+	}
+
+	let currentSalaryWeek = null;
 
 	const CURRENCY_ICONS = { USD: 'fa-solid fa-dollar-sign', GBP: 'fa-solid fa-sterling-sign', EUR: 'fa-solid fa-euro-sign' };
 
@@ -3119,6 +3906,7 @@ function initAccountingPage() {
 			else if (entity === 'cashbook') row = accountingData.cashbook[editingAccIdx];
 			else if (entity === 'account') row = accountingData.summary[editingAccIdx];
 			else if (entity === 'currency') row = accountingData.currencies[editingAccIdx];
+			else if (entity === 'salary') row = accountingData.salaries[editingAccIdx];
 			if (row) {
 				const setVal = (id, v) => { const el = document.getElementById('acc-field-' + id); if (el && v !== undefined) el.value = v; };
 				Object.keys(row).forEach((k) => setVal(k, row[k]));
@@ -3167,7 +3955,6 @@ function initAccountingPage() {
 				const data = {
 					date: getValue('date') || todayStr,
 					desc,
-					kind: getValue('kind') || 'receipt',
 					amount: getNum('amount'),
 				};
 				if (editingAccIdx >= 0 && accountingData.cashbook[editingAccIdx]) {
@@ -3201,6 +3988,30 @@ function initAccountingPage() {
 				}
 			}
 
+			if (currentEntity === 'salary') {
+				const employee = getValue('employee');
+				if (!employee) return;
+				const weekRaw = getValue('week') || todayStr;
+				const weekStart = getWeekStart(weekRaw);
+				const data = {
+					date: getValue('date') || todayStr,
+					employee,
+					week: weekStart,
+					amount: getNum('amount'),
+					note: getValue('note') || '',
+				};
+				if (editingAccIdx >= 0 && accountingData.salaries[editingAccIdx]) {
+					const old = accountingData.salaries[editingAccIdx];
+					const li = accountingData.ledger.findIndex(e => e.account === 'Salaries' && e.desc === `Salary — ${old.employee}` && e.date === old.date);
+					if (li >= 0) { accountingData.ledger[li].date = data.date; accountingData.ledger[li].desc = `Salary — ${data.employee}`; accountingData.ledger[li].debit = data.amount; }
+					Object.assign(accountingData.salaries[editingAccIdx], data);
+				} else {
+					accountingData.salaries.push(data);
+					accountingData.ledger.push({ date: data.date, desc: `Salary — ${data.employee}`, account: 'Salaries', type: 'expense', debit: data.amount, credit: 0 });
+				}
+				currentSalaryWeek = weekStart;
+			}
+
 			saveAccountingDataToStorage();
 			closeModal();
 			renderAccountingPage();
@@ -3226,6 +4037,14 @@ function initAccountingPage() {
 			else if (entity === 'cashbook') accountingData.cashbook.splice(idx, 1);
 			else if (entity === 'account') accountingData.summary.splice(idx, 1);
 			else if (entity === 'currency') accountingData.currencies.splice(idx, 1);
+			else if (entity === 'salary') {
+				const sal = accountingData.salaries[idx];
+				if (sal) {
+					const li = accountingData.ledger.findIndex(e => e.account === 'Salaries' && e.desc === `Salary — ${sal.employee}` && e.date === sal.date);
+					if (li >= 0) accountingData.ledger.splice(li, 1);
+				}
+				accountingData.salaries.splice(idx, 1);
+			}
 			saveAccountingDataToStorage();
 			renderAccountingPage();
 		}
@@ -3275,61 +4094,113 @@ function initAccountingPage() {
 		/* Stats — auto-computed from all sheets */
 		const totalDebits = ledger.reduce((s, e) => s + (e.debit || 0), 0);
 		const totalCredits = ledger.reduce((s, e) => s + (e.credit || 0), 0);
-		const totalReceipts = cashbook.filter((e) => e.kind === 'receipt').reduce((s, e) => s + e.amount, 0);
-		const totalPayments = cashbook.filter((e) => e.kind === 'payment').reduce((s, e) => s + e.amount, 0);
-		const cashNet = totalReceipts - totalPayments;
+		const cashTotal = cashbook.reduce((s, e) => s + (e.amount || 0), 0);
 		const revCat = accountSummary.find((x) => x.category === 'Revenue');
 		const expCat = accountSummary.find((x) => x.category === 'Expenses');
 		const assCat = accountSummary.find((x) => x.category === 'Assets');
 		const liaCat = accountSummary.find((x) => x.category === 'Liabilities');
-		const revenue = revCat ? revCat.total : 0;
+
+		// Pull sales revenue from invoices (paid only)
+		const allSales = getAllSalesData();
+		const salesRevenue = allSales.invoices
+			.filter((inv) => inv.status === 'paid')
+			.reduce((s, inv) => s + (Number(inv.amount) || 0), 0);
+
+		const revenue = (revCat ? revCat.total : 0) + salesRevenue;
 		const expense = expCat ? expCat.total : 0;
 		const assets = assCat ? assCat.total : 0;
 		const liabilities = liaCat ? liaCat.total : 0;
+		const profitLoss = revenue - expense;
+		const plClass = profitLoss >= 0 ? 'color:#22c55e' : 'color:#ef4444';
 
 		const stats = document.getElementById('acc-stats-row');
 		if (stats) {
 			stats.innerHTML = `
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-book"></i></div><p class="s-label">Ledger Entries</p><p class="s-value">${ledger.length}</p><p class="s-meta">Dr ${formatCurrency(totalDebits)} · Cr ${formatCurrency(totalCredits)}</p></div>
-				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-wallet"></i></div><p class="s-label">Cashbook Balance</p><p class="s-value">${formatCurrency(cashNet)}</p><p class="s-meta">In ${formatCurrency(totalReceipts)} · Out ${formatCurrency(totalPayments)}</p></div>
+				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-wallet"></i></div><p class="s-label">Cashbook Total</p><p class="s-value">${formatCurrency(cashTotal)}</p><p class="s-meta">${cashbook.length} entries</p></div>
+				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-money-bill-trend-up"></i></div><p class="s-label">Revenue</p><p class="s-value">${formatCurrency(revenue)}</p><p class="s-meta">Sales ${formatCurrency(salesRevenue)} · Ledger ${formatCurrency(revCat ? revCat.total : 0)}</p></div>
+				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice-dollar"></i></div><p class="s-label">Expenses</p><p class="s-value">${formatCurrency(expense)}</p><p class="s-meta">Operational costs from ledger</p></div>
+				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-chart-line"></i></div><p class="s-label">Profit / Loss</p><p class="s-value" style="${plClass}">${formatCurrency(profitLoss)}</p><p class="s-meta">Revenue ${formatCurrency(revenue)} − Expenses ${formatCurrency(expense)}</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-scale-balanced"></i></div><p class="s-label">Net Position</p><p class="s-value">${formatCurrency(assets - liabilities)}</p><p class="s-meta">Assets ${formatCurrency(assets)} · Liabilities ${formatCurrency(liabilities)}</p></div>
-				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-chart-line"></i></div><p class="s-label">Profit / Loss</p><p class="s-value">${formatCurrency(revenue - expense)}</p><p class="s-meta">Revenue ${formatCurrency(revenue)} · Expenses ${formatCurrency(expense)}</p></div>
 			`;
 		}
 
-		/* General Ledger */
+		/* General Ledger — grouped by day with subtotals */
 		const ledgerBody = document.getElementById('ledger-tbody');
 		if (ledgerBody) {
-			ledgerBody.innerHTML = ledger.length === 0
-				? '<tr><td colspan="7" style="text-align:center;color:#94a3b8;">No entries yet. Click "Add Entry" to start.</td></tr>'
-				: ledger.map((row, idx) => {
-					const badgeClass = row.type === 'asset' ? 'badge-blue' : row.type === 'liability' ? 'badge-red' : row.type === 'revenue' ? 'badge-green' : row.type === 'expense' ? 'badge-orange' : 'badge-purple';
-					return `<tr><td>${row.date}</td><td>${row.desc}</td><td>${row.account}</td><td><span class="badge ${badgeClass}">${row.type}</span></td><td>${row.debit ? formatCurrency(row.debit) : '-'}</td><td>${row.credit ? formatCurrency(row.credit) : '-'}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="ledger" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="ledger" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
-				}).join('');
+			if (ledger.length === 0) {
+				ledgerBody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#94a3b8;">No entries yet. Click "Add Entry" to start.</td></tr>';
+			} else {
+				// Group entries by date
+				const byDate = {};
+				ledger.forEach((row, idx) => {
+					const key = row.date || 'Unknown';
+					if (!byDate[key]) byDate[key] = [];
+					byDate[key].push({ ...row, _idx: idx });
+				});
+				const sortedDates = Object.keys(byDate).sort();
+				let html = '';
+				let grandDebit = 0, grandCredit = 0;
+				for (const date of sortedDates) {
+					const entries = byDate[date];
+					let dayDebit = 0, dayCredit = 0;
+					// Date group header
+					const dateLabel = (() => { try { const d = new Date(date + 'T00:00:00'); return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', year:'numeric' }); } catch(_){ return date; } })();
+					html += `<tr class="ledger-date-header"><td colspan="7" style="background:#f0f4ff;font-weight:700;color:#1e40af;padding:10px 14px;border-top:2px solid #bfdbfe;font-size:0.95rem;"><i class="fa-solid fa-calendar-day" style="margin-right:6px;"></i>${dateLabel}</td></tr>`;
+					for (const row of entries) {
+						const badgeClass = row.type === 'asset' ? 'badge-blue' : row.type === 'liability' ? 'badge-red' : row.type === 'revenue' ? 'badge-green' : row.type === 'expense' ? 'badge-orange' : 'badge-purple';
+						dayDebit += row.debit || 0;
+						dayCredit += row.credit || 0;
+						html += `<tr><td>${row.date}</td><td>${row.desc}</td><td>${row.account}</td><td><span class="badge ${badgeClass}">${row.type}</span></td><td>${row.debit ? formatCurrency(row.debit) : '-'}</td><td>${row.credit ? formatCurrency(row.credit) : '-'}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="ledger" data-edit-idx="${row._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="ledger" data-delete-idx="${row._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
+					}
+					// Day subtotal row
+					html += `<tr class="ledger-subtotal"><td colspan="4" style="text-align:right;font-weight:700;background:#f8fafc;color:#475569;padding:8px 14px;">Subtotal — ${dateLabel}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(dayDebit)}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(dayCredit)}</td><td style="background:#f8fafc;"></td></tr>`;
+					grandDebit += dayDebit;
+					grandCredit += dayCredit;
+				}
+				// Grand total row
+				html += `<tr class="ledger-grand-total"><td colspan="4" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">GRAND TOTAL</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandDebit)}</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandCredit)}</td><td style="background:#1e40af;"></td></tr>`;
+				ledgerBody.innerHTML = html;
+			}
 		}
 
-		/* Cashbook */
+		/* Cashbook — grouped by day with subtotals */
 		const cashbookBody = document.getElementById('cashbook-tbody');
 		if (cashbookBody) {
 			if (cashbook.length === 0) {
-				cashbookBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No entries yet. Click "Add Entry" to start.</td></tr>';
+				cashbookBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;">No entries yet. Click "Add Entry" to start.</td></tr>';
 			} else {
-				let running = 0;
-				cashbookBody.innerHTML = cashbook.map((entry, idx) => {
-					running += entry.kind === 'receipt' ? entry.amount : -entry.amount;
-					return `<tr><td>${entry.date}</td><td>${entry.desc}</td><td><span class="status-pill ${entry.kind === 'receipt' ? 'status-green' : 'status-red'}">${entry.kind}</span></td><td>${formatCurrency(entry.amount)}</td><td>${formatCurrency(running)}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="cashbook" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="cashbook" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
-				}).join('');
+				const byDate = {};
+				cashbook.forEach((entry, idx) => {
+					const key = entry.date || 'Unknown';
+					if (!byDate[key]) byDate[key] = [];
+					byDate[key].push({ ...entry, _idx: idx });
+				});
+				const sortedDates = Object.keys(byDate).sort();
+				let html = '';
+				let grandTotal = 0;
+				for (const date of sortedDates) {
+					const entries = byDate[date];
+					let dayTotal = 0;
+					const dateLabel = (() => { try { const d = new Date(date + 'T00:00:00'); return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', year:'numeric' }); } catch(_){ return date; } })();
+					html += `<tr><td colspan="5" style="background:#f0f4ff;font-weight:700;color:#1e40af;padding:10px 14px;border-top:2px solid #bfdbfe;font-size:0.95rem;"><i class="fa-solid fa-calendar-day" style="margin-right:6px;"></i>${dateLabel}</td></tr>`;
+					for (const entry of entries) {
+						dayTotal += entry.amount || 0;
+						grandTotal += entry.amount || 0;
+						html += `<tr><td>${entry.date}</td><td>${entry.desc}</td><td>${formatCurrency(entry.amount)}</td><td>${formatCurrency(grandTotal)}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="cashbook" data-edit-idx="${entry._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="cashbook" data-delete-idx="${entry._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
+					}
+					html += `<tr><td colspan="2" style="text-align:right;font-weight:700;background:#f8fafc;color:#475569;padding:8px 14px;">Subtotal — ${dateLabel}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(dayTotal)}</td><td style="background:#f8fafc;"></td><td style="background:#f8fafc;"></td></tr>`;
+				}
+				html += `<tr><td colspan="2" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">GRAND TOTAL</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandTotal)}</td><td style="background:#1e40af;"></td><td style="background:#1e40af;"></td></tr>`;
+				cashbookBody.innerHTML = html;
 			}
 
-			const totalReceipts = cashbook.filter((e) => e.kind === 'receipt').reduce((sum, e) => sum + e.amount, 0);
-			const totalPayments = cashbook.filter((e) => e.kind === 'payment').reduce((sum, e) => sum + e.amount, 0);
-			const currentBalance = totalReceipts - totalPayments;
+			const totalSpent = cashbook.reduce((sum, e) => sum + (e.amount || 0), 0);
 			const cashSummary = document.getElementById('cashbook-summary-cards');
 			if (cashSummary) {
 				cashSummary.innerHTML = `
-					<div class="cashbook-card"><p class="cb-label">Total Receipts</p><p class="cb-val">${formatCurrency(totalReceipts)}</p></div>
-					<div class="cashbook-card"><p class="cb-label">Total Payments</p><p class="cb-val">${formatCurrency(totalPayments)}</p></div>
-					<div class="cashbook-card"><p class="cb-label">Current Balance</p><p class="cb-val">${formatCurrency(currentBalance)}</p></div>
+					<div class="cashbook-card"><p class="cb-label">Total Expenditure</p><p class="cb-val">${formatCurrency(totalSpent)}</p></div>
+					<div class="cashbook-card"><p class="cb-label">Entries</p><p class="cb-val">${cashbook.length}</p></div>
 				`;
 			}
 		}
@@ -3354,6 +4225,70 @@ function initAccountingPage() {
 					const icon = CURRENCY_ICONS[cur.code] || 'fa-solid fa-coins';
 					return `<div class="currency-card"><div class="cur-top"><div class="cur-left"><span class="cur-globe"><i class="fa-solid fa-globe"></i></span><div><p class="cur-code">${cur.code}</p><p class="cur-name">${cur.name}</p></div></div><span class="cur-symbol"><i class="${icon}"></i></span></div><p class="cur-rate">1 ${cur.code} = ${cur.rate.toFixed(2)} GHS</p><p class="cur-sample">100 GHS ≈ ${sample} ${cur.code}</p></div>`;
 				}).join('');
+		}
+
+		/* Salaries — filtered by selected week */
+		const salaries = accountingData.salaries;
+		const salariesBody = document.getElementById('salaries-tbody');
+		const weekSelect = document.getElementById('salary-week-select');
+		const weekRange = document.getElementById('salary-week-range');
+
+		// Build unique weeks from all salary data
+		const allWeeks = [...new Set(salaries.map(s => s.week || getWeekStart(s.date)))].sort();
+		if (!currentSalaryWeek && allWeeks.length > 0) currentSalaryWeek = allWeeks[allWeeks.length - 1];
+
+		if (weekSelect) {
+			weekSelect.innerHTML = allWeeks.length === 0
+				? '<option value="">No weeks</option>'
+				: allWeeks.map(w => `<option value="${w}" ${w === currentSalaryWeek ? 'selected' : ''}>${weekLabel(w)}</option>`).join('')
+					+ '<option value="__all__">All Weeks</option>';
+			if (!weekSelect.dataset.bound) {
+				weekSelect.dataset.bound = '1';
+				weekSelect.addEventListener('change', () => {
+					currentSalaryWeek = weekSelect.value;
+					renderAccountingPage();
+				});
+			}
+		}
+		if (weekRange && currentSalaryWeek && currentSalaryWeek !== '__all__') {
+			weekRange.textContent = `Mon ${currentSalaryWeek} → Sun ${getWeekEnd(currentSalaryWeek)}`;
+		} else if (weekRange) {
+			weekRange.textContent = '';
+		}
+
+		// Filter salaries by selected week
+		const filtered = currentSalaryWeek === '__all__'
+			? salaries.map((s, idx) => ({ ...s, _idx: idx }))
+			: salaries.map((s, idx) => ({ ...s, _idx: idx })).filter(s => (s.week || getWeekStart(s.date)) === currentSalaryWeek);
+
+		if (salariesBody) {
+			if (filtered.length === 0) {
+				salariesBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No salary records for this week.</td></tr>';
+			} else {
+				let html = '';
+				let total = 0;
+				for (const s of filtered) {
+					total += s.amount || 0;
+					const wk = s.week || getWeekStart(s.date);
+					html += `<tr><td>${s.date}</td><td style="font-weight:600;">${s.employee}</td><td style="color:#64748b;font-size:0.85rem;">${weekLabel(wk)}</td><td>${formatCurrency(s.amount)}</td><td style="color:#64748b;font-size:0.85rem;">${s.note || '—'}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="salary" data-edit-idx="${s._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="salary" data-delete-idx="${s._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
+				}
+				html += `<tr><td colspan="3" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">WEEK TOTAL</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(total)}</td><td style="background:#1e40af;" colspan="2"></td></tr>`;
+				salariesBody.innerHTML = html;
+			}
+
+			const salSummary = document.getElementById('salaries-summary-cards');
+			if (salSummary) {
+				const weekPaid = filtered.reduce((s, e) => s + (e.amount || 0), 0);
+				const allPaid = salaries.reduce((s, e) => s + (e.amount || 0), 0);
+				const uniqueStaff = new Set(filtered.map(s => s.employee)).size;
+				salSummary.innerHTML = `
+					<div style="display:flex;gap:16px;flex-wrap:wrap;">
+						<div class="cashbook-card"><p class="cb-label">This Week</p><p class="cb-val">${formatCurrency(weekPaid)}</p></div>
+						<div class="cashbook-card"><p class="cb-label">Staff Paid</p><p class="cb-val">${uniqueStaff}</p></div>
+						<div class="cashbook-card"><p class="cb-label">All-time Total</p><p class="cb-val">${formatCurrency(allPaid)}</p></div>
+					</div>
+				`;
+			}
 		}
 	}
 
@@ -3402,6 +4337,12 @@ function initProductionPage() {
 			_fromBatch: true,
 		}));
 		localStorage.setItem('ww_finished_products', JSON.stringify([...nonBatch, ...fromBatch]));
+		/* Broadcast changes so other tabs (inventory, dashboard) refresh */
+		try {
+			const bc1 = new BroadcastChannel('ww_finished_products_sync');
+			bc1.postMessage({ type: 'finished_products_updated' });
+			bc1.close();
+		} catch (_e) { /* fallback to storage event */ }
 	}
 
 	let batchCounter = prodBatches.length;
@@ -3741,16 +4682,39 @@ function initProductionPage() {
 		const grand = totalMat + totalLabor + totalOverhead;
 		const costData = grand > 0
 			? [
-				{ label: 'Raw Materials', value: Math.round((totalMat / grand) * 100), color: 'green' },
-				{ label: 'Labor', value: Math.round((totalLabor / grand) * 100), color: 'blue' },
-				{ label: 'Overhead', value: Math.round((totalOverhead / grand) * 100), color: 'red' },
+				{ label: 'Raw Materials', value: Math.round((totalMat / grand) * 100), amount: totalMat, color: '#22c55e' },
+				{ label: 'Labor', value: Math.round((totalLabor / grand) * 100), amount: totalLabor, color: '#3b82f6' },
+				{ label: 'Overhead', value: Math.round((totalOverhead / grand) * 100), amount: totalOverhead, color: '#ef4444' },
 			]
 			: [
-				{ label: 'Raw Materials', value: 0, color: 'green' },
-				{ label: 'Labor', value: 0, color: 'blue' },
-				{ label: 'Overhead', value: 0, color: 'red' },
+				{ label: 'Raw Materials', value: 0, amount: 0, color: '#22c55e' },
+				{ label: 'Labor', value: 0, amount: 0, color: '#3b82f6' },
+				{ label: 'Overhead', value: 0, amount: 0, color: '#ef4444' },
 			];
-		renderProgressBars(document.getElementById('cost-breakdown-bars'), costData);
+		const cbEl = document.getElementById('cost-breakdown-bars');
+		if (!cbEl) return;
+		if (typeof Chart !== 'undefined' && grand > 0) {
+			cbEl.innerHTML = '<canvas id="prod-cost-canvas" style="max-width:220px;max-height:220px;margin:0 auto;"></canvas>';
+			const cbCtx = document.getElementById('prod-cost-canvas');
+			if (window.__prodCostChart) window.__prodCostChart.destroy();
+			window.__prodCostChart = new Chart(cbCtx, {
+				type: 'doughnut',
+				data: {
+					labels: costData.map((c) => c.label),
+					datasets: [{ data: costData.map((c) => c.value), backgroundColor: costData.map((c) => c.color), borderWidth: 2, borderColor: '#fff' }],
+				},
+				options: {
+					responsive: true,
+					maintainAspectRatio: true,
+					plugins: {
+						legend: { display: true, position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
+						tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${ctx.parsed}% (${formatCurrency(costData[ctx.dataIndex].amount)})` } },
+					},
+				},
+			});
+		} else {
+			renderProgressBars(cbEl, costData.map((c) => ({ label: c.label, value: c.value, color: c.color === '#22c55e' ? 'green' : c.color === '#3b82f6' ? 'blue' : 'red' })));
+		}
 	}
 	renderCostAnalysis();
 
@@ -3763,13 +4727,63 @@ function initProductionPage() {
 			return;
 		}
 		const rows = prodBatches.slice(-10).map((b) => ({
-			month: b.id,
+			label: b.id,
 			revenue: b.sales || 0,
 			cost: b.cost || 0,
 		}));
-		renderDualBars(chartEl, rows);
+		if (typeof Chart !== 'undefined') {
+			chartEl.innerHTML = '<canvas id="prod-profit-canvas"></canvas>';
+			const pfCtx = document.getElementById('prod-profit-canvas');
+			if (window.__prodProfitChart) window.__prodProfitChart.destroy();
+			window.__prodProfitChart = new Chart(pfCtx, {
+				type: 'bar',
+				data: {
+					labels: rows.map((r) => r.label),
+					datasets: [
+						{ label: 'Sales', data: rows.map((r) => r.revenue), backgroundColor: 'rgba(22,163,74,0.7)', borderColor: '#16a34a', borderWidth: 1, borderRadius: 6 },
+						{ label: 'Cost', data: rows.map((r) => r.cost), backgroundColor: 'rgba(245,158,11,0.7)', borderColor: '#f59e0b', borderWidth: 1, borderRadius: 6 },
+					],
+				},
+				options: {
+					responsive: true,
+					maintainAspectRatio: false,
+					interaction: { mode: 'index', intersect: false },
+					plugins: {
+						legend: { display: true, position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 11 } } },
+						tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${formatCurrency(ctx.parsed.y)}` } },
+					},
+					scales: { y: { beginAtZero: true, ticks: { callback: (v) => formatCurrency(v) } } },
+				},
+			});
+		} else {
+			renderDualBars(chartEl, rows.map((r) => ({ month: r.label, revenue: r.revenue, cost: r.cost })));
+		}
 	}
 	renderProfitabilityChart();
+
+	/* ── Cross-tab sync: refresh production when another tab changes batches ── */
+	const reloadProductionData = () => {
+		try {
+			const stored = JSON.parse(localStorage.getItem(BATCH_KEY));
+			if (Array.isArray(stored)) prodBatches = stored;
+		} catch (_) { /* ignore */ }
+		try {
+			const stored = JSON.parse(localStorage.getItem(BOM_KEY));
+			if (stored && typeof stored === 'object' && !Array.isArray(stored)) billOfMaterials = stored;
+		} catch (_) { /* ignore */ }
+		renderProductionPage();
+		rebuildProductSelector();
+		renderCostAnalysis();
+		renderProfitabilityChart();
+	};
+	window.addEventListener('storage', (e) => {
+		if ([BATCH_KEY, BOM_KEY, 'ww_finished_products', 'ww_daily_production'].includes(e.key)) {
+			reloadProductionData();
+		}
+	});
+	try {
+		new BroadcastChannel('ww_finished_products_sync').onmessage = reloadProductionData;
+	} catch (_e) { /* BroadcastChannel not supported */ }
 }
 
 function initReportsPage() {
@@ -3790,7 +4804,7 @@ function initReportsPage() {
 	// Populate year dropdown from all data
 	if (filterYear) {
 		const allDates = [];
-		const sd = JSON.parse(localStorage.getItem('ww_sales_data') || '{"invoices":[],"salesOrders":[]}');
+		const sd = getAllSalesData();
 		sd.invoices.forEach((i) => { const d = new Date(i.date); if (!isNaN(d)) allDates.push(d.getFullYear()); });
 		sd.salesOrders.forEach((o) => { const d = new Date(o.orderDate); if (!isNaN(d)) allDates.push(d.getFullYear()); });
 		const ad = JSON.parse(localStorage.getItem('ww_accounting_data_v2') || '{"ledger":[]}');
@@ -3812,6 +4826,24 @@ function initReportsPage() {
 	}
 
 	renderReportsData();
+
+	// ── Cross-tab sync: auto-refresh reports when data changes ──
+	if (!window.__wwReportsStorageBound) {
+		window.__wwReportsStorageBound = true;
+		window.addEventListener('storage', (event) => {
+			const watchKeys = ['ww_accounting_data_v2', 'ww_production_batches', 'ww_purchase_data_v2', 'ww_raw_materials', 'ww_equipment', 'ww_cost_centre_budgets'];
+			if (watchKeys.includes(event.key) || (event.key && event.key.startsWith('ww_sales_'))) {
+				renderReportsData();
+			}
+		});
+		const channels = ['ww_sales_sync', 'ww_accounting_sync', 'ww_purchase_sync'];
+		for (const ch of channels) {
+			try {
+				const bc = new BroadcastChannel(ch);
+				bc.onmessage = () => renderReportsData();
+			} catch (_e) { /* ignore */ }
+		}
+	}
 }
 
 window.applyReportsFilter = function () {
@@ -3857,7 +4889,7 @@ function renderReportsData() {
 	}
 
 	// ── Pull real data from localStorage ──
-	const salesData = JSON.parse(localStorage.getItem('ww_sales_data') || '{"invoices":[],"salesOrders":[]}');
+	const salesData = getAllSalesData();
 	const accData = JSON.parse(localStorage.getItem('ww_accounting_data_v2') || '{"ledger":[],"cashbook":[],"summary":[],"currencies":[]}');
 	const allBatches = JSON.parse(localStorage.getItem('ww_production_batches') || '[]');
 	const purchaseData = JSON.parse(localStorage.getItem('ww_purchase_data_v2') || '{"purchaseOrders":[],"suppliers":[]}');
@@ -3873,33 +4905,26 @@ function renderReportsData() {
 	const batches = allBatches.filter((b) => inRange(b.date));
 	const purchaseOrders = (purchaseData.purchaseOrders || []).filter((po) => inRange(po.date));
 
-	// ── Sales Trends: aggregate invoices by month ──
+	// ── Sales Trends: aggregate invoices by month (revenue + bags + promo) ──
 	const salesByMonth = {};
 	for (const inv of invoices) {
 		const d = new Date(inv.date);
 		if (isNaN(d)) continue;
 		const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
-		if (!salesByMonth[key]) salesByMonth[key] = { sales: 0, units: 0 };
-		const total = (inv.items || []).reduce((s, it) => s + (it.qty * it.unitPrice), 0);
-		const units = (inv.items || []).reduce((s, it) => s + it.qty, 0);
-		salesByMonth[key].sales += total;
-		salesByMonth[key].units += units;
-	}
-	for (const ord of orders) {
-		const d = new Date(ord.orderDate);
-		if (isNaN(d)) continue;
-		const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
-		if (!salesByMonth[key]) salesByMonth[key] = { sales: 0, units: 0 };
-		salesByMonth[key].sales += Number(ord.amount) || 0;
-		salesByMonth[key].units += 1;
+		if (!salesByMonth[key]) salesByMonth[key] = { sales: 0, units: 0, promo: 0 };
+		salesByMonth[key].sales += Number(inv.amount) || 0;
+		salesByMonth[key].units += Number(inv.items && inv.items[0] ? inv.items[0].qty : 0) || 0;
+		salesByMonth[key].promo += Number(inv.promo) || 0;
 	}
 	const salesTrends = Object.keys(salesByMonth).sort().slice(-12).map((key) => {
 		const monthIdx = parseInt(key.split('-')[1], 10);
-		return { month: monthNames[monthIdx], sales: salesByMonth[key].sales, units: salesByMonth[key].units };
+		return { month: monthNames[monthIdx], sales: salesByMonth[key].sales, units: salesByMonth[key].units, promo: salesByMonth[key].promo };
 	});
 
-	// ── P&L from filtered accounting + production + purchase data ──
-	const filteredSummaryRevenue = ledger.filter((e) => e.type === 'revenue').reduce((s, e) => s + ((Number(e.credit) || 0) - (Number(e.debit) || 0)), 0);
+	// ── P&L from filtered sales + accounting + production + purchase data ──
+	const salesRevenue = invoices.reduce((s, inv) => s + (Number(inv.amount) || 0), 0);
+	const ledgerRevenue = ledger.filter((e) => e.type === 'revenue').reduce((s, e) => s + ((Number(e.credit) || 0) - (Number(e.debit) || 0)), 0);
+	const filteredSummaryRevenue = salesRevenue + ledgerRevenue;
 	const filteredSummaryExpenses = ledger.filter((e) => e.type === 'expense').reduce((s, e) => s + ((Number(e.debit) || 0) - (Number(e.credit) || 0)), 0);
 	const cogs = batches.reduce((s, b) => s + (Number(b.cost) || 0), 0);
 	const purchaseSpend = purchaseOrders.reduce((s, po) => {
@@ -3908,7 +4933,8 @@ function renderReportsData() {
 	}, 0);
 	const netProfit = filteredSummaryRevenue - cogs - filteredSummaryExpenses - purchaseSpend;
 	const profitLoss = [
-		{ item: 'Revenue', amount: filteredSummaryRevenue },
+		{ item: 'Sales Revenue', amount: salesRevenue },
+		{ item: 'Other Revenue', amount: ledgerRevenue },
 		{ item: 'Cost of Goods Sold', amount: cogs ? -cogs : 0 },
 		{ item: 'Purchase Orders', amount: purchaseSpend ? -purchaseSpend : 0 },
 		{ item: 'Operating Expenses', amount: filteredSummaryExpenses ? -filteredSummaryExpenses : 0 },
@@ -3916,16 +4942,22 @@ function renderReportsData() {
 	];
 
 	// ── Cost Centre Performance from filtered ledger ──
-	const centreBuckets = { Production: 0, Logistics: 0, Sales: 0, Administration: 0 };
+	const centreBuckets = { Production: 0, Transport: 0, Maintenance: 0, Utilities: 0, Administration: 0, Salaries: 0, Marketing: 0 };
 	for (const entry of ledger) {
 		if (entry.type !== 'expense') continue;
-		const acc = (entry.account || entry.desc || '').toLowerCase();
+		const acc = (entry.account || '').toLowerCase();
 		if (acc.includes('production') || acc.includes('manufactur') || acc.includes('factory')) {
 			centreBuckets.Production += (Number(entry.debit) || 0) - (Number(entry.credit) || 0);
-		} else if (acc.includes('logistics') || acc.includes('transport') || acc.includes('delivery') || acc.includes('shipping')) {
-			centreBuckets.Logistics += (Number(entry.debit) || 0) - (Number(entry.credit) || 0);
-		} else if (acc.includes('sales') || acc.includes('marketing') || acc.includes('advertis')) {
-			centreBuckets.Sales += (Number(entry.debit) || 0) - (Number(entry.credit) || 0);
+		} else if (acc.includes('transport') || acc.includes('logistics') || acc.includes('delivery') || acc.includes('shipping')) {
+			centreBuckets.Transport += (Number(entry.debit) || 0) - (Number(entry.credit) || 0);
+		} else if (acc.includes('maintenance')) {
+			centreBuckets.Maintenance += (Number(entry.debit) || 0) - (Number(entry.credit) || 0);
+		} else if (acc.includes('utilities') || acc.includes('electric')) {
+			centreBuckets.Utilities += (Number(entry.debit) || 0) - (Number(entry.credit) || 0);
+		} else if (acc.includes('salar') || acc.includes('wage')) {
+			centreBuckets.Salaries += (Number(entry.debit) || 0) - (Number(entry.credit) || 0);
+		} else if (acc.includes('marketing') || acc.includes('advertis')) {
+			centreBuckets.Marketing += (Number(entry.debit) || 0) - (Number(entry.credit) || 0);
 		} else {
 			centreBuckets.Administration += (Number(entry.debit) || 0) - (Number(entry.credit) || 0);
 		}
@@ -3996,27 +5028,125 @@ function renderReportsData() {
 		}).join('');
 	}
 
-	// ── Sales Trends chart ──
-	if (salesTrends.length > 0) {
-		renderDualBars(document.getElementById('chart-sales-trends'), salesTrends.map((row) => {
-			return { month: row.month, revenue: row.sales, cost: row.units };
-		}));
-	} else {
-		const stEl = document.getElementById('chart-sales-trends');
-		if (stEl) stEl.innerHTML = `<p style="color:#64748b;text-align:center;padding:40px 0">No sales data for ${filterLabel}.</p>`;
+	// ── Sales Trends chart (Chart.js with tooltips) ──
+	const stEl = document.getElementById('chart-sales-trends');
+	if (stEl && salesTrends.length > 0) {
+		if (typeof Chart !== 'undefined') {
+			stEl.innerHTML = '<canvas id="rep-sales-trends-canvas"></canvas>';
+			const stCtx = document.getElementById('rep-sales-trends-canvas');
+			if (window.__repSalesTrendChart) window.__repSalesTrendChart.destroy();
+			window.__repSalesTrendChart = new Chart(stCtx, {
+				type: 'bar',
+				data: {
+					labels: salesTrends.map((r) => r.month),
+					datasets: [
+						{
+							label: 'Revenue',
+							data: salesTrends.map((r) => r.sales),
+							backgroundColor: 'rgba(22,163,74,0.7)',
+							borderColor: '#16a34a',
+							borderWidth: 1,
+							borderRadius: 6,
+							yAxisID: 'y',
+						},
+						{
+							label: 'Bags Sold',
+							data: salesTrends.map((r) => r.units),
+							backgroundColor: 'rgba(37,99,235,0.6)',
+							borderColor: '#1d4ed8',
+							borderWidth: 1,
+							borderRadius: 6,
+							yAxisID: 'y1',
+						},
+						{
+							label: 'Promo Bags',
+							data: salesTrends.map((r) => r.promo),
+							backgroundColor: 'rgba(245,158,11,0.6)',
+							borderColor: '#f59e0b',
+							borderWidth: 1,
+							borderRadius: 6,
+							yAxisID: 'y1',
+						},
+					],
+				},
+				options: {
+					responsive: true,
+					maintainAspectRatio: false,
+					interaction: { mode: 'index', intersect: false },
+					plugins: {
+						legend: { display: true, position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 11 } } },
+						tooltip: {
+							callbacks: {
+								label: (ctx) => {
+									if (ctx.dataset.label === 'Revenue') return `Revenue: ${formatCurrency(ctx.parsed.y)}`;
+									if (ctx.dataset.label === 'Promo Bags') return `Promo Bags: ${formatNumber(ctx.parsed.y)}`;
+									return `Bags Sold: ${formatNumber(ctx.parsed.y)}`;
+								},
+							},
+						},
+					},
+					scales: {
+						y: {
+							type: 'linear',
+							position: 'left',
+							beginAtZero: true,
+							ticks: { callback: (v) => formatCurrency(v) },
+							title: { display: true, text: 'Revenue (GH₵)', font: { size: 11 } },
+						},
+						y1: {
+							type: 'linear',
+							position: 'right',
+							beginAtZero: true,
+							grid: { drawOnChartArea: false },
+							ticks: { callback: (v) => formatNumber(v) },
+							title: { display: true, text: 'Bags', font: { size: 11 } },
+						},
+					},
+				},
+			});
+		} else {
+			renderDualBars(stEl, salesTrends.map((row) => ({ month: row.month, revenue: row.sales, cost: row.units })));
+		}
+	} else if (stEl) {
+		stEl.innerHTML = `<p style="color:#64748b;text-align:center;padding:40px 0">No sales data for ${filterLabel}.</p>`;
 	}
 
-	// ── Daily Shift Sales chart ──
-	if (dailyShiftSales.length > 0) {
-		renderVerticalBars(document.getElementById('chart-shift-sales'), dailyShiftSales.map((day) => {
-			return { label: day.day, value: day.morning + day.afternoon + day.night };
-		}), {
-			color: 'linear-gradient(180deg,#38bdf8,#2563eb)',
-			valueFormatter: (v) => formatNumber(v),
-		});
-	} else {
-		const ssEl = document.getElementById('chart-shift-sales');
-		if (ssEl) ssEl.innerHTML = `<p style="color:#64748b;text-align:center;padding:40px 0">No batch data for ${filterLabel}.</p>`;
+	// ── Daily Shift Sales chart (Chart.js) ──
+	const ssEl = document.getElementById('chart-shift-sales');
+	if (ssEl && dailyShiftSales.length > 0) {
+		if (typeof Chart !== 'undefined') {
+			ssEl.innerHTML = '<canvas id="rep-shift-sales-canvas"></canvas>';
+			const ssCtx = document.getElementById('rep-shift-sales-canvas');
+			if (window.__repShiftChart) window.__repShiftChart.destroy();
+			window.__repShiftChart = new Chart(ssCtx, {
+				type: 'bar',
+				data: {
+					labels: dailyShiftSales.map((d) => d.day),
+					datasets: [
+						{ label: 'Morning', data: dailyShiftSales.map((d) => d.morning), backgroundColor: 'rgba(251,191,36,0.7)', borderColor: '#f59e0b', borderWidth: 1, borderRadius: 4 },
+						{ label: 'Afternoon', data: dailyShiftSales.map((d) => d.afternoon), backgroundColor: 'rgba(37,99,235,0.7)', borderColor: '#1d4ed8', borderWidth: 1, borderRadius: 4 },
+						{ label: 'Night', data: dailyShiftSales.map((d) => d.night), backgroundColor: 'rgba(100,116,139,0.7)', borderColor: '#475569', borderWidth: 1, borderRadius: 4 },
+					],
+				},
+				options: {
+					responsive: true,
+					maintainAspectRatio: false,
+					interaction: { mode: 'index', intersect: false },
+					plugins: {
+						legend: { display: true, position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 11 } } },
+						tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${formatNumber(ctx.parsed.y)}` } },
+					},
+					scales: {
+						x: { stacked: true },
+						y: { stacked: true, beginAtZero: true, ticks: { callback: (v) => formatNumber(v) } },
+					},
+				},
+			});
+		} else {
+			renderVerticalBars(ssEl, dailyShiftSales.map((day) => ({ label: day.day, value: day.morning + day.afternoon + day.night })), { color: 'linear-gradient(180deg,#38bdf8,#2563eb)', valueFormatter: (v) => formatNumber(v) });
+		}
+	} else if (ssEl) {
+		ssEl.innerHTML = `<p style="color:#64748b;text-align:center;padding:40px 0">No batch data for ${filterLabel}.</p>`;
 	}
 
 	// ── Sales summary cards (from filtered sales data) ──
@@ -4026,13 +5156,8 @@ function renderReportsData() {
 		for (const inv of invoices) {
 			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
-			const amount = (inv.items || []).reduce((s, it) => s + (it.qty * it.unitPrice), 0);
+			const amount = Number(inv.amount) || 0;
 			allEntries.push({ date: d, amount });
-		}
-		for (const ord of orders) {
-			const d = new Date(ord.orderDate);
-			if (isNaN(d)) continue;
-			allEntries.push({ date: d, amount: Number(ord.amount) || 0 });
 		}
 
 		const totalSales = allEntries.reduce((s, e) => s + e.amount, 0);
@@ -4043,7 +5168,8 @@ function renderReportsData() {
 			const now = new Date();
 			const weekAgo = new Date(now); weekAgo.setDate(weekAgo.getDate() - 7);
 			const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-			const quarterStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+			const qDate = new Date(now); qDate.setMonth(qDate.getMonth() - 2);
+			const quarterStart = new Date(qDate.getFullYear(), qDate.getMonth(), 1);
 			const yearStart = new Date(now.getFullYear(), 0, 1);
 			const weekTotal = allEntries.filter((e) => e.date >= weekAgo).reduce((s, e) => s + e.amount, 0);
 			const monthTotal = allEntries.filter((e) => e.date >= monthStart).reduce((s, e) => s + e.amount, 0);
@@ -4078,11 +5204,35 @@ function renderReportsData() {
 		}
 	}
 
-	// ── Inventory pie chart ──
+	// ── Inventory pie chart (Chart.js doughnut) ──
 	const totalInventory = inventoryReport.reduce((sum, segment) => sum + segment.value, 0);
 	const pieContainer = document.getElementById('inventory-pie');
 	if (pieContainer) {
-		if (inventoryReport.length > 0 && totalInventory > 0) {
+		if (inventoryReport.length > 0 && totalInventory > 0 && typeof Chart !== 'undefined') {
+			pieContainer.innerHTML = '<canvas id="rep-inventory-canvas" style="max-width:220px;max-height:220px;margin:0 auto;"></canvas>';
+			const pieCtx = document.getElementById('rep-inventory-canvas');
+			if (window.__repInvPieChart) window.__repInvPieChart.destroy();
+			window.__repInvPieChart = new Chart(pieCtx, {
+				type: 'doughnut',
+				data: {
+					labels: inventoryReport.map((s) => s.label),
+					datasets: [{
+						data: inventoryReport.map((s) => s.value),
+						backgroundColor: inventoryReport.map((s) => s.color),
+						borderWidth: 2,
+						borderColor: '#fff',
+					}],
+				},
+				options: {
+					responsive: true,
+					maintainAspectRatio: true,
+					plugins: {
+						legend: { display: false },
+						tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${ctx.parsed}%` } },
+					},
+				},
+			});
+		} else if (inventoryReport.length > 0 && totalInventory > 0) {
 			pieContainer.innerHTML = `
 				<div style="width:170px;height:170px;border-radius:50%;background:conic-gradient(
 					${inventoryReport.map((segment, index) => {
@@ -4111,26 +5261,63 @@ function renderReportsData() {
 	}
 
 	// ── Cost Centre Performance table ──
+	const budgets = JSON.parse(localStorage.getItem('ww_cost_centre_budgets') || '{}');
 	const centreBody = document.getElementById('cost-centre-tbody');
 	if (centreBody) {
 		if (costCentrePerformance.length > 0) {
 			centreBody.innerHTML = costCentrePerformance.map((centre) => {
-				const variance = centre.actual - centre.budget;
-				const status = centre.budget === 0 ? 'no budget set' : variance <= 0 ? 'within budget' : variance < 300 ? 'watch' : 'over budget';
-				const pillClass = centre.budget === 0 ? 'status-blue' : variance <= 0 ? 'status-green' : variance < 300 ? 'status-yellow' : 'status-red';
+				const bgt = budgets[centre.centre] || 0;
+				centre.budget = bgt;
+				const variance = centre.actual - bgt;
+				const status = bgt === 0 ? 'no budget set' : variance <= 0 ? 'within budget' : variance < 300 ? 'watch' : 'over budget';
+				const pillClass = bgt === 0 ? 'status-blue' : variance <= 0 ? 'status-green' : variance < 300 ? 'status-yellow' : 'status-red';
 				return `
 					<tr>
 						<td>${centre.centre}</td>
-						<td>${centre.budget ? formatCurrency(centre.budget) : '—'}</td>
+						<td>${bgt ? formatCurrency(bgt) : '—'}</td>
 						<td>${formatCurrency(centre.actual)}</td>
-						<td>${centre.budget ? (variance >= 0 ? '+' : '') + formatCurrency(variance) : '—'}</td>
+						<td>${bgt ? (variance >= 0 ? '+' : '') + formatCurrency(variance) : '—'}</td>
 						<td><span class="status-pill ${pillClass}">${status}</span></td>
+						<td><button class="btn-edit rep-budget-btn" data-centre="${centre.centre}" data-budget="${bgt}"><i class="fa-solid fa-pen-to-square"></i></button></td>
 					</tr>
 				`;
 			}).join('');
 		} else {
-			centreBody.innerHTML = `<tr><td colspan="5" style="color:#64748b;text-align:center;padding:20px">No expense entries for ${filterLabel}.</td></tr>`;
+			centreBody.innerHTML = `<tr><td colspan="6" style="color:#64748b;text-align:center;padding:20px">No expense entries for ${filterLabel}.</td></tr>`;
 		}
+	}
+
+	// Budget edit button handler
+	if (centreBody && !centreBody.__budgetBound) {
+		centreBody.__budgetBound = true;
+		centreBody.addEventListener('click', (e) => {
+			const btn = e.target.closest('.rep-budget-btn');
+			if (!btn) return;
+			const centre = btn.getAttribute('data-centre');
+			const current = Number(btn.getAttribute('data-budget')) || 0;
+			const modal = document.getElementById('budget-modal');
+			document.getElementById('budget-modal-title').textContent = `Set Budget — ${centre}`;
+			document.getElementById('budget-centre-key').value = centre;
+			document.getElementById('budget-centre-name').value = centre;
+			document.getElementById('budget-amount').value = current || '';
+			modal.style.display = 'flex';
+		});
+	}
+
+	// Budget form submit handler
+	const budgetForm = document.getElementById('budget-form');
+	if (budgetForm && !budgetForm.__bound) {
+		budgetForm.__bound = true;
+		budgetForm.addEventListener('submit', (e) => {
+			e.preventDefault();
+			const centre = document.getElementById('budget-centre-key').value;
+			const amt = Number(document.getElementById('budget-amount').value) || 0;
+			const stored = JSON.parse(localStorage.getItem('ww_cost_centre_budgets') || '{}');
+			stored[centre] = amt;
+			localStorage.setItem('ww_cost_centre_budgets', JSON.stringify(stored));
+			document.getElementById('budget-modal').style.display = 'none';
+			renderReportsData();
+		});
 	}
 
 	// ── Ops metric cards (from filtered batches) ──

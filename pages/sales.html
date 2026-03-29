@@ -25,6 +25,13 @@
     <h2>Sales & Invoicing</h2>
     <p>This page mirrors the Sales & Invoicing module for compatibility with existing routes.</p>
   </div>
+  <section class="month-selector-bar" id="month-selector-bar">
+    <div class="month-selector-left">
+      <label>Month:</label>
+      <select id="sales-month-select"></select>
+    </div>
+    <button type="button" class="btn-secondary" id="new-month-btn"><i class="fa-solid fa-plus"></i> New Month</button>
+  </section>
   <section class="stats-row" id="si-stats-row"></section>
   <div class="panel">
     <div class="tab-bar">
@@ -36,7 +43,7 @@
         <div class="two-panel-left">
           <h3>Invoice Register</h3>
           <table class="data-table">
-            <thead><tr><th>Invoice #</th><th>Customer</th><th>Date</th><th>Due</th><th>Amount (GH)</th><th>Status</th></tr></thead>
+            <thead><tr><th>Invoice #</th><th>Customer</th><th>Promo</th><th>Bags</th><th>Price (₵)</th><th>Date</th><th>Total (₵)</th><th>Payment</th><th>Status</th></tr></thead>
             <tbody id="invoice-tbody"></tbody>
           </table>
         </div>
@@ -48,7 +55,7 @@
     </div>
     <div id="si-tab-orders" class="tab-panel">
       <table class="data-table">
-        <thead><tr><th>Order ID</th><th>Customer</th><th>Order Date</th><th>Delivery Date</th><th>Amount (GH)</th><th>Status</th></tr></thead>
+        <thead><tr><th>Order ID</th><th>Customer</th><th>Promo</th><th>Bags</th><th>Price (₵)</th><th>Date</th><th>Total (₵)</th><th>Payment</th><th>Status</th></tr></thead>
         <tbody id="orders-tbody"></tbody>
       </table>
     </div>
