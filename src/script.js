@@ -1517,6 +1517,7 @@ async function initInventoryPage() {
 					<td>${p.product}</td>
 					<td>${formatNumber(p.qty)}</td>
 					<td>${p.location}</td>
+					<td>${formatDateDisplay(p.date || p.addedDate)}</td>
 					<td><span class="status-pill ${distributionClass}">${distributionLabel}</span></td>
 					<td><div class="row-actions"><button class="btn-edit inv-edit-btn" data-edit-entity="product" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete inv-delete-btn" data-delete-entity="product" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td>
 				</tr>
@@ -1683,6 +1684,7 @@ async function initInventoryPage() {
 				{ id: 'product', label: 'Product Name', type: 'text', required: true },
 				{ id: 'qty', label: 'Quantity', type: 'number', min: '0', required: true },
 				{ id: 'location', label: 'Location', type: 'text', placeholder: 'Warehouse A' },
+				{ id: 'date', label: 'Date', type: 'date', defaultValue: todayForInput, required: true },
 			],
 		},
 		equipment: {
@@ -1809,12 +1811,14 @@ async function initInventoryPage() {
 					finishedProducts[editingIdx].product = product;
 					finishedProducts[editingIdx].qty = getNum('qty');
 					finishedProducts[editingIdx].location = getValue('location') || 'Warehouse A';
+					finishedProducts[editingIdx].date = getValue('date') || finishedProducts[editingIdx].date || finishedProducts[editingIdx].addedDate;
 				} else {
 					finishedProducts.push({
 						id: nextNumericId(finishedProducts),
 						product,
 						qty: getNum('qty'),
 						location: getValue('location') || 'Warehouse A',
+						date: getValue('date') || getTodayDateStr(),
 						status: 'ready for sale',
 						addedDate: getTodayDateStr(),
 					});

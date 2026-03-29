@@ -802,6 +802,22 @@ app.post('/api/accounting', ensureAuthenticated, ensureRole('accounting'), async
    UPDATE ROUTES
    ═══════════════════════════════════════════════ */
 
+app.put('/api/users/:id', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
+  try {
+    const update = {};
+    if (req.body.name) update.name = String(req.body.name).trim();
+    if (req.body.email) update.email = String(req.body.email).trim().toLowerCase();
+    if (req.body.role) update.role = String(req.body.role).trim().toLowerCase();
+    if (req.body.status) update.status = req.body.status;
+    if (req.body.password) update.password_hash = bcrypt.hashSync(String(req.body.password), 10);
+    await User.updateOne({ _id: req.params.id }, update);
+    res.json({ ok: true });
+  } catch (error) {
+    if (error.code === 11000) { next(createError(409, 'A user with this email already exists')); return; }
+    next(error);
+  }
+});
+
 app.put('/api/invoices/:id/status', ensureAuthenticated, ensureRole('invoices'), async (req, res, next) => {
   try {
     requireFields(req.body, ['status']);

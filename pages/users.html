@@ -116,40 +116,63 @@
 <script>
 (function() {
   const ACCESS_LEVELS = {
-    Ceo: 'Full Access — All Modules',
-    Manager: 'Full Access — All Modules',
-    Supervisor: 'Inventory, Sales, Purchase (Add only)',
-    Staff: 'Inventory, Sales, Purchase (Add only)',
+    ceo: 'Full Access — All Modules',
+    manager: 'Full Access — All Modules',
+    supervisor: 'Inventory, Sales, Purchase (Add only)',
+    staff: 'Inventory, Sales, Purchase (Add only)',
   };
 
   const usersTbody = document.getElementById('users-tbody');
   const totalStat = document.getElementById('stat-total-users');
 
-  var editingUserIdx = -1;
+  let cachedUsers = [];
+  let editingUserId = null;
 
-  function renderUsersTable() {
-    const users = getSystemUsers();
+  function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+
+  function formatLogin(dt) {
+    if (!dt) return 'Never';
+    const d = new Date(dt);
+    if (isNaN(d)) return dt;
+    return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function renderTable(users) {
+    cachedUsers = users;
     if (!usersTbody) return;
     if (users.length === 0) {
       usersTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No users yet — users appear here when they sign up or log in.</td></tr>';
     } else {
-      usersTbody.innerHTML = users.map(function(u, idx) {
-        const access = ACCESS_LEVELS[u.role] || 'Per role defaults';
+      usersTbody.innerHTML = users.map(function(u) {
+        const role = (u.role || '').toLowerCase();
+        const access = ACCESS_LEVELS[role] || 'Per role defaults';
         return '<tr>' +
-          '<td>' + u.name + '</td>' +
-          '<td>' + u.email + '</td>' +
-          '<td>' + u.role + '</td>' +
+          '<td>' + (u.name || '') + '</td>' +
+          '<td>' + (u.email || '') + '</td>' +
+          '<td>' + capitalize(u.role) + '</td>' +
           '<td>' + access + '</td>' +
-          '<td><span class="status-pill ' + (u.status === 'Active' ? 'pill-success' : 'pill-warning') + '">' + u.status + '</span></td>' +
-          '<td>' + (u.lastLogin || 'Never') + '</td>' +
-          '<td><div class="row-actions"><button class="btn-edit um-edit-btn" data-idx="' + idx + '"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete um-delete-btn" data-idx="' + idx + '"><i class="fa-solid fa-trash"></i></button></div></td>' +
+          '<td><span class="status-pill ' + (u.status === 'Active' ? 'pill-success' : 'pill-warning') + '">' + (u.status || 'Active') + '</span></td>' +
+          '<td>' + formatLogin(u.lastLogin) + '</td>' +
+          '<td><div class="row-actions"><button class="btn-edit um-edit-btn" data-id="' + u.id + '"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete um-delete-btn" data-id="' + u.id + '"><i class="fa-solid fa-trash"></i></button></div></td>' +
         '</tr>';
       }).join('');
     }
     if (totalStat) totalStat.textContent = users.length;
   }
 
-  renderUsersTable();
+  async function loadUsers() {
+    try {
+      const res = await fetch('/api/users', { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to load users');
+      const users = await res.json();
+      renderTable(users);
+    } catch (err) {
+      console.error('Error loading users:', err);
+      if (usersTbody) usersTbody.innerHTML = '<tr><td colspan="7" style="color:#ef4444;text-align:center;padding:20px">Failed to load users from server.</td></tr>';
+    }
+  }
+
+  loadUsers();
 
   const addBtn = document.getElementById('um-add-user-btn');
   const modal = document.getElementById('um-add-modal');
@@ -157,59 +180,70 @@
   const closeBtn = document.getElementById('um-modal-close');
   const cancelBtn = document.getElementById('um-modal-cancel');
 
-  function closeModal() { editingUserIdx = -1; if (modal) modal.style.display = 'none'; if (form) form.reset(); var h = modal && modal.querySelector('.inv-modal-header h3'); if (h) h.textContent = 'Add New User'; }
-  if (addBtn) addBtn.addEventListener('click', function() { editingUserIdx = -1; if (modal) modal.style.display = 'flex'; });
+  function closeModal() { editingUserId = null; if (modal) modal.style.display = 'none'; if (form) form.reset(); var h = modal && modal.querySelector('.inv-modal-header h3'); if (h) h.textContent = 'Add New User'; }
+  if (addBtn) addBtn.addEventListener('click', function() { editingUserId = null; if (modal) modal.style.display = 'flex'; });
   if (closeBtn) closeBtn.addEventListener('click', closeModal);
   if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
   if (modal) modal.addEventListener('click', function(e) { if (e.target === modal) closeModal(); });
 
-  if (usersTbody) usersTbody.addEventListener('click', function(e) {
+  if (usersTbody) usersTbody.addEventListener('click', async function(e) {
     var editBtn = e.target.closest('.um-edit-btn');
     var deleteBtn = e.target.closest('.um-delete-btn');
     if (editBtn) {
-      var idx = parseInt(editBtn.dataset.idx);
-      var users = getSystemUsers();
-      if (idx < 0 || idx >= users.length) return;
-      editingUserIdx = idx;
-      var u = users[idx];
+      var id = editBtn.dataset.id;
+      var u = cachedUsers.find(function(x) { return String(x.id) === id; });
+      if (!u) return;
+      editingUserId = id;
       if (modal) modal.style.display = 'flex';
       var h = modal && modal.querySelector('.inv-modal-header h3'); if (h) h.textContent = 'Edit User';
       document.getElementById('um-name').value = u.name || '';
       document.getElementById('um-email').value = u.email || '';
-      document.getElementById('um-role').value = u.role.charAt(0).toUpperCase() + u.role.slice(1);
+      document.getElementById('um-role').value = capitalize(u.role);
       document.getElementById('um-password').value = '';
     }
     if (deleteBtn) {
-      var idx2 = parseInt(deleteBtn.dataset.idx);
-      var users2 = getSystemUsers();
-      if (idx2 < 0 || idx2 >= users2.length) return;
-      if (!confirm('Delete user "' + users2[idx2].name + '"?')) return;
-      users2.splice(idx2, 1);
-      localStorage.setItem('ww_system_users', JSON.stringify(users2));
-      renderUsersTable();
+      var id2 = deleteBtn.dataset.id;
+      var u2 = cachedUsers.find(function(x) { return String(x.id) === id2; });
+      if (!u2) return;
+      if (!confirm('Delete user "' + u2.name + '"?')) return;
+      try {
+        var res = await fetch('/api/users/' + id2, { method: 'DELETE', credentials: 'include' });
+        if (!res.ok) { var err = await res.json().catch(function() { return {}; }); alert(err.message || 'Delete failed'); return; }
+        loadUsers();
+      } catch (err) { alert('Delete failed'); }
     }
   });
 
-  if (form) form.addEventListener('submit', function(e) {
+  if (form) form.addEventListener('submit', async function(e) {
     e.preventDefault();
     var name = document.getElementById('um-name').value.trim();
     var email = document.getElementById('um-email').value.trim();
     var role = document.getElementById('um-role').value;
+    var password = document.getElementById('um-password').value;
     if (!name || !email) return;
 
-    if (editingUserIdx >= 0) {
-      var users = getSystemUsers();
-      if (editingUserIdx < users.length) {
-        users[editingUserIdx].name = name;
-        users[editingUserIdx].email = email;
-        users[editingUserIdx].role = role.toLowerCase();
-        localStorage.setItem('ww_system_users', JSON.stringify(users));
+    try {
+      if (editingUserId) {
+        var body = { name: name, email: email, role: role.toLowerCase() };
+        if (password) body.password = password;
+        var res = await fetch('/api/users/' + editingUserId, {
+          method: 'PUT', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) { var err = await res.json().catch(function() { return {}; }); alert(err.message || 'Update failed'); return; }
+      } else {
+        if (!password) { alert('Password is required for new users'); return; }
+        var res2 = await fetch('/api/users', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name, email: email, role: role.toLowerCase(), password: password }),
+        });
+        if (!res2.ok) { var err2 = await res2.json().catch(function() { return {}; }); alert(err2.message || 'Create failed'); return; }
       }
-    } else {
-      upsertSystemUser(name, email, role.toLowerCase());
-    }
-    renderUsersTable();
-    closeModal();
+      loadUsers();
+      closeModal();
+    } catch (err) { alert('Operation failed'); }
   });
 })();
 </script>
