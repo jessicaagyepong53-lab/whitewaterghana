@@ -892,8 +892,9 @@ function initDashboardPage() {
 		const byMonth = {};
 		const ensureMonth = (key) => { if (!byMonth[key]) byMonth[key] = { revenue: 0, cost: 0 }; };
 
-		// Revenue from invoices (amount field — includes all order types)
+		// Revenue from invoices (paid only — consistent with Sales & Accounting pages)
 		for (const inv of salesData.invoices) {
+			if (inv.status !== 'paid') continue;
 			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
 			const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
@@ -2746,7 +2747,7 @@ async function initSalesInvoicesPage() {
 		autoDetectOverdue();
 
 		const invoiceRows = salesModuleData.invoices.map((invoice) => {
-			return { ...invoice, amount: invoiceTotal(invoice) };
+			return { ...invoice };
 		});
 		const orders = salesModuleData.salesOrders;
 
@@ -4907,9 +4908,10 @@ function renderReportsData() {
 	const batches = allBatches.filter((b) => inRange(b.date));
 	const purchaseOrders = (purchaseData.purchaseOrders || []).filter((po) => inRange(po.date));
 
-	// ── Sales Trends: aggregate invoices by month (revenue + bags + promo) ──
+	// ── Sales Trends: aggregate invoices by month (revenue + bags + promo, paid only) ──
 	const salesByMonth = {};
 	for (const inv of invoices) {
+		if (inv.status !== 'paid') continue;
 		const d = new Date(inv.date);
 		if (isNaN(d)) continue;
 		const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
@@ -4924,7 +4926,7 @@ function renderReportsData() {
 	});
 
 	// ── P&L from filtered sales + accounting + production + purchase data ──
-	const salesRevenue = invoices.reduce((s, inv) => s + (Number(inv.amount) || 0), 0);
+	const salesRevenue = invoices.filter((inv) => inv.status === 'paid').reduce((s, inv) => s + (Number(inv.amount) || 0), 0);
 	const ledgerRevenue = ledger.filter((e) => e.type === 'revenue').reduce((s, e) => s + ((Number(e.credit) || 0) - (Number(e.debit) || 0)), 0);
 	const filteredSummaryRevenue = salesRevenue + ledgerRevenue;
 	const filteredSummaryExpenses = ledger.filter((e) => e.type === 'expense').reduce((s, e) => s + ((Number(e.debit) || 0) - (Number(e.credit) || 0)), 0);
@@ -5156,6 +5158,7 @@ function renderReportsData() {
 	if (salesSummary) {
 		const allEntries = [];
 		for (const inv of invoices) {
+			if (inv.status !== 'paid') continue;
 			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
 			const amount = Number(inv.amount) || 0;
@@ -5371,12 +5374,17 @@ function setAuthMessage(message, isError) {
 }
 
 async function postJson(url, payload) {
-	const response = await fetch(API_BASE + url, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		credentials: 'include',
-		body: JSON.stringify(payload),
-	});
+	let response;
+	try {
+		response = await fetch(API_BASE + url, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			credentials: 'include',
+			body: JSON.stringify(payload),
+		});
+	} catch (networkError) {
+		throw new Error('Cannot reach server. Check your internet connection and try again.');
+	}
 
 	let data = {};
 	try {
@@ -5386,7 +5394,7 @@ async function postJson(url, payload) {
 	}
 
 	if (!response.ok) {
-		throw new Error(data.message || 'Request failed');
+		throw new Error(data.message || `Server error (${response.status})`);
 	}
 	return data;
 }

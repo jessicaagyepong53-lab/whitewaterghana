@@ -33,6 +33,13 @@ const rootDir = __dirname;
 const PORT = Number(process.env.PORT || 3000);
 const SESSION_COOKIE = 'ww_session';
 const SESSION_AGE_MS = 1000 * 60 * 60 * 12;
+const IS_PROD = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+
+function cookieOpts(maxAge) {
+  const opts = { httpOnly: true, sameSite: 'lax', maxAge };
+  if (IS_PROD) { opts.secure = true; }
+  return opts;
+}
 
 const RESOURCE_RULES = {
   users: ['ceo', 'manager'],
@@ -53,6 +60,7 @@ const RESOURCE_RULES = {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+if (IS_PROD) app.set('trust proxy', 1);
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -518,7 +526,7 @@ app.post('/api/auth/register', async (req, res, next) => {
     const expiresAt = new Date(Date.now() + SESSION_AGE_MS).toISOString();
     await Session.create({ token, user_id: user._id, expires_at: expiresAt });
 
-    res.cookie(SESSION_COOKIE, token, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_AGE_MS });
+    res.cookie(SESSION_COOKIE, token, cookieOpts(SESSION_AGE_MS));
     res.status(201).json({
       user: { id: user._id, name, email, role: authorized.role, status: 'Active' },
     });
@@ -545,7 +553,7 @@ app.post('/api/auth/login', async (req, res, next) => {
     await Session.create({ token, user_id: user._id, expires_at: expiresAt });
     await User.updateOne({ _id: user._id }, { last_login: timestamp });
 
-    res.cookie(SESSION_COOKIE, token, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_AGE_MS });
+    res.cookie(SESSION_COOKIE, token, cookieOpts(SESSION_AGE_MS));
     res.json({
       user: { id: user._id, name: user.name, email: user.email, role: user.role, status: user.status },
     });
@@ -916,7 +924,7 @@ app.post('/api/store/register', async (req, res, next) => {
     const token = crypto.randomUUID();
     await StoreSession.create({ token, customer_id: customer._id, expires_at: new Date(Date.now() + SESSION_AGE_MS).toISOString() });
 
-    res.cookie('ww_store_session', token, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_AGE_MS });
+    res.cookie('ww_store_session', token, cookieOpts(SESSION_AGE_MS));
     res.status(201).json({ ok: true, customer: { id: customer._id, name: customer.name, email: customer.email, phone: customer.phone } });
   } catch (error) {
     if (error.code === 11000) { next(createError(409, 'An account with this email already exists')); return; }
@@ -935,7 +943,7 @@ app.post('/api/store/login', async (req, res, next) => {
     const token = crypto.randomUUID();
     await StoreSession.create({ token, customer_id: customer._id, expires_at: new Date(Date.now() + SESSION_AGE_MS).toISOString() });
 
-    res.cookie('ww_store_session', token, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_AGE_MS });
+    res.cookie('ww_store_session', token, cookieOpts(SESSION_AGE_MS));
     res.json({ ok: true, customer: { id: customer._id, name: customer.name, email: customer.email, phone: customer.phone } });
   } catch (error) { next(error); }
 });
@@ -1099,15 +1107,15 @@ app.use((error, _req, res, _next) => {
   res.status(status).json({ message: error.message || 'Unexpected server error' });
 });
 
-connectDB().then(() => {
-  if (!process.env.VERCEL) {
+if (!process.env.VERCEL) {
+  connectDB().then(() => {
     app.listen(PORT, () => {
       console.log(`White Water Ghana app running on http://localhost:${PORT}`);
     });
-  }
-}).catch((err) => {
-  console.error('Failed to connect to MongoDB:', err.message);
-  process.exit(1);
-});
+  }).catch((err) => {
+    console.error('Failed to connect to MongoDB:', err.message);
+    process.exit(1);
+  });
+}
 
 module.exports = app;
