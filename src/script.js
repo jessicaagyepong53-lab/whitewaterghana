@@ -1,4 +1,4 @@
-const API_BASE = window.location.port === '5000' ? '' : 'http://localhost:5000';
+const API_BASE = '';
 
 function formatCurrency(value) {
 	return `GH ${Number(value || 0).toLocaleString(undefined, {
