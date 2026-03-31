@@ -5713,8 +5713,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 	try {
 		const meRes = await fetch(API_BASE + '/api/auth/me', { credentials: 'include', cache: 'no-store' });
 		if (meRes.ok) authenticated = true;
-		console.log('[Auth] /api/auth/me status:', meRes.status, 'authenticated:', authenticated);
-	} catch (_e) { console.warn('[Auth] /api/auth/me failed (offline?):', _e); }
+	} catch (_e) { /* offline */ }
 
 	// Redirect to login if not authenticated on ops pages
 	if (!authenticated && isOpsPage) {
@@ -5751,15 +5750,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 	initAccountingPage();
 	initProductionPage();
 	initReportsPage();
-
-	// DEBUG: show hydration status on page (temporary)
-	if (!document.body.classList.contains('auth-page')) {
-		const dbg = document.createElement('div');
-		dbg.style.cssText = 'position:fixed;bottom:10px;right:10px;background:#222;color:#0f0;padding:8px 14px;border-radius:6px;font-size:12px;z-index:99999;max-width:300px;word-break:break-all';
-		dbg.textContent = authenticated ? '[OK] Authenticated, data loaded from server' : '[WARN] Not authenticated — no data from server';
-		document.body.appendChild(dbg);
-		setTimeout(() => dbg.remove(), 10000);
-	}
 
 	// After all pages render, hide edit/delete in dynamic content for restricted roles
 	if (document.body.classList.contains('role-restricted')) {

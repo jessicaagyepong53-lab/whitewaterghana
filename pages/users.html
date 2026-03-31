@@ -1,10 +1,10 @@
-ï»¿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>User Management</title>
-<link rel="stylesheet" href="../src/script.css">
+<link rel="stylesheet" href="../src/script.css?v=20260331">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
 </head>
 <body class="ops-page" data-page="users">
@@ -112,12 +112,12 @@
     </div>
   </div>
 </main>
-<script src="../src/script.js"></script>
+<script src="../src/script.js?v=20260331"></script>
 <script>
 (function() {
   const ACCESS_LEVELS = {
-    ceo: 'Full Access â€” All Modules',
-    manager: 'Full Access â€” All Modules',
+    ceo: 'Full Access — All Modules',
+    manager: 'Full Access — All Modules',
     supervisor: 'Inventory, Sales, Purchase (Add only)',
     staff: 'Inventory, Sales, Purchase (Add only)',
   };
@@ -141,7 +141,7 @@
     cachedUsers = users;
     if (!usersTbody) return;
     if (users.length === 0) {
-      usersTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No users yet â€” users appear here when they sign up or log in.</td></tr>';
+      usersTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No users yet — users appear here when they sign up or log in.</td></tr>';
     } else {
       usersTbody.innerHTML = users.map(function(u) {
         const role = (u.role || '').toLowerCase();
