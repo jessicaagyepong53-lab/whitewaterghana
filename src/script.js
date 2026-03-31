@@ -593,7 +593,7 @@ function resolvePageHref(pageKey) {
 }
 
 function canEditDelete(role) {
-	return role === 'ceo' || role === 'manager';
+	return role === 'ceo' || role === 'manager' || role === 'supervisor';
 }
 
 function enforceRoleAccess() {
@@ -2357,6 +2357,7 @@ function renderInvoiceDetail(invoice) {
 					<div class="inv-doc-num-row"><span>Invoice no:</span><strong>${invNo}</strong></div>
 					<div class="inv-doc-num-row"><span>Date:</span><strong>${fmtDate(invoice.date)}</strong></div>
 					<div class="inv-doc-num-row"><span>Paid date:</span><strong>${invoice.paidDate ? fmtDate(invoice.paidDate) : '—'}</strong></div>
+					${invoice.createdAt ? '<div class="inv-doc-num-row"><span>Created:</span><strong>' + new Date(invoice.createdAt).toLocaleString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:true }) + '</strong></div>' : ''}
 				</div>
 			</div>
 
@@ -2698,6 +2699,7 @@ async function initSalesInvoicesPage() {
 					product,
 					items: [{ name: product, qty: getNum('qty') || 1, unitPrice: getNum('unitPrice') }],
 					deliveryFee: getNum('deliveryFee'),
+					createdAt: new Date().toISOString(),
 				};
 				invData.rate = invData.items[0].unitPrice;
 				invData.amount = invData.items[0].qty * invData.items[0].unitPrice;
@@ -2715,6 +2717,7 @@ async function initSalesInvoicesPage() {
 					}
 				} else {
 					invData.id = nextInvoiceId();
+					if (!invData.createdAt) invData.createdAt = new Date().toISOString();
 					salesModuleData.invoices.push(invData);
 					/* Auto-create matching sales order */
 					const soId = 'SO' + invData.id.slice(3);
