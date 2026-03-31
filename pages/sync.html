@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Push Local Data to Server</title>
+<style>
+body{font-family:system-ui;padding:16px;background:#111;color:#eee;font-size:14px}
+pre{background:#222;padding:12px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
+.ok{color:#22c55e}.fail{color:#ef4444}.warn{color:#f59e0b}
+button{background:#3b82f6;color:#fff;border:none;padding:12px 24px;border-radius:6px;font-size:16px;margin:4px;cursor:pointer}
+button:hover{background:#2563eb}
+h1{color:#60a5fa}
+</style>
+</head><body>
+<h1>Sync Local Data → Server</h1>
+<p>This page pushes ALL your localStorage data to MongoDB so other devices can see it.</p>
+<p><strong>Open this on the device that HAS the data.</strong></p>
+<button onclick="pushAll()">Push All Data to Server</button>
+<button onclick="pullAll()">Pull All Data from Server</button>
+<div id="out" style="margin-top:16px"></div>
+<script>
+const out = document.getElementById('out');
+function log(html) { out.innerHTML += html + '<br>'; }
+function ok(msg) { log('<span class="ok">✓ ' + msg + '</span>'); }
+function fail(msg) { log('<span class="fail">✗ ' + msg + '</span>'); }
+
+const KEYS = [
+  'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
+  'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
+  'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data',
+  'ww_sales_months', 'ww_equipment', 'ww_seed_flags',
+];
+
+async function pushAll() {
+  out.innerHTML = '';
+  // Check auth first
+  log('Checking authentication...');
+  try {
+    const me = await fetch('/api/auth/me', {credentials:'include'});
+    if (!me.ok) { fail('Not logged in! Please log in first then come back.'); return; }
+    ok('Authenticated');
+  } catch(e) { fail('Cannot reach server: ' + e.message); return; }
+
+  // Find all ww_ keys in localStorage
+  const allKeys = [...KEYS];
+  // Also find any ww_sales_YYYY-MM keys
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('ww_sales_') && k !== 'ww_sales_months' && !allKeys.includes(k)) {
+      allKeys.push(k);
+    }
+  }
+
+  let pushed = 0;
+  let skipped = 0;
+  for (const key of allKeys) {
+    const raw = localStorage.getItem(key);
+    if (!raw) { log('<span class="warn">⚠ ' + key + ': empty in localStorage, skipping</span>'); skipped++; continue; }
+    let data;
+    try { data = JSON.parse(raw); } catch(e) { fail(key + ': invalid JSON'); continue; }
+    
+    // Skip empty arrays/objects
+    if (Array.isArray(data) && data.length === 0) { log('<span class="warn">⚠ ' + key + ': empty array, skipping</span>'); skipped++; continue; }
+    if (typeof data === 'object' && data !== null && !Array.isArray(data) && Object.keys(data).length === 0) { log('<span class="warn">⚠ ' + key + ': empty object, skipping</span>'); skipped++; continue; }
+
+    try {
+      const res = await fetch('/api/app-data/' + encodeURIComponent(key), {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data }),
+      });
+      if (res.ok) {
+        ok(key + ': pushed (' + raw.length + ' bytes)');
+        pushed++;
+      } else {
+        fail(key + ': server returned HTTP ' + res.status);
+      }
+    } catch(e) {
+      fail(key + ': network error - ' + e.message);
+    }
+  }
+  log('<br><strong>Done! Pushed ' + pushed + ' keys, skipped ' + skipped + '.</strong>');
+  if (pushed > 0) ok('Other devices should now see this data after logging in and refreshing.');
+}
+
+async function pullAll() {
+  out.innerHTML = '';
+  log('Checking authentication...');
+  try {
+    const me = await fetch('/api/auth/me', {credentials:'include'});
+    if (!me.ok) { fail('Not logged in!'); return; }
+    ok('Authenticated');
+  } catch(e) { fail('Cannot reach server: ' + e.message); return; }
+
+  // Load sales months first
+  try {
+    const r = await fetch('/api/app-data/ww_sales_months', {credentials:'include', cache:'no-store'});
+    if (r.ok) {
+      const j = await r.json();
+      if (j.data) { localStorage.setItem('ww_sales_months', JSON.stringify(j.data)); ok('ww_sales_months loaded'); }
+    }
+  } catch(e) {}
+
+  const salesMonths = (() => { try { return JSON.parse(localStorage.getItem('ww_sales_months') || '[]'); } catch(e) { return []; } })();
+  const salesKeys = salesMonths.map(m => 'ww_sales_' + m);
+  const allKeys = [...KEYS, ...salesKeys];
+
+  const keyParam = allKeys.map(encodeURIComponent).join(',');
+  try {
+    const r = await fetch('/api/app-data-bulk?keys=' + keyParam, {credentials:'include', cache:'no-store'});
+    if (!r.ok) { fail('Bulk load failed: HTTP ' + r.status); return; }
+    const j = await r.json();
+    const items = j.items || {};
+    const loaded = Object.keys(items);
+    log('Server has ' + loaded.length + ' keys');
+    for (const k of loaded) {
+      const v = items[k];
+      if (v !== null && v !== undefined) {
+        localStorage.setItem(k, JSON.stringify(v));
+        ok(k + ': loaded (' + JSON.stringify(v).length + ' bytes)');
+      }
+    }
+    if (loaded.length > 0) {
+      log('<br><strong>Done! Loaded ' + loaded.length + ' keys. Refresh any page to see the data.</strong>');
+    } else {
+      log('<br><span class="warn">Server has no data. Push from the device that has data first.</span>');
+    }
+  } catch(e) { fail('Network error: ' + e.message); }
+}
+</script>
+</body></html>
