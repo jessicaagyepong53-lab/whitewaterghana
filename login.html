@@ -30,38 +30,46 @@
 
     <div class="auth-links" aria-label="Password help links">
       <button type="button" class="text-link" data-toggle-target="forgot-password-panel">Forgot password?</button>
-      <button type="button" class="text-link" data-toggle-target="reset-password-panel">Reset password</button>
+      <button type="button" class="text-link" data-toggle-target="reset-password-panel">Change password</button>
     </div>
 
     <section id="forgot-password-panel" class="auth-panel" hidden>
       <h3>Forgot Password</h3>
+      <p class="muted" style="margin-bottom:10px">If you've forgotten your password, contact a Manager or CEO to reset it from the User Management page.</p>
       <form id="forgot-password-form" class="auth-form auth-form-compact">
         <label>Email Address
-          <input type="email" name="email" placeholder="Enter your email" required>
+          <input type="email" name="email" placeholder="Enter your email" required autocomplete="email">
         </label>
-        <button type="submit">Send Reset Help</button>
+        <button type="submit">Check Account</button>
       </form>
     </section>
 
     <section id="reset-password-panel" class="auth-panel" hidden>
-      <h3>Reset Password</h3>
+      <h3>Change Password</h3>
+      <p class="muted" style="margin-bottom:10px">You must know your current password to change it.</p>
       <form id="reset-password-form" class="auth-form auth-form-compact">
         <label>Email Address
-          <input type="email" name="email" placeholder="Enter your email" required>
+          <input type="email" name="email" placeholder="Enter your email" required autocomplete="email">
+        </label>
+        <label>Current Password
+          <span class="password-wrap">
+            <input type="password" name="currentPassword" placeholder="Enter current password" required autocomplete="current-password">
+            <button type="button" class="pwd-toggle" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+          </span>
         </label>
         <label>New Password
           <span class="password-wrap">
-            <input type="password" name="newPassword" placeholder="Enter new password" required>
+            <input type="password" name="newPassword" placeholder="Enter new password" required autocomplete="new-password">
             <button type="button" class="pwd-toggle" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
           </span>
         </label>
         <label>Confirm New Password
           <span class="password-wrap">
-            <input type="password" name="confirmPassword" placeholder="Confirm new password" required>
+            <input type="password" name="confirmPassword" placeholder="Confirm new password" required autocomplete="new-password">
             <button type="button" class="pwd-toggle" aria-label="Show password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
           </span>
         </label>
-        <button type="submit">Reset Password</button>
+        <button type="submit">Change Password</button>
       </form>
     </section>
 

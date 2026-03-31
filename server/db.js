@@ -202,6 +202,16 @@ const appDataSchema = new mongoose.Schema({
   data: { type: mongoose.Schema.Types.Mixed, default: null },
 }, { timestamps: true, toJSON: toJSONOpts });
 
+const trashBinSchema = new mongoose.Schema({
+  module:      { type: String, required: true },
+  record_data: { type: mongoose.Schema.Types.Mixed, required: true },
+  deleted_by:  { type: String, required: true },
+  deleted_at:  { type: Date, required: true, default: Date.now },
+  expires_at:  { type: Date, required: true },
+}, { timestamps: true, toJSON: toJSONOpts });
+
+trashBinSchema.index({ expires_at: 1 }, { expireAfterSeconds: 0 });
+
 /* ── Register models ── */
 
 const User            = mongoose.model('User', userSchema);
@@ -222,6 +232,7 @@ const StoreProduct    = mongoose.model('StoreProduct', storeProductSchema);
 const StoreSession    = mongoose.model('StoreSession', storeSessionSchema);
 const FactoryEquipment = mongoose.model('FactoryEquipment', factoryEquipmentSchema);
 const AppData          = mongoose.model('AppData', appDataSchema);
+const TrashBin         = mongoose.model('TrashBin', trashBinSchema);
 
 /* ═══════════════════════════════════════════════
    HELPER FUNCTIONS
@@ -426,4 +437,5 @@ module.exports = {
   StoreSession,
   FactoryEquipment,
   AppData,
+  TrashBin,
 };

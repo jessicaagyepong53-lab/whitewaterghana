@@ -56,6 +56,7 @@
     <div class="tab-bar">
       <button class="tab-btn tab-active" data-tab="users-list" onclick="switchTab('um','users-list')">System Users</button>
       <button class="tab-btn" data-tab="permissions" onclick="switchTab('um','permissions')">Permissions Matrix</button>
+      <button class="tab-btn" data-tab="trash-bin" onclick="switchTab('um','trash-bin')"><i class="fa-solid fa-trash-can"></i> Trash Bin</button>
     </div>
     <div id="um-tab-users-list" class="tab-panel tab-active">
       <table class="data-table">
@@ -88,6 +89,33 @@
         <p>Supervisors and staff can submit edit/delete requests which go to the CEO Approval Queue before taking effect.</p>
       </div>
     </div>
+    <div id="um-tab-trash-bin" class="tab-panel">
+      <div class="info-box" style="margin-bottom:16px">
+        <p><i class="fa-solid fa-circle-info"></i> Deleted items are kept here for 30 days, then automatically purged. Managers can restore or permanently delete items.</p>
+      </div>
+      <div id="trash-filter-bar" style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+        <select id="trash-module-filter" style="padding:6px 10px;border-radius:6px;border:1px solid #d1d5db;font-size:.85rem">
+          <option value="">All Modules</option>
+          <option value="users">Users</option>
+          <option value="customers">Customers</option>
+          <option value="vendors">Vendors</option>
+          <option value="inventory">Inventory</option>
+          <option value="machines">Machines</option>
+          <option value="production">Production</option>
+          <option value="sales">Sales</option>
+          <option value="invoices">Invoices</option>
+          <option value="accounting">Accounting</option>
+          <option value="purchaseOrders">Purchase Orders</option>
+          <option value="factory-equipment">Factory Equipment</option>
+        </select>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr><th>Module</th><th>Record Summary</th><th>Deleted By</th><th>Deleted At</th><th>Expires</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="trash-tbody"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- Add User Modal -->
@@ -116,8 +144,8 @@
 <script>
 (function() {
   const ACCESS_LEVELS = {
-    ceo: 'Full Access � All Modules',
-    manager: 'Full Access � All Modules',
+    ceo: 'Full Access � All Modules',
+    manager: 'Full Access � All Modules',
     supervisor: 'Inventory, Sales, Purchase (Add only)',
     staff: 'Inventory, Sales, Purchase (Add only)',
   };
@@ -141,7 +169,7 @@
     cachedUsers = users;
     if (!usersTbody) return;
     if (users.length === 0) {
-      usersTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No users yet � users appear here when they sign up or log in.</td></tr>';
+      usersTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No users yet � users appear here when they sign up or log in.</td></tr>';
     } else {
       usersTbody.innerHTML = users.map(function(u) {
         const role = (u.role || '').toLowerCase();
@@ -153,7 +181,7 @@
           '<td>' + access + '</td>' +
           '<td><span class="status-pill ' + (u.status === 'Active' ? 'pill-success' : 'pill-warning') + '">' + (u.status || 'Active') + '</span></td>' +
           '<td>' + formatLogin(u.lastLogin) + '</td>' +
-          '<td><div class="row-actions"><button class="btn-edit um-edit-btn" data-id="' + u.id + '"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete um-delete-btn" data-id="' + u.id + '"><i class="fa-solid fa-trash"></i></button></div></td>' +
+          '<td><div class="row-actions"><button class="btn-edit um-edit-btn" data-id="' + u.id + '" title="Edit"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-edit um-reset-pwd-btn" data-id="' + u.id + '" title="Reset Password" style="color:#f59e0b"><i class="fa-solid fa-key"></i></button><button class="btn-delete um-delete-btn" data-id="' + u.id + '" title="Delete"><i class="fa-solid fa-trash"></i></button></div></td>' +
         '</tr>';
       }).join('');
     }
@@ -189,6 +217,7 @@
   if (usersTbody) usersTbody.addEventListener('click', async function(e) {
     var editBtn = e.target.closest('.um-edit-btn');
     var deleteBtn = e.target.closest('.um-delete-btn');
+    var resetPwdBtn = e.target.closest('.um-reset-pwd-btn');
     if (editBtn) {
       var id = editBtn.dataset.id;
       var u = cachedUsers.find(function(x) { return String(x.id) === id; });
@@ -200,6 +229,24 @@
       document.getElementById('um-email').value = u.email || '';
       document.getElementById('um-role').value = capitalize(u.role);
       document.getElementById('um-password').value = '';
+    }
+    if (resetPwdBtn) {
+      var id3 = resetPwdBtn.dataset.id;
+      var u3 = cachedUsers.find(function(x) { return String(x.id) === id3; });
+      if (!u3) return;
+      var newPwd = prompt('Enter new password for "' + u3.name + '" (min 6 characters):');
+      if (!newPwd) return;
+      if (newPwd.length < 6) { alert('Password must be at least 6 characters'); return; }
+      try {
+        var res3 = await fetch('/api/auth/admin-reset-password', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: id3, newPassword: newPwd }),
+        });
+        var data3 = await res3.json().catch(function() { return {}; });
+        if (!res3.ok) { alert(data3.message || 'Reset failed'); return; }
+        alert(data3.message || 'Password reset successfully');
+      } catch (err) { alert('Password reset failed'); }
     }
     if (deleteBtn) {
       var id2 = deleteBtn.dataset.id;
@@ -244,6 +291,114 @@
       loadUsers();
       closeModal();
     } catch (err) { alert('Operation failed'); }
+  });
+})();
+
+/* ═══════════════════════════════════════════════
+   TRASH BIN
+   ═══════════════════════════════════════════════ */
+(function() {
+  var trashTbody = document.getElementById('trash-tbody');
+  var moduleFilter = document.getElementById('trash-module-filter');
+  var cachedTrash = [];
+
+  var MODULE_LABELS = {
+    users: 'Users', customers: 'Customers', vendors: 'Vendors',
+    inventory: 'Inventory', machines: 'Machines', production: 'Production',
+    sales: 'Sales', invoices: 'Invoices', accounting: 'Accounting',
+    purchaseOrders: 'Purchase Orders', 'factory-equipment': 'Factory Equipment',
+  };
+
+  function getRecordSummary(item) {
+    var d = item.recordData || {};
+    if (d.name) return d.name;
+    if (d.order_code) return d.order_code + (d.product ? ' — ' + d.product : '');
+    if (d.invoice_code) return d.invoice_code;
+    if (d.batch_code) return d.batch_code + (d.product ? ' — ' + d.product : '');
+    if (d.po_code) return d.po_code + (d.item ? ' — ' + d.item : '');
+    if (d.code) return d.code + (d.equipment ? ' — ' + d.equipment : '');
+    if (d.description) return d.description.substring(0, 60);
+    if (d.email) return d.email;
+    return '(record)';
+  }
+
+  function formatDt(dt) {
+    if (!dt) return '—';
+    var d = new Date(dt);
+    if (isNaN(d)) return dt;
+    return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function daysUntil(dt) {
+    if (!dt) return '';
+    var diff = Math.ceil((new Date(dt) - new Date()) / (1000 * 60 * 60 * 24));
+    if (diff <= 0) return 'Expiring soon';
+    return diff + ' day' + (diff !== 1 ? 's' : '') + ' left';
+  }
+
+  function renderTrash(items) {
+    if (!trashTbody) return;
+    var filter = moduleFilter ? moduleFilter.value : '';
+    var filtered = filter ? items.filter(function(t) { return t.module === filter; }) : items;
+
+    if (filtered.length === 0) {
+      trashTbody.innerHTML = '<tr><td colspan="6" style="color:#64748b;text-align:center;padding:24px"><i class="fa-solid fa-trash-can" style="font-size:1.3rem;margin-right:6px"></i>Trash bin is empty</td></tr>';
+      return;
+    }
+    trashTbody.innerHTML = filtered.map(function(t) {
+      return '<tr>' +
+        '<td><span class="status-pill status-blue">' + (MODULE_LABELS[t.module] || t.module) + '</span></td>' +
+        '<td>' + getRecordSummary(t) + '</td>' +
+        '<td>' + (t.deletedBy || '—') + '</td>' +
+        '<td>' + formatDt(t.deletedAt) + '</td>' +
+        '<td><span style="color:#f59e0b;font-size:.82rem">' + daysUntil(t.expiresAt) + '</span></td>' +
+        '<td><div class="row-actions">' +
+          '<button class="btn-edit trash-restore-btn" data-id="' + t.id + '" title="Restore"><i class="fa-solid fa-rotate-left"></i></button>' +
+          '<button class="btn-delete trash-purge-btn" data-id="' + t.id + '" title="Delete permanently"><i class="fa-solid fa-fire"></i></button>' +
+        '</div></td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  async function loadTrash() {
+    try {
+      var res = await fetch('/api/trash', { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed');
+      cachedTrash = await res.json();
+      renderTrash(cachedTrash);
+    } catch (err) {
+      console.error('Error loading trash:', err);
+      if (trashTbody) trashTbody.innerHTML = '<tr><td colspan="6" style="color:#ef4444;text-align:center;padding:20px">Failed to load trash bin.</td></tr>';
+    }
+  }
+
+  loadTrash();
+
+  if (moduleFilter) moduleFilter.addEventListener('change', function() { renderTrash(cachedTrash); });
+
+  if (trashTbody) trashTbody.addEventListener('click', async function(e) {
+    var restoreBtn = e.target.closest('.trash-restore-btn');
+    var purgeBtn = e.target.closest('.trash-purge-btn');
+
+    if (restoreBtn) {
+      var id = restoreBtn.dataset.id;
+      if (!confirm('Restore this item back to its original module?')) return;
+      try {
+        var res = await fetch('/api/trash/' + id + '/restore', { method: 'POST', credentials: 'include' });
+        if (!res.ok) { var err = await res.json().catch(function() { return {}; }); alert(err.message || 'Restore failed'); return; }
+        loadTrash();
+      } catch (err) { alert('Restore failed'); }
+    }
+
+    if (purgeBtn) {
+      var id2 = purgeBtn.dataset.id;
+      if (!confirm('Permanently delete this item? This cannot be undone.')) return;
+      try {
+        var res2 = await fetch('/api/trash/' + id2, { method: 'DELETE', credentials: 'include' });
+        if (!res2.ok) { var err2 = await res2.json().catch(function() { return {}; }); alert(err2.message || 'Delete failed'); return; }
+        loadTrash();
+      } catch (err) { alert('Delete failed'); }
+    }
   });
 })();
 </script>

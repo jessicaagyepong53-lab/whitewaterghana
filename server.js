@@ -28,6 +28,7 @@ const {
   StoreSession,
   FactoryEquipment,
   AppData,
+  TrashBin,
 } = require('./server/db');
 
 const app = express();
@@ -329,6 +330,10 @@ async function applyApprovalMutation(approvalId) {
   if (!Model) return;
 
   if (approval.request_type === 'Delete') {
+    const record = await Model.findById(approval.record_id).lean();
+    if (record) {
+      await moveToTrash(approval.module_name, record, approval.submitted_by);
+    }
     await Model.deleteOne({ _id: approval.record_id });
     if (approval.module_name === 'sales') await refreshCustomerStats();
     return;
@@ -584,27 +589,53 @@ app.post('/api/auth/forgot-password', async (req, res, next) => {
     requireFields(req.body, ['email']);
     const email = String(req.body.email).trim().toLowerCase();
     const user = await User.findOne({ email });
-    if (!user) { res.json({ message: 'If the account exists, reset instructions have been sent.' }); return; }
-    res.json({ message: 'Reset instructions generated. Use the reset password form below.' });
+    if (!user) { res.json({ message: 'If this account exists, please contact a Manager or CEO to reset your password.' }); return; }
+    res.json({ message: 'Please contact a Manager or CEO to reset your password from the User Management page.' });
   } catch (error) {
     next(error);
   }
 });
 
+// Change password (requires current password)
+app.get('/api/auth/reset-password', (_req, res) => { res.json({ message: 'Use POST.' }); });
 app.post('/api/auth/reset-password', async (req, res, next) => {
   try {
-    requireFields(req.body, ['email', 'newPassword']);
+    requireFields(req.body, ['email', 'currentPassword', 'newPassword']);
     const email = String(req.body.email).trim().toLowerCase();
+    const currentPassword = String(req.body.currentPassword);
     const newPassword = String(req.body.newPassword);
     if (newPassword.length < 6) throw createError(400, 'New password must be at least 6 characters');
 
-    const result = await User.updateOne({ email }, { password_hash: bcrypt.hashSync(newPassword, 10) });
-    if (!result.modifiedCount) throw createError(404, 'No user found with this email');
-
     const user = await User.findOne({ email });
-    if (user) await Session.deleteMany({ user_id: user._id });
+    if (!user) throw createError(404, 'No user found with this email');
 
-    res.json({ message: 'Password reset successful. Please sign in with your new password.' });
+    if (!bcrypt.compareSync(currentPassword, user.password_hash)) {
+      throw createError(401, 'Current password is incorrect');
+    }
+
+    await User.updateOne({ _id: user._id }, { password_hash: bcrypt.hashSync(newPassword, 10) });
+    await Session.deleteMany({ user_id: user._id });
+
+    res.json({ message: 'Password changed successfully. Please sign in with your new password.' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Admin password reset (managers/CEOs can reset any user's password)
+app.post('/api/auth/admin-reset-password', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
+  try {
+    requireFields(req.body, ['userId', 'newPassword']);
+    const newPassword = String(req.body.newPassword);
+    if (newPassword.length < 6) throw createError(400, 'New password must be at least 6 characters');
+
+    const user = await User.findById(req.body.userId);
+    if (!user) throw createError(404, 'User not found');
+
+    await User.updateOne({ _id: user._id }, { password_hash: bcrypt.hashSync(newPassword, 10) });
+    await Session.deleteMany({ user_id: user._id });
+
+    res.json({ message: `Password reset for ${user.name}. They can now sign in with the new password.` });
   } catch (error) {
     next(error);
   }
@@ -932,14 +963,31 @@ app.post('/api/factory-equipment', ensureAuthenticated, async (req, res, next) =
 
 app.delete('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, next) => {
   try {
+    const record = await FactoryEquipment.findById(req.params.id).lean();
+    if (!record) throw createError(404, 'Equipment not found');
+    await moveToTrash('factory-equipment', record, `${req.user.name} (${req.user.role})`);
     await FactoryEquipment.deleteOne({ _id: req.params.id });
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
 
 /* ═══════════════════════════════════════════════
-   DELETE ROUTE
+   DELETE ROUTE  (soft-delete → trash bin)
    ═══════════════════════════════════════════════ */
+
+const TRASH_TTL_DAYS = 30;
+
+async function moveToTrash(module, record, deletedBy) {
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + TRASH_TTL_DAYS);
+  return TrashBin.create({
+    module,
+    record_data: record,
+    deleted_by: deletedBy,
+    deleted_at: new Date(),
+    expires_at: expiresAt,
+  });
+}
 
 app.delete('/api/:resource/:id', ensureAuthenticated, async (req, res, next) => {
   try {
@@ -984,9 +1032,75 @@ app.delete('/api/:resource/:id', ensureAuthenticated, async (req, res, next) => 
       return;
     }
 
+    await moveToTrash(labelMap[resource], record, `${req.user.name} (${req.user.role})`);
     await Model.deleteOne({ _id: req.params.id });
     if (resource === 'sales' || resource === 'invoices') await refreshCustomerStats();
     if (resource === 'inventory') await refreshInventoryStatuses();
+    res.json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+/* ═══════════════════════════════════════════════
+   TRASH BIN  (managers only)
+   ═══════════════════════════════════════════════ */
+
+app.get('/api/trash', ensureAuthenticated, ensureRole('users'), async (_req, res, next) => {
+  try {
+    const items = await TrashBin.find().sort({ deleted_at: -1 }).lean();
+    res.json(items.map(t => ({
+      id: t._id,
+      module: t.module,
+      recordData: t.record_data,
+      deletedBy: t.deleted_by,
+      deletedAt: t.deleted_at,
+      expiresAt: t.expires_at,
+    })));
+  } catch (error) { next(error); }
+});
+
+app.post('/api/trash/:id/restore', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
+  try {
+    const trashItem = await TrashBin.findById(req.params.id);
+    if (!trashItem) throw createError(404, 'Trash item not found');
+
+    const restoreMap = {
+      users: User, customers: Customer, vendors: Vendor,
+      inventory: InventoryItem, machines: Machine, production: ProductionBatch,
+      sales: SalesOrder, invoices: Invoice, accounting: AccountingEntry,
+      purchaseOrders: PurchaseOrder, 'factory-equipment': FactoryEquipment,
+    };
+
+    const Model = restoreMap[trashItem.module];
+    if (!Model) throw createError(400, 'Cannot restore items from module: ' + trashItem.module);
+
+    const data = { ...trashItem.record_data };
+    const originalId = data._id;
+    delete data._id;
+    delete data.__v;
+    delete data.id;
+
+    const existing = originalId ? await Model.findById(originalId).lean() : null;
+    if (existing) throw createError(409, 'A record with this ID already exists. It may have been re-created.');
+
+    if (originalId) {
+      await Model.create({ _id: originalId, ...data });
+    } else {
+      await Model.create(data);
+    }
+
+    await TrashBin.deleteOne({ _id: trashItem._id });
+
+    if (trashItem.module === 'sales' || trashItem.module === 'invoices') await refreshCustomerStats();
+    if (trashItem.module === 'inventory') await refreshInventoryStatuses();
+
+    res.json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/trash/:id', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
+  try {
+    const result = await TrashBin.deleteOne({ _id: req.params.id });
+    if (result.deletedCount === 0) throw createError(404, 'Trash item not found');
     res.json({ ok: true });
   } catch (error) { next(error); }
 });

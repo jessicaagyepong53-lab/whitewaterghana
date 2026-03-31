@@ -5667,8 +5667,14 @@ function bindPasswordAssistanceForms() {
 			event.preventDefault();
 			const formData = new FormData(resetForm);
 			const email = String(formData.get('email') || '').trim();
+			const currentPassword = String(formData.get('currentPassword') || '');
 			const newPassword = String(formData.get('newPassword') || '');
 			const confirmPassword = String(formData.get('confirmPassword') || '');
+
+			if (!currentPassword) {
+				setAuthMessage('Please enter your current password.', true);
+				return;
+			}
 
 			if (newPassword !== confirmPassword) {
 				setAuthMessage('New password and confirm password must match.', true);
@@ -5676,7 +5682,7 @@ function bindPasswordAssistanceForms() {
 			}
 
 			try {
-				const data = await postJson('/api/auth/reset-password', { email, newPassword });
+				const data = await postJson('/api/auth/reset-password', { email, currentPassword, newPassword });
 				setAuthMessage(data.message || 'Password reset successful. Redirecting to login…', false);
 				resetForm.reset();
 				// Close the reset panel and redirect to login after a short delay
