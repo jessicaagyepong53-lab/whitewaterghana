@@ -483,6 +483,14 @@ const AUTHORIZED_EMAILS = {
 
 app.use(attachUser);
 
+// Prevent caching on all API responses
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, timestamp: nowIso() });
 });
@@ -890,7 +898,7 @@ const ALLOWED_DATA_KEYS = [
   'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
   'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
   'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data',
-  'ww_sales_months',
+  'ww_sales_months', 'ww_equipment', 'ww_seed_flags',
 ];
 
 function isAllowedDataKey(key) {

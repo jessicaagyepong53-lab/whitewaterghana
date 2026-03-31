@@ -2,16 +2,41 @@ const API_BASE = '';
 
 /* ── Server persistence helpers ── */
 function syncToServer(key, data) {
-	fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), {
+	const body = JSON.stringify({ data });
+	const useKeepalive = body.length < 60000;
+	return fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), {
 		method: 'PUT', credentials: 'include',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ data }),
-	}).catch(() => {});
+		body,
+		keepalive: useKeepalive,
+	})
+	.then(res => {
+		if (!res.ok) console.error('[Sync] FAILED to save', key, '— HTTP', res.status);
+		else console.log('[Sync] Saved', key, '✓');
+		return res.ok;
+	})
+	.catch(err => {
+		console.error('[Sync] Network error saving', key, err);
+		return false;
+	});
+}
+
+/* ── Seed flag helpers (synced to server so flags persist across devices) ── */
+function _getSeedFlags() {
+	try { return JSON.parse(localStorage.getItem('ww_seed_flags') || '{}'); } catch (_e) { return {}; }
+}
+function getSeedFlag(name) { return !!_getSeedFlags()[name]; }
+function setSeedFlag(name) {
+	const flags = _getSeedFlags();
+	if (flags[name]) return;
+	flags[name] = 1;
+	localStorage.setItem('ww_seed_flags', JSON.stringify(flags));
+	syncToServer('ww_seed_flags', flags);
 }
 
 async function loadFromServer(key) {
 	try {
-		const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), { credentials: 'include' });
+		const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), { credentials: 'include', cache: 'no-store' });
 		if (res.ok) {
 			const json = await res.json();
 			if (json.data !== null && json.data !== undefined) {
@@ -25,7 +50,7 @@ async function loadFromServer(key) {
 
 async function loadBulkFromServer(keys) {
 	try {
-		const res = await fetch(API_BASE + '/api/app-data-bulk?keys=' + keys.map(encodeURIComponent).join(','), { credentials: 'include' });
+		const res = await fetch(API_BASE + '/api/app-data-bulk?keys=' + keys.map(encodeURIComponent).join(','), { credentials: 'include', cache: 'no-store' });
 		if (res.ok) {
 			const json = await res.json();
 			if (json.items) {
@@ -1653,8 +1678,7 @@ async function initInventoryPage() {
 		renderDeviationAlert();
 	};
 
-	saveRawMaterialsToStorage(rawMaterials);
-	saveEquipmentToStorage(equipment);
+	// Do NOT save during init — would overwrite server data with empty localStorage
 
 	rerenderInventory();
 
@@ -2007,16 +2031,20 @@ function loadSalesDataFromStorage() {
 
 	/* Seed March if it has no data yet, or re-seed if version changed */
 	const marchKey = monthStorageKey('2026-03');
-	const MARCH_SEED_VER = 'ww_march2026_seed_v2';
 	let marchData = null;
 	try { marchData = JSON.parse(localStorage.getItem(marchKey)); } catch(_e) {}
-	if (!marchData || !marchData.invoices || marchData.invoices.length === 0 || !localStorage.getItem(MARCH_SEED_VER)) {
-		currentSalesMonth = '2026-03';
-		salesModuleData.invoices = [];
-		salesModuleData.salesOrders = [];
-		seedMarchSalesData();
-		localStorage.setItem(MARCH_SEED_VER, '1');
-		return; /* seedMarchSalesData calls saveSalesDataToStorage, data is already in salesModuleData */
+	if (!marchData || !marchData.invoices || marchData.invoices.length === 0) {
+		if (!getSeedFlag('march2026_sales_v2')) {
+			currentSalesMonth = '2026-03';
+			salesModuleData.invoices = [];
+			salesModuleData.salesOrders = [];
+			seedMarchSalesData();
+			setSeedFlag('march2026_sales_v2');
+			return; /* seedMarchSalesData calls saveSalesDataToStorage, data is already in salesModuleData */
+		}
+	} else {
+		setSeedFlag('march2026_sales_v2');
+	}
 	}
 
 	/* Pick the month to display */
@@ -3767,16 +3795,17 @@ function loadAccountingDataFromStorage() {
 	} catch (_e) { /* ignore */ }
 
 	// One-time seed: March 2026 operational costs
-	if (!localStorage.getItem('ww_opscost_march2026_seeded') && accountingData.ledger.length === 0) {
+	if (!getSeedFlag('opscost_march2026') && accountingData.ledger.length === 0) {
 		seedMarchOperationalCosts();
-		localStorage.setItem('ww_opscost_march2026_seeded', '1');
+		setSeedFlag('opscost_march2026');
 		saveAccountingDataToStorage();
-	} else if (!localStorage.getItem('ww_opscost_march2026_seeded')) {
-		localStorage.setItem('ww_opscost_march2026_seeded', '1');
+	} else if (!getSeedFlag('opscost_march2026')) {
+		setSeedFlag('opscost_march2026');
 	}
 
 	// One-time seed: March 2026 salaries (v5 = 18k/week on Assets sheet)
-	if (!localStorage.getItem('ww_salaries_march2026_v5')) {
+	if (!getSeedFlag('salaries_march2026_v5')) {
+		if (accountingData.salaries.length === 0) {
 		// Remove old individual salary ledger entries
 		accountingData.ledger = accountingData.ledger.filter(e => !(e.account === 'Salaries' && e.desc && e.desc.startsWith('Salary —')));
 		// Remove old aggregate salary ledger/cashbook entries
@@ -3786,8 +3815,10 @@ function loadAccountingDataFromStorage() {
 		accountingData.assets = accountingData.assets.filter(e => !(e.category === 'Salaries & Wages'));
 		accountingData.salaries = [];
 		seedMarchSalaries();
-		localStorage.setItem('ww_salaries_march2026_v5', '1');
+		setSeedFlag('salaries_march2026_v5');
 		saveAccountingDataToStorage();
+		}
+		setSeedFlag('salaries_march2026_v5');
 	}
 }
 
@@ -4554,8 +4585,8 @@ function initProductionPage() {
 		return 'B-' + new Date().getFullYear() + '-' + String(batchCounter).padStart(3, '0');
 	}
 
-	/* Sync daily production + finished products from existing batches on page load */
-	saveBatches();
+	/* Do NOT save during init — would overwrite server data with empty localStorage */
+	// saveBatches();
 
 	const todayStr = getTodayDateStr();
 
@@ -5673,13 +5704,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 	enforceRoleAccess();
 
 	// Hydrate localStorage from server before page inits
+	let authenticated = false;
 	try {
+		const meRes = await fetch(API_BASE + '/api/auth/me', { credentials: 'include', cache: 'no-store' });
+		if (meRes.ok) authenticated = true;
+	} catch (_e) { /* offline */ }
+
+	if (authenticated) try {
+		await loadFromServer('ww_seed_flags');
+		await loadFromServer('ww_sales_months');
 		const salesMonths = getSalesMonths();
 		const salesKeys = salesMonths.map((m) => 'ww_sales_' + m);
 		await loadBulkFromServer([
 			'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
 			'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
-			'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data', 'ww_sales_months',
+			'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data',
+			'ww_equipment',
 			...salesKeys,
 		]);
 		// Re-load sales months in case server had more
@@ -5688,7 +5728,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 			const extraKeys = serverMonths.filter((m) => !salesMonths.includes(m)).map((m) => 'ww_sales_' + m);
 			if (extraKeys.length) await loadBulkFromServer(extraKeys);
 		}
-	} catch (_e) { /* proceed with localStorage data */ }
+		console.log('[Init] Server hydration complete');
+	} catch (_e) { console.warn('[Init] Server hydration failed:', _e); }
 
 	initDashboardPage();
 	initInventoryPage();
