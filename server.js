@@ -635,6 +635,53 @@ app.get('/api/reports', ensureAuthenticated, ensureRole('reports'), async (_req,
   try { res.json(await getReportData()); } catch (e) { next(e); }
 });
 
+/* ═══════════════════════════════════════════════
+   APP DATA (generic key-value persistence)
+   ═══════════════════════════════════════════════ */
+
+const ALLOWED_DATA_KEYS = [
+  'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
+  'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
+  'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data',
+  'ww_sales_months', 'ww_equipment', 'ww_seed_flags',
+];
+
+function isAllowedDataKey(key) {
+  if (ALLOWED_DATA_KEYS.includes(key)) return true;
+  if (/^ww_sales_\d{4}-\d{2}$/.test(key)) return true;
+  return false;
+}
+
+app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const keys = (req.query.keys || '').split(',').filter(k => isAllowedDataKey(k));
+    if (!keys.length) return res.json({ items: [] });
+    const docs = await AppData.find({ key: { $in: keys } }).lean();
+    const map = {};
+    docs.forEach(d => { map[d.key] = d.data; });
+    res.json({ items: map });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const key = req.params.key;
+    if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
+    const doc = await AppData.findOne({ key }).lean();
+    res.json({ key, data: doc ? doc.data : null });
+  } catch (error) { next(error); }
+});
+
+app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const key = req.params.key;
+    if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
+    await AppData.updateOne({ key }, { key, data: req.body.data }, { upsert: true });
+    res.json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+/* Generic resource GET (must be AFTER specific /api/* routes) */
 app.get('/api/:resource', ensureAuthenticated, async (req, res, next) => {
   try {
     const resource = req.params.resource;
@@ -887,52 +934,6 @@ app.delete('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, n
   try {
     await FactoryEquipment.deleteOne({ _id: req.params.id });
     res.json({ ok: true });
-  } catch (error) { next(error); }
-});
-
-/* ═══════════════════════════════════════════════
-   APP DATA (generic key-value persistence)
-   ═══════════════════════════════════════════════ */
-
-const ALLOWED_DATA_KEYS = [
-  'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
-  'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
-  'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data',
-  'ww_sales_months', 'ww_equipment', 'ww_seed_flags',
-];
-
-function isAllowedDataKey(key) {
-  if (ALLOWED_DATA_KEYS.includes(key)) return true;
-  if (/^ww_sales_\d{4}-\d{2}$/.test(key)) return true;
-  return false;
-}
-
-app.get('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
-  try {
-    const key = req.params.key;
-    if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
-    const doc = await AppData.findOne({ key }).lean();
-    res.json({ key, data: doc ? doc.data : null });
-  } catch (error) { next(error); }
-});
-
-app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
-  try {
-    const key = req.params.key;
-    if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
-    await AppData.updateOne({ key }, { key, data: req.body.data }, { upsert: true });
-    res.json({ ok: true });
-  } catch (error) { next(error); }
-});
-
-app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
-  try {
-    const keys = (req.query.keys || '').split(',').filter(k => isAllowedDataKey(k));
-    if (!keys.length) return res.json({ items: [] });
-    const docs = await AppData.find({ key: { $in: keys } }).lean();
-    const map = {};
-    docs.forEach(d => { map[d.key] = d.data; });
-    res.json({ items: map });
   } catch (error) { next(error); }
 });
 
