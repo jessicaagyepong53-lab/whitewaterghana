@@ -503,12 +503,15 @@ app.get('/api/debug-check', async (req, res) => {
     const appDataKeys = await AppData.find({}, 'key').lean();
     const hasCookie = !!req.cookies[SESSION_COOKIE];
     const sessionValid = req.user ? true : false;
+    const rawCookieHeader = req.headers.cookie || '(none)';
     res.json({
       db: 'connected',
       users: userCount,
       sessions: sessionCount,
       appDataKeys: appDataKeys.map(d => d.key),
-      cookie: hasCookie,
+      rawCookieHeader,
+      parsedCookies: Object.keys(req.cookies || {}),
+      hasCookie,
       authenticated: sessionValid,
       userRole: req.user?.role || null,
     });
