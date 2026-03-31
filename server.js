@@ -495,6 +495,28 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, timestamp: nowIso() });
 });
 
+// Temporary diagnostic endpoint (no auth required)
+app.get('/api/debug-check', async (req, res) => {
+  try {
+    const userCount = await User.countDocuments();
+    const sessionCount = await Session.countDocuments();
+    const appDataKeys = await AppData.find({}, 'key').lean();
+    const hasCookie = !!req.cookies[SESSION_COOKIE];
+    const sessionValid = req.user ? true : false;
+    res.json({
+      db: 'connected',
+      users: userCount,
+      sessions: sessionCount,
+      appDataKeys: appDataKeys.map(d => d.key),
+      cookie: hasCookie,
+      authenticated: sessionValid,
+      userRole: req.user?.role || null,
+    });
+  } catch (e) {
+    res.json({ db: 'error', message: e.message });
+  }
+});
+
 // GET handlers for auth routes — silences browser/extension prefetch probes
 app.get('/api/auth/register', (_req, res) => { res.json({ message: 'Use POST.' }); });
 app.get('/api/auth/login', (_req, res) => { res.json({ message: 'Use POST.' }); });
