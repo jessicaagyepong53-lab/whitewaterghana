@@ -2045,7 +2045,6 @@ function loadSalesDataFromStorage() {
 	} else {
 		setSeedFlag('march2026_sales_v2');
 	}
-	}
 
 	/* Pick the month to display */
 	if (!currentSalesMonth) {
