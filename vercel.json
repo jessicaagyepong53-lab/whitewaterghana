@@ -9,6 +9,26 @@
     { "src": "index.html", "use": "@vercel/static" },
     { "src": "store.html", "use": "@vercel/static" }
   ],
+  "headers": [
+    {
+      "source": "/src/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/pages/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/(login|index|store)\\.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    }
+  ],
   "routes": [
     { "src": "/src/(.*)", "dest": "/src/$1" },
     { "src": "/images/(.*)", "dest": "/images/$1" },

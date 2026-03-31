@@ -5709,11 +5709,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 	// Hydrate localStorage from server before page inits
 	let authenticated = false;
+	const isOpsPage = document.body.classList.contains('ops-page');
 	try {
 		const meRes = await fetch(API_BASE + '/api/auth/me', { credentials: 'include', cache: 'no-store' });
 		if (meRes.ok) authenticated = true;
 		console.log('[Auth] /api/auth/me status:', meRes.status, 'authenticated:', authenticated);
 	} catch (_e) { console.warn('[Auth] /api/auth/me failed (offline?):', _e); }
+
+	// Redirect to login if not authenticated on ops pages
+	if (!authenticated && isOpsPage) {
+		const loginHref = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
+		window.location.href = loginHref;
+		return;
+	}
 
 	if (authenticated) try {
 		await loadFromServer('ww_seed_flags');

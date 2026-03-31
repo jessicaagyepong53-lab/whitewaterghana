@@ -495,6 +495,11 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, timestamp: nowIso() });
 });
 
+// Temporary: test body parsing on Vercel
+app.post('/api/debug-body', (req, res) => {
+  res.json({ bodyType: typeof req.body, bodyKeys: req.body ? Object.keys(req.body) : null, body: req.body });
+});
+
 // Temporary diagnostic endpoint (no auth required)
 app.get('/api/debug-check', async (req, res) => {
   try {
