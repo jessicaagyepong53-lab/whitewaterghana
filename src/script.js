@@ -593,7 +593,7 @@ function resolvePageHref(pageKey) {
 }
 
 function canEditDelete(role) {
-	return role === 'ceo' || role === 'manager' || role === 'supervisor';
+	return role === 'ceo' || role === 'manager';
 }
 
 function enforceRoleAccess() {
