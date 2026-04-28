@@ -1088,12 +1088,29 @@ function initDashboardPage() {
 	const renderDashboardLiveSummary = () => {
 		const dailyLog = getDailyProductionLog();
 		const todayStr = getTodayDateStr();
-		const unitsProduced = Number(dailyLog[todayStr] || 0);
+		const batchLog = (() => {
+			try {
+				return JSON.parse(localStorage.getItem('ww_production_batches') || '[]').reduce((acc, batch) => {
+					const dateKey = batch.date || batch.addedDate;
+					if (!dateKey) return acc;
+					acc[dateKey] = (acc[dateKey] || 0) + Number(batch.qty || 0);
+					return acc;
+				}, {});
+			} catch (_e) {
+				return {};
+			}
+		})();
+		const productionLog = Object.keys(dailyLog).length ? dailyLog : batchLog;
+		const totalUnitsProduced = Object.values(productionLog).reduce((sum, value) => sum + (Number(value) || 0), 0);
+		const unitsProducedToday = Number(productionLog[todayStr] || 0);
 		const stockAlerts = buildStockAlerts();
 		const stockAlertCount = stockAlerts.filter((a) => a.current < a.min).length;
 		const stockCriticalCount = stockAlerts.filter((a) => a.current < a.min * 0.5).length;
 
 		const revenueData = buildRevenueData();
+		const totalRevenue = getAllSalesData().invoices.reduce((sum, invoice) => {
+			return invoice.status === 'paid' ? sum + (Number(invoice.amount) || 0) : sum;
+		}, 0);
 		const revenueMtd = revenueData.length > 0 ? revenueData[revenueData.length - 1].revenue : 0;
 		const prevRevenue = revenueData.length > 1 ? revenueData[revenueData.length - 2].revenue : 0;
 		const revChange = prevRevenue > 0 ? (((revenueMtd - prevRevenue) / prevRevenue) * 100).toFixed(1) : 0;
@@ -1101,8 +1118,8 @@ function initDashboardPage() {
 		const activeCustomers = countActiveCustomers();
 
 		const kpiCards = [
-			{ icon: '<i class="fa-solid fa-cedi-sign"></i>', label: 'Total Revenue', value: formatCurrency(revenueMtd), meta: revenueMtd > 0 ? `${revChange >= 0 ? '+' : ''}${revChange}% vs previous month` : 'No sales data yet', color: 'blue', link: null },
-			{ icon: '<i class="fa-solid fa-box"></i>', label: 'Units Produced', value: formatNumber(unitsProduced), meta: calcWeeklyEfficiencyLabel(dailyLog, todayStr), color: 'green', link: null },
+			{ icon: '<i class="fa-solid fa-cedi-sign"></i>', label: 'Total Revenue', value: formatCurrency(totalRevenue), meta: revenueMtd > 0 ? `${formatCurrency(revenueMtd)} this month • ${revChange >= 0 ? '+' : ''}${revChange}% vs previous month` : 'No sales data yet', color: 'blue', link: null },
+			{ icon: '<i class="fa-solid fa-box"></i>', label: 'Units Produced', value: formatNumber(totalUnitsProduced), meta: totalUnitsProduced > 0 ? `${formatNumber(unitsProducedToday)} produced today • ${calcWeeklyEfficiencyLabel(productionLog, todayStr)}` : 'No production data yet', color: 'green', link: null },
 			{ icon: '<i class="fa-solid fa-users"></i>', label: 'Active Customers', value: formatNumber(activeCustomers), meta: activeCustomers > 0 ? 'Unique customers from sales' : 'No customers yet', color: 'purple', link: null },
 			{ icon: '<i class="fa-solid fa-triangle-exclamation"></i>', label: 'Stock Alerts', value: String(stockAlertCount), meta: `${stockCriticalCount} critically low \u2014 needs reorder`, color: stockCriticalCount > 0 ? 'red' : 'yellow', link: `${resolvePageHref('inventory')}?tab=materials` },
 		];
@@ -1337,6 +1354,14 @@ function initDashboardPage() {
 	};
 	renderDashboardEquipmentStatus();
 
+	const refreshDashboardView = () => {
+		const rd = buildRevenueData();
+		renderDashboardLiveSummary();
+		renderDashboardEquipmentStatus();
+		renderDashboardCharts(rd, buildDailySales());
+		renderProfitLossChart(rd);
+	};
+
 	if (!window.__wwDashboardStorageBound) {
 		window.__wwDashboardStorageBound = true;
 
@@ -1344,11 +1369,7 @@ function initDashboardPage() {
 		window.addEventListener('storage', (event) => {
 			const dashKeys = ['ww_raw_materials', 'ww_daily_production', 'ww_equipment', 'ww_production_batches', 'ww_accounting_data_v2', 'ww_purchase_data_v2'];
 			if (dashKeys.includes(event.key) || (event.key && event.key.startsWith('ww_sales_'))) {
-				const rd = buildRevenueData();
-				renderDashboardLiveSummary();
-				renderDashboardEquipmentStatus();
-				renderDashboardCharts(rd, buildDailySales());
-				renderProfitLossChart(rd);
+				refreshDashboardView();
 			}
 		});
 
@@ -1356,10 +1377,7 @@ function initDashboardPage() {
 		try {
 			const salesDashChannel = new BroadcastChannel('ww_sales_sync');
 			salesDashChannel.onmessage = () => {
-				const rd = buildRevenueData();
-				renderDashboardLiveSummary();
-				renderDashboardCharts(rd, buildDailySales());
-				renderProfitLossChart(rd);
+				refreshDashboardView();
 			};
 		} catch (_e) { /* ignore */ }
 
@@ -1378,7 +1396,7 @@ function initDashboardPage() {
 			const rawChannel = new BroadcastChannel('ww_raw_materials_sync');
 			rawChannel.onmessage = (e) => {
 				if (e.data && e.data.type === 'raw_materials_updated') {
-					renderDashboardLiveSummary();
+					refreshDashboardView();
 				}
 			};
 			window.__wwRawChannel = rawChannel;
@@ -1388,10 +1406,7 @@ function initDashboardPage() {
 		try {
 			const acctChannel = new BroadcastChannel('ww_accounting_sync');
 			acctChannel.onmessage = () => {
-				const rd = buildRevenueData();
-				renderDashboardLiveSummary();
-				renderDashboardCharts(rd, buildDailySales());
-				renderProfitLossChart(rd);
+				refreshDashboardView();
 			};
 		} catch (_e) { /* fallback to storage event */ }
 
@@ -1399,25 +1414,20 @@ function initDashboardPage() {
 		try {
 			const purchChannel = new BroadcastChannel('ww_purchase_sync');
 			purchChannel.onmessage = () => {
-				const rd = buildRevenueData();
-				renderDashboardLiveSummary();
-				renderDashboardCharts(rd, buildDailySales());
-				renderProfitLossChart(rd);
+				refreshDashboardView();
 			};
 		} catch (_e) { /* fallback to storage event */ }
-	}
 
-	// Fallback poll every 3 s (same-tab or unsupported browsers)
-	if (window.__wwDashboardLiveTimer) {
-		clearInterval(window.__wwDashboardLiveTimer);
+		const refreshOnFocus = () => {
+			if (document.body.getAttribute('data-page') === 'dashboard') {
+				refreshDashboardView();
+			}
+		};
+		window.addEventListener('focus', refreshOnFocus);
+		document.addEventListener('visibilitychange', () => {
+			if (!document.hidden) refreshOnFocus();
+		});
 	}
-	window.__wwDashboardLiveTimer = setInterval(() => {
-		const rd = buildRevenueData();
-		renderDashboardLiveSummary();
-		renderDashboardEquipmentStatus();
-		renderDashboardCharts(rd, buildDailySales());
-		renderProfitLossChart(rd);
-	}, 3000);
 }
 
 async function initInventoryPage() {
@@ -2356,7 +2366,7 @@ function renderInvoiceDetail(invoice) {
 				<div class="inv-doc-numbers">
 					<div class="inv-doc-num-row"><span>Invoice no:</span><strong>${invNo}</strong></div>
 					<div class="inv-doc-num-row"><span>Date:</span><strong>${fmtDate(invoice.date)}</strong></div>
-					<div class="inv-doc-num-row"><span>Paid date:</span><strong>${invoice.paidDate ? fmtDate(invoice.paidDate) : '—'}</strong></div>
+					${invoice.paidDate ? `<div class="inv-doc-num-row"><span>Paid date:</span><strong>${fmtDate(invoice.paidDate)}</strong></div>` : ''}
 					${invoice.createdAt ? '<div class="inv-doc-num-row"><span>Created:</span><strong>' + new Date(invoice.createdAt).toLocaleString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:true }) + '</strong></div>' : ''}
 				</div>
 			</div>
@@ -2371,7 +2381,7 @@ function renderInvoiceDetail(invoice) {
 
 			<div class="inv-doc-totals" ${hideMoney ? 'style="display:none"' : ''}>
 				<div class="inv-doc-total-row"><span>SUB TOTAL</span><span>GH₵${subTotal.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
-				<div class="inv-doc-total-row"><span>DELIVERY FEE</span><span>GH₵${deliveryFee.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
+				${deliveryFee > 0 ? `<div class="inv-doc-total-row"><span>DELIVERY FEE</span><span>GH₵${deliveryFee.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>` : ''}
 				<div class="inv-doc-total-row"><span>TOTAL</span><span>GH₵${total.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
 				<div class="inv-doc-total-row inv-doc-grand"><span>GRAND TOTAL</span><span>GH₵${total.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
 			</div>
@@ -2537,12 +2547,8 @@ async function initSalesInvoicesPage() {
 				{ id: 'product', label: 'Product', type: 'text', required: true, placeholder: 'e.g. Mobile Water 500ml' },
 				{ id: 'qty', label: 'Quantity', type: 'number', min: '1', required: true },
 				{ id: 'promo', label: 'Promo', type: 'number', min: '0', defaultValue: '0' },
-				{ id: 'promoNote', label: 'Promo Note', type: 'text', placeholder: 'e.g. leakage, retained' },
 				{ id: 'unitPrice', label: 'Unit Price (GH)', type: 'number', min: '0', step: '0.01', required: true },
-				{ id: 'deliveryFee', label: 'Delivery Fee (GH)', type: 'number', min: '0', step: '0.01', defaultValue: '0' },
 				{ id: 'date', label: 'Invoice Date', type: 'date', defaultValue: todayStr, required: true },
-				{ id: 'paidDate', label: 'Paid Date', type: 'date' },
-				{ id: 'status', label: 'Status', type: 'select', options: ['pending', 'paid', 'overdue'], required: true },
 				{ id: 'paymentMode', label: 'Payment Mode', type: 'select', options: ['', 'Cash', 'Momo', 'Cash + Momo'] },
 			],
 		},
@@ -2551,11 +2557,9 @@ async function initSalesInvoicesPage() {
 			fields: [
 				{ id: 'customer', label: 'Customer Name', type: 'text', required: true },
 				{ id: 'orderDate', label: 'Order Date', type: 'date', defaultValue: todayStr, required: true },
-				{ id: 'deliveryDate', label: 'Delivery Date', type: 'date', required: true },
+				{ id: 'unitPrice', label: 'Unit Price (GH)', type: 'number', min: '0', step: '0.01', required: true },
 				{ id: 'amount', label: 'Amount (GH)', type: 'number', min: '0', step: '0.01', required: true },
 				{ id: 'promo', label: 'Promo', type: 'number', min: '0', defaultValue: '0' },
-				{ id: 'promoNote', label: 'Promo Note', type: 'text', placeholder: 'e.g. leakage, retained' },
-				{ id: 'status', label: 'Status', type: 'select', options: ['confirmed', 'processing', 'shipped', 'delivered'], required: true },
 				{ id: 'paymentMode', label: 'Payment Mode', type: 'select', options: ['', 'Cash', 'Momo', 'Cash + Momo'] },
 			],
 		},
@@ -2624,11 +2628,7 @@ async function initSalesInvoicesPage() {
 					setVal('qty', row.items && row.items[0] ? row.items[0].qty : 1);
 					setVal('unitPrice', row.items && row.items[0] ? row.items[0].unitPrice : row.amount);
 					setVal('promo', row.promo || 0);
-					setVal('promoNote', row.promoNote || '');
-					setVal('deliveryFee', row.deliveryFee || 0);
 					setVal('date', row.date);
-					setVal('paidDate', row.paidDate);
-					setVal('status', row.status);
 					setVal('paymentMode', row.paymentMode);
 				}
 			} else if (entity === 'order') {
@@ -2637,11 +2637,9 @@ async function initSalesInvoicesPage() {
 					const setVal = (id, v) => { const el = document.getElementById('si-field-' + id); if (el && v !== undefined) el.value = v; };
 					setVal('customer', row.customer);
 					setVal('orderDate', row.orderDate);
-					setVal('deliveryDate', row.deliveryDate);
+					setVal('unitPrice', row.rate || (row.bags && row.amount ? +(row.amount / row.bags).toFixed(2) : ''));
 					setVal('amount', row.amount);
 					setVal('promo', row.promo || 0);
-					setVal('promoNote', row.promoNote || '');
-					setVal('status', row.status);
 					setVal('paymentMode', row.paymentMode);
 				}
 			}
@@ -2684,21 +2682,22 @@ async function initSalesInvoicesPage() {
 				const product = getValue('product');
 				if (!customer || !product) return;
 				const invDate = getValue('date') || todayStr;
-				const chosenStatus = getValue('status') || 'pending';
+				const existingInvoice = editingSiIdx >= 0 ? salesModuleData.invoices[editingSiIdx] : null;
+				const chosenStatus = existingInvoice?.requestedStatus || existingInvoice?.status || 'pending';
 				const invData = {
 					customer,
 					address: getValue('address'),
 					phone: getValue('phone'),
 					date: invDate,
-					paidDate: getValue('paidDate') || (chosenStatus === 'paid' ? invDate : ''),
+					paidDate: chosenStatus === 'paid' ? invDate : '',
 					status: isApprover ? chosenStatus : 'pending_approval',
 					requestedStatus: isApprover ? undefined : chosenStatus,
 					paymentMode: getValue('paymentMode'),
 					promo: getNum('promo'),
-					promoNote: getValue('promoNote'),
+					promoNote: existingInvoice?.promoNote || '',
 					product,
 					items: [{ name: product, qty: getNum('qty') || 1, unitPrice: getNum('unitPrice') }],
-					deliveryFee: getNum('deliveryFee'),
+					deliveryFee: 0,
 					createdAt: new Date().toISOString(),
 				};
 				invData.rate = invData.items[0].unitPrice;
@@ -2737,14 +2736,16 @@ async function initSalesInvoicesPage() {
 			if (currentEntity === 'order') {
 				const customer = getValue('customer');
 				if (!customer) return;
-				const chosenStatus = getValue('status') || 'confirmed';
+				const existingOrder = editingSiIdx >= 0 ? salesModuleData.salesOrders[editingSiIdx] : null;
+				const chosenStatus = existingOrder?.requestedStatus || existingOrder?.status || 'confirmed';
 				const ordData = {
 					customer,
 					orderDate: getValue('orderDate') || todayStr,
-					deliveryDate: getValue('deliveryDate') || todayStr,
+					deliveryDate: existingOrder?.deliveryDate || getValue('orderDate') || todayStr,
+					rate: getNum('unitPrice'),
 					amount: getNum('amount'),
 					promo: getNum('promo'),
-					promoNote: getValue('promoNote'),
+					promoNote: existingOrder?.promoNote || '',
 					paymentMode: getValue('paymentMode'),
 					status: isApprover ? chosenStatus : 'pending_approval',
 					requestedStatus: isApprover ? undefined : chosenStatus,
@@ -2758,11 +2759,12 @@ async function initSalesInvoicesPage() {
 						inv.customer = ordData.customer;
 						inv.date = ordData.orderDate;
 						inv.amount = ordData.amount;
+						inv.rate = ordData.rate;
 						inv.paymentMode = ordData.paymentMode;
 						inv.promo = ordData.promo;
 						inv.promoNote = ordData.promoNote;
+						if (inv.items && inv.items[0]) inv.items[0].unitPrice = ordData.rate;
 						inv.status = ordData.status === 'delivered' ? 'paid' : ordData.status === 'overdue' ? 'overdue' : 'pending';
-						inv.paidDate = inv.status === 'paid' ? inv.date : '';
 					}
 				} else {
 					ordData.id = nextOrderId();
@@ -2770,10 +2772,10 @@ async function initSalesInvoicesPage() {
 					/* Auto-create matching invoice */
 					const invId = 'INV' + ordData.id.slice(2);
 					const product = '500ml Sachet Water (500 pcs/bag)';
-					const rate = ordData.amount && ordData.bags ? +(ordData.amount / ordData.bags).toFixed(2) : 0;
+					const rate = ordData.rate || (ordData.amount && ordData.bags ? +(ordData.amount / ordData.bags).toFixed(2) : 0);
 					salesModuleData.invoices.push({
 						id: invId, customer: ordData.customer, product,
-						date: ordData.orderDate, paidDate: ordData.status === 'delivered' ? ordData.orderDate : '',
+						date: ordData.orderDate, paidDate: '',
 						status: ordData.status === 'delivered' ? 'paid' : 'pending',
 						amount: ordData.amount, rate, paymentMode: ordData.paymentMode,
 						promo: ordData.promo, promoNote: ordData.promoNote,
@@ -2983,6 +2985,10 @@ async function initSalesInvoicesPage() {
 				const showFollowUp = ['overdue', 'confirmed', 'processing', 'shipped'].includes(order.status);
 				const followUpCount = (order.followUps && order.followUps.length) || 0;
 				const statusLabel = order.status === 'pending_approval' ? 'Pending Approval' : order.status;
+				const orderDateDisplay = formatDateDisplay(order.orderDate);
+				const deliveryDateNote = order.deliveryDate && order.deliveryDate !== order.orderDate
+					? `<small style="display:block;color:#6b7280">Delivery: ${formatDateDisplay(order.deliveryDate)}</small>`
+					: '';
 				const approveBtn = isApprover && order.status === 'pending_approval'
 					? `<button class="btn-approve si-approve-btn" data-approve-entity="order" data-approve-idx="${idx}" title="Approve"><i class="fa-solid fa-check"></i></button>`
 					: '';
@@ -2993,7 +2999,7 @@ async function initSalesInvoicesPage() {
 						<td>${order.promo ? order.promo + (order.promoNote ? ' <small style="color:#6b7280">(' + order.promoNote + ')</small>' : '') : ''}</td>
 						<td>${order.bags || ''}</td>
 						<td>${hideMoney ? '—' : (order.rate ? order.rate : (order.bags && order.amount ? (order.amount / order.bags).toFixed(1) : ''))}</td>
-						<td>${formatDateDisplay(order.orderDate)}</td>
+						<td>${orderDateDisplay}${deliveryDateNote}</td>
 						<td>${hideMoney ? '—' : formatCurrency(order.amount)}</td>
 						<td>${order.paymentMode || ''}</td>
 						<td><span class="status-pill ${statusPillClass(order.status)}">${statusLabel}</span></td>
