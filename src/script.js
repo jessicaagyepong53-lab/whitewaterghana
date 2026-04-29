@@ -4936,8 +4936,6 @@ function initAccountingPage() {
 		const title = 'White Water Wells - Salary Payments';
 		const generatedAt = new Date().toLocaleString('en-GB');
 		const weekText = `${weekLabel(currentSalaryWeek)} (Mon ${currentSalaryWeek} to Sun ${getWeekEnd(currentSalaryWeek)})`;
-		const workerCount = selectedWorkers.length;
-		const totalPaid = selectedRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 		const printCss = `${window.location.origin}/src/script.css?v=20260331`;
 
 		const sectionsHtml = selectedWorkers.sort((a, b) => a.localeCompare(b)).map((worker, workerIndex) => {
@@ -4948,7 +4946,13 @@ function initAccountingPage() {
 			}).join('');
 			return `
 				<section class="worker-section${workerIndex > 0 ? ' page-break' : ''}">
-					<h2>${escapeHtml(worker)}</h2>
+					<div class="worker-head">
+						<div>
+							<h2>${escapeHtml(worker)}</h2>
+							<p class="worker-week">${escapeHtml(weekText)}</p>
+						</div>
+						<div class="worker-total">Total: ${formatCurrency(workerTotal)}</div>
+					</div>
 					<table>
 						<thead><tr><th>Date Paid</th><th>Week</th><th>Amount (GH)</th><th>Notes</th></tr></thead>
 						<tbody>${bodyRows}<tr><td colspan="2" style="text-align:right;font-weight:700;">Total</td><td style="text-align:right;font-weight:700;">${formatCurrency(workerTotal)}</td><td></td></tr></tbody>
@@ -4970,12 +4974,11 @@ function initAccountingPage() {
     .print-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-bottom: 1px solid #e2e8f0; margin-bottom: 12px; padding-bottom: 8px; }
     .print-head h1 { font-size: 1.1rem; margin: 0; }
     .print-head p { font-size: 0.85rem; color: #64748b; margin: 0; }
-    .print-meta { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 10px; margin-bottom: 12px; }
-    .meta-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; }
-    .meta-label { margin: 0 0 4px; color: #64748b; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
-    .meta-value { margin: 0; font-size: 1rem; font-weight: 700; }
 	    .worker-section { margin-top: 14px; }
-	    .worker-section h2 { margin: 0 0 8px; font-size: 1rem; }
+	    .worker-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+	    .worker-section h2 { margin: 0; font-size: 1rem; }
+	    .worker-week { margin: 4px 0 0; font-size: 0.86rem; color: #64748b; }
+	    .worker-total { font-size: 0.95rem; font-weight: 700; white-space: nowrap; }
 	    .page-break { page-break-before: always; break-before: page; }
     table { width: 100%; border-collapse: collapse; }
     th, td { border: 1px solid #e2e8f0; padding: 8px 10px; font-size: 0.9rem; vertical-align: top; }
@@ -4988,11 +4991,6 @@ function initAccountingPage() {
     <div class="print-head">
       <h1>${title}</h1>
       <p>Generated: ${generatedAt}</p>
-    </div>
-    <div class="print-meta">
-      <div class="meta-card"><p class="meta-label">Week</p><p class="meta-value">${escapeHtml(weekText)}</p></div>
-	      <div class="meta-card"><p class="meta-label">Workers Selected</p><p class="meta-value">${workerCount}</p></div>
-      <div class="meta-card"><p class="meta-label">Total Paid</p><p class="meta-value">${formatCurrency(totalPaid)}</p></div>
     </div>
 	    ${sectionsHtml}
   </div>

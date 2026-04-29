@@ -379,7 +379,7 @@ async function getOptions() {
     Machine.find({}, 'name').sort({ name: 1 }).lean(),
     InventoryItem.find({ category: 'Finished Goods' }, 'name').sort({ name: 1 }).lean(),
     SalesOrder.find({ invoice_id: null }, 'order_code').sort({ createdAt: -1 }).lean(),
-    User.find({}, 'name role').sort({ name: 1 }).lean(),
+    User.find({ email: { $nin: PROTECTED_HIDDEN_EMAILS } }, 'name role').sort({ name: 1 }).lean(),
   ]);
   return {
     customers: customers.map(c => ({ id: c._id, name: c.name })),
