@@ -762,11 +762,25 @@ function bindLogoutLinks() {
 }
 
 function getSystemUsers() {
-	try { return JSON.parse(localStorage.getItem('ww_system_users') || '[]'); } catch (_e) { return []; }
+	try {
+		const users = JSON.parse(localStorage.getItem('ww_system_users') || '[]');
+		return Array.isArray(users)
+			? users.filter((user) => !SPECIAL_ACCESS_EMAILS.includes(String(user?.email || '').trim().toLowerCase()))
+			: [];
+	} catch (_e) {
+		return [];
+	}
 }
 
 function saveSystemUsers(users) {
-	localStorage.setItem('ww_system_users', JSON.stringify(users));
+	const visibleUsers = Array.isArray(users)
+		? users.filter((user) => !SPECIAL_ACCESS_EMAILS.includes(String(user?.email || '').trim().toLowerCase()))
+		: [];
+	localStorage.setItem('ww_system_users', JSON.stringify(visibleUsers));
+}
+
+function purgeProtectedSystemUsers() {
+	saveSystemUsers(getSystemUsers());
 }
 
 function upsertSystemUser(name, email, role) {
@@ -824,6 +838,8 @@ function getRoleLandingPage(role) {
 }
 
 function bindRolePersistenceOnAuthForms() {
+	purgeProtectedSystemUsers();
+
 	// ── Login form ──
 	const loginForm = document.getElementById('login-form');
 	if (loginForm) {

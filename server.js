@@ -105,6 +105,10 @@ function createError(status, message) {
   return error;
 }
 
+function isProtectedHiddenEmail(email) {
+  return PROTECTED_HIDDEN_EMAILS.includes(String(email || '').trim().toLowerCase());
+}
+
 function requireFields(body, fields) {
   for (const field of fields) {
     if (body[field] === undefined || body[field] === null || body[field] === '') {
@@ -216,7 +220,7 @@ async function createAccountingEntry(type, category, amount, description, entryD
 async function getCollection(resource) {
   switch (resource) {
     case 'users': {
-      const rows = await User.find({ email: { $nin: PROTECTED_HIDDEN_EMAILS } }).sort({ createdAt: -1 }).lean();
+      const rows = (await User.find().sort({ createdAt: -1 }).lean()).filter((row) => !isProtectedHiddenEmail(row.email));
       return rows.map(r => ({
         id: r._id, name: r.name, email: r.email, role: r.role, status: r.status,
         lastLogin: r.last_login, createdAt: r.createdAt,
@@ -379,15 +383,16 @@ async function getOptions() {
     Machine.find({}, 'name').sort({ name: 1 }).lean(),
     InventoryItem.find({ category: 'Finished Goods' }, 'name').sort({ name: 1 }).lean(),
     SalesOrder.find({ invoice_id: null }, 'order_code').sort({ createdAt: -1 }).lean(),
-    User.find({ email: { $nin: PROTECTED_HIDDEN_EMAILS } }, 'name role').sort({ name: 1 }).lean(),
+    User.find({}, 'name role email').sort({ name: 1 }).lean(),
   ]);
+  const visibleUsers = users.filter((u) => !isProtectedHiddenEmail(u.email));
   return {
     customers: customers.map(c => ({ id: c._id, name: c.name })),
     vendors: vendors.map(v => ({ id: v._id, name: v.name })),
     machines: machines.map(m => ({ id: m._id, name: m.name })),
     products: products.map(p => ({ id: p._id, name: p.name })),
     openSalesOrders: openSalesOrders.map(s => ({ id: s._id, code: s.order_code })),
-    users: users.map(u => ({ id: u._id, name: u.name, role: u.role })),
+    users: visibleUsers.map(u => ({ id: u._id, name: u.name, role: u.role })),
   };
 }
 
@@ -767,9 +772,13 @@ app.get('/api/:resource', ensureAuthenticated, async (req, res, next) => {
 app.post('/api/users', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
   try {
     requireFields(req.body, ['name', 'email', 'role', 'password']);
+    const email = String(req.body.email).trim().toLowerCase();
+    if (isProtectedHiddenEmail(email)) {
+      throw createError(403, 'This account is protected and cannot be managed from User Management.');
+    }
     const user = await User.create({
       name: String(req.body.name).trim(),
-      email: String(req.body.email).trim().toLowerCase(),
+      email,
       password_hash: bcrypt.hashSync(String(req.body.password), 10),
       role: String(req.body.role).trim().toLowerCase(),
       status: req.body.status || 'Active',
@@ -927,6 +936,12 @@ app.post('/api/accounting', ensureAuthenticated, ensureRole('accounting'), async
 
 app.put('/api/users/:id', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
   try {
+    const existingUser = await User.findById(req.params.id).lean();
+    if (!existingUser) throw createError(404, 'User not found');
+    if (isProtectedHiddenEmail(existingUser.email) || isProtectedHiddenEmail(req.body.email)) {
+      throw createError(403, 'This account is protected and cannot be managed from User Management.');
+    }
+
     const update = {};
     if (req.body.name) update.name = String(req.body.name).trim();
     if (req.body.email) update.email = String(req.body.email).trim().toLowerCase();
@@ -1073,7 +1088,7 @@ app.delete('/api/:resource/:id', ensureAuthenticated, async (req, res, next) => 
     if (resource === 'users' && String(req.params.id) === String(req.user.id)) {
       throw createError(400, 'You cannot delete your own account');
     }
-    if (resource === 'users' && PROTECTED_HIDDEN_EMAILS.includes(String(record.email || '').toLowerCase())) {
+    if (resource === 'users' && isProtectedHiddenEmail(record.email)) {
       throw createError(403, 'This account cannot be deleted');
     }
 

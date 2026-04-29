@@ -178,6 +178,19 @@
   let cachedUsers = [];
   let editingUserId = null;
 
+  try {
+    const localUsers = JSON.parse(localStorage.getItem('ww_system_users') || '[]');
+    if (Array.isArray(localUsers)) {
+      const visibleLocalUsers = localUsers.filter(function(u) {
+        const email = String((u && u.email) || '').trim().toLowerCase();
+        return !PROTECTED_EMAILS.includes(email);
+      });
+      localStorage.setItem('ww_system_users', JSON.stringify(visibleLocalUsers));
+    }
+  } catch (_err) {
+    // ignore malformed local cache
+  }
+
   function formatRoleLabel(role) {
     var normalized = String(role || '').trim().toLowerCase();
     if (!normalized) return '';
@@ -223,7 +236,10 @@
     try {
       const res = await fetch('/api/users', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to load users');
-      const users = await res.json();
+      const users = (await res.json()).filter(function(u) {
+        const email = String((u && u.email) || '').trim().toLowerCase();
+        return !PROTECTED_EMAILS.includes(email);
+      });
       renderTable(users);
     } catch (err) {
       console.error('Error loading users:', err);
