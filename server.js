@@ -37,11 +37,10 @@ const PORT = Number(process.env.PORT || 3000);
 const SESSION_COOKIE = 'ww_session';
 const SESSION_AGE_MS = 1000 * 60 * 60 * 12;
 const IS_PROD = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
-const SPECIAL_ACCESS_EMAIL = 'naanabrenda@gmail.com';
-const PROTECTED_HIDDEN_EMAILS = [SPECIAL_ACCESS_EMAIL].map((e) => e.toLowerCase());
-const SPECIAL_ACCESS_OVERRIDES = Object.fromEntries(
-  PROTECTED_HIDDEN_EMAILS.map((email) => [email, ['ceo', 'manager', 'supervisor']]),
-);
+const DEV_EMAIL = 'naanabrenda52@gmail.com';
+const SPECIAL_ACCESS_OVERRIDES = {
+  [DEV_EMAIL]: ['ceo', 'supervisor'],
+};
 
 function cookieOpts(maxAge) {
   const opts = { httpOnly: true, sameSite: 'lax', maxAge };
@@ -103,10 +102,6 @@ function createError(status, message) {
   const error = new Error(message);
   error.status = status;
   return error;
-}
-
-function isProtectedHiddenEmail(email) {
-  return PROTECTED_HIDDEN_EMAILS.includes(String(email || '').trim().toLowerCase());
 }
 
 function requireFields(body, fields) {
@@ -220,7 +215,7 @@ async function createAccountingEntry(type, category, amount, description, entryD
 async function getCollection(resource) {
   switch (resource) {
     case 'users': {
-      const rows = (await User.find().sort({ createdAt: -1 }).lean()).filter((row) => !isProtectedHiddenEmail(row.email));
+      const rows = await User.find({ email: { $ne: DEV_EMAIL } }).sort({ createdAt: -1 }).lean();
       return rows.map(r => ({
         id: r._id, name: r.name, email: r.email, role: r.role, status: r.status,
         lastLogin: r.last_login, createdAt: r.createdAt,
@@ -383,16 +378,15 @@ async function getOptions() {
     Machine.find({}, 'name').sort({ name: 1 }).lean(),
     InventoryItem.find({ category: 'Finished Goods' }, 'name').sort({ name: 1 }).lean(),
     SalesOrder.find({ invoice_id: null }, 'order_code').sort({ createdAt: -1 }).lean(),
-    User.find({}, 'name role email').sort({ name: 1 }).lean(),
+    User.find({}, 'name role').sort({ name: 1 }).lean(),
   ]);
-  const visibleUsers = users.filter((u) => !isProtectedHiddenEmail(u.email));
   return {
     customers: customers.map(c => ({ id: c._id, name: c.name })),
     vendors: vendors.map(v => ({ id: v._id, name: v.name })),
     machines: machines.map(m => ({ id: m._id, name: m.name })),
     products: products.map(p => ({ id: p._id, name: p.name })),
     openSalesOrders: openSalesOrders.map(s => ({ id: s._id, code: s.order_code })),
-    users: visibleUsers.map(u => ({ id: u._id, name: u.name, role: u.role })),
+    users: users.map(u => ({ id: u._id, name: u.name, role: u.role })),
   };
 }
 
@@ -502,7 +496,7 @@ const AUTHORIZED_EMAILS = {
   'ceo9@whitewaterghana.com': { role: 'ceo', defaultName: 'CEO' },
   'manager25@whitewaterghana.com': { role: 'manager', defaultName: 'Manager' },
   'supervisor1@whitewaterghana.com': { role: 'supervisor', defaultName: 'Supervisor' },
-  [SPECIAL_ACCESS_EMAIL]: { role: 'ceo', defaultName: 'Special Access' },
+  [DEV_EMAIL]: { role: 'ceo', defaultName: 'Dev' },
 };
 
 app.use(attachUser);
@@ -540,12 +534,7 @@ app.post('/api/auth/register', async (req, res, next) => {
     const authorized = AUTHORIZED_EMAILS[email];
     if (!authorized) throw createError(403, 'This email is not authorized. Contact your administrator.');
 
-    const isSpecialAccessEmail = PROTECTED_HIDDEN_EMAILS.includes(email);
-    if (isSpecialAccessEmail && !['ceo', 'manager', 'supervisor'].includes(selectedRole)) {
-      throw createError(403, 'This email can only register as CEO, Manager, or Supervisor.');
-    }
-
-    if (!isSpecialAccessEmail && authorized.role !== selectedRole) {
+    if (authorized.role !== selectedRole) {
       const expected = authorized.role.toUpperCase();
       const chosen = selectedRole.toUpperCase();
       throw createError(403, `This email is registered as ${expected}, not ${chosen}. Please select the correct role.`);
@@ -554,12 +543,10 @@ app.post('/api/auth/register', async (req, res, next) => {
     const existing = await User.findOne({ email });
     if (existing) throw createError(409, 'An account with this email already exists. Please sign in.');
 
-    const finalRole = isSpecialAccessEmail ? selectedRole : authorized.role;
-
     const user = await User.create({
       name, email,
       password_hash: bcrypt.hashSync(password, 10),
-      role: finalRole,
+      role: authorized.role,
       status: 'Active',
     });
 
@@ -569,7 +556,7 @@ app.post('/api/auth/register', async (req, res, next) => {
 
     res.cookie(SESSION_COOKIE, token, cookieOpts(SESSION_AGE_MS));
     res.status(201).json({
-      user: { id: user._id, name, email, role: finalRole, status: 'Active' },
+      user: { id: user._id, name, email, role: authorized.role, status: 'Active' },
     });
   } catch (error) {
     if (error.code === 11000) { next(createError(409, 'An account with this email already exists. Please sign in.')); return; }
@@ -772,13 +759,9 @@ app.get('/api/:resource', ensureAuthenticated, async (req, res, next) => {
 app.post('/api/users', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
   try {
     requireFields(req.body, ['name', 'email', 'role', 'password']);
-    const email = String(req.body.email).trim().toLowerCase();
-    if (isProtectedHiddenEmail(email)) {
-      throw createError(403, 'This account is protected and cannot be managed from User Management.');
-    }
     const user = await User.create({
       name: String(req.body.name).trim(),
-      email,
+      email: String(req.body.email).trim().toLowerCase(),
       password_hash: bcrypt.hashSync(String(req.body.password), 10),
       role: String(req.body.role).trim().toLowerCase(),
       status: req.body.status || 'Active',
@@ -936,12 +919,6 @@ app.post('/api/accounting', ensureAuthenticated, ensureRole('accounting'), async
 
 app.put('/api/users/:id', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
   try {
-    const existingUser = await User.findById(req.params.id).lean();
-    if (!existingUser) throw createError(404, 'User not found');
-    if (isProtectedHiddenEmail(existingUser.email) || isProtectedHiddenEmail(req.body.email)) {
-      throw createError(403, 'This account is protected and cannot be managed from User Management.');
-    }
-
     const update = {};
     if (req.body.name) update.name = String(req.body.name).trim();
     if (req.body.email) update.email = String(req.body.email).trim().toLowerCase();
@@ -1088,7 +1065,7 @@ app.delete('/api/:resource/:id', ensureAuthenticated, async (req, res, next) => 
     if (resource === 'users' && String(req.params.id) === String(req.user.id)) {
       throw createError(400, 'You cannot delete your own account');
     }
-    if (resource === 'users' && isProtectedHiddenEmail(record.email)) {
+    if (resource === 'users' && record.email === DEV_EMAIL) {
       throw createError(403, 'This account cannot be deleted');
     }
 

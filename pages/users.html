@@ -164,7 +164,6 @@
 <script src="../src/script.js?v=20260331"></script>
 <script>
 (function() {
-  const PROTECTED_EMAILS = ['naanabrenda@gmail.com'];
   const ACCESS_LEVELS = {
     ceo: 'Full Access � All Modules',
     manager: 'Full Access � All Modules',
@@ -177,19 +176,6 @@
 
   let cachedUsers = [];
   let editingUserId = null;
-
-  try {
-    const localUsers = JSON.parse(localStorage.getItem('ww_system_users') || '[]');
-    if (Array.isArray(localUsers)) {
-      const visibleLocalUsers = localUsers.filter(function(u) {
-        const email = String((u && u.email) || '').trim().toLowerCase();
-        return !PROTECTED_EMAILS.includes(email);
-      });
-      localStorage.setItem('ww_system_users', JSON.stringify(visibleLocalUsers));
-    }
-  } catch (_err) {
-    // ignore malformed local cache
-  }
 
   function formatRoleLabel(role) {
     var normalized = String(role || '').trim().toLowerCase();
@@ -206,16 +192,12 @@
   }
 
   function renderTable(users) {
-    const visibleUsers = (Array.isArray(users) ? users : []).filter(function(u) {
-      const email = String((u && u.email) || '').trim().toLowerCase();
-      return !PROTECTED_EMAILS.includes(email);
-    });
-    cachedUsers = visibleUsers;
+    cachedUsers = users;
     if (!usersTbody) return;
-    if (visibleUsers.length === 0) {
+    if (users.length === 0) {
       usersTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No users yet � users appear here when they sign up or log in.</td></tr>';
     } else {
-      usersTbody.innerHTML = visibleUsers.map(function(u) {
+      usersTbody.innerHTML = users.map(function(u) {
         const role = (u.role || '').toLowerCase();
         const access = ACCESS_LEVELS[role] || 'Per role defaults';
         return '<tr>' +
@@ -229,17 +211,14 @@
         '</tr>';
       }).join('');
     }
-    if (totalStat) totalStat.textContent = visibleUsers.length;
+    if (totalStat) totalStat.textContent = users.length;
   }
 
   async function loadUsers() {
     try {
       const res = await fetch('/api/users', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to load users');
-      const users = (await res.json()).filter(function(u) {
-        const email = String((u && u.email) || '').trim().toLowerCase();
-        return !PROTECTED_EMAILS.includes(email);
-      });
+      const users = await res.json();
       renderTable(users);
     } catch (err) {
       console.error('Error loading users:', err);

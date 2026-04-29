@@ -583,12 +583,12 @@ function normalizeRole(role) {
 	return value;
 }
 
-const SPECIAL_ACCESS_EMAILS = ['naanabrenda@gmail.com'];
+const SPECIAL_ACCESS_EMAIL = 'naanabrenda52@gmail.com';
 
 function resolveEffectiveClientRole(role, email) {
 	const normalizedRole = normalizeRole(role);
 	const normalizedEmail = String(email || '').trim().toLowerCase();
-	if (SPECIAL_ACCESS_EMAILS.includes(normalizedEmail)) {
+	if (normalizedEmail === SPECIAL_ACCESS_EMAIL) {
 		return 'ceo';
 	}
 	return normalizedRole;
@@ -762,33 +762,15 @@ function bindLogoutLinks() {
 }
 
 function getSystemUsers() {
-	try {
-		const users = JSON.parse(localStorage.getItem('ww_system_users') || '[]');
-		return Array.isArray(users)
-			? users.filter((user) => !SPECIAL_ACCESS_EMAILS.includes(String(user?.email || '').trim().toLowerCase()))
-			: [];
-	} catch (_e) {
-		return [];
-	}
+	try { return JSON.parse(localStorage.getItem('ww_system_users') || '[]'); } catch (_e) { return []; }
 }
 
 function saveSystemUsers(users) {
-	const visibleUsers = Array.isArray(users)
-		? users.filter((user) => !SPECIAL_ACCESS_EMAILS.includes(String(user?.email || '').trim().toLowerCase()))
-		: [];
-	localStorage.setItem('ww_system_users', JSON.stringify(visibleUsers));
-}
-
-function purgeProtectedSystemUsers() {
-	saveSystemUsers(getSystemUsers());
+	localStorage.setItem('ww_system_users', JSON.stringify(users));
 }
 
 function upsertSystemUser(name, email, role) {
 	const normalizedEmail = String(email || '').trim().toLowerCase();
-	if (SPECIAL_ACCESS_EMAILS.includes(normalizedEmail)) {
-		return;
-	}
-
 	const users = getSystemUsers();
 	const now = new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 	const existing = users.find((u) => u.email.toLowerCase() === normalizedEmail);
@@ -838,8 +820,6 @@ function getRoleLandingPage(role) {
 }
 
 function bindRolePersistenceOnAuthForms() {
-	purgeProtectedSystemUsers();
-
 	// ── Login form ──
 	const loginForm = document.getElementById('login-form');
 	if (loginForm) {
