@@ -89,6 +89,11 @@
         <label for="salary-week-select" style="font-weight:600;margin-right:8px;">Week:</label>
         <select id="salary-week-select" class="form-control" style="max-width:300px;"></select>
         <span style="margin-left:8px;color:#64748b;font-size:0.85rem;" id="salary-week-range"></span>
+        <label for="salary-print-employee-select" style="font-weight:600;margin-left:auto;margin-right:8px;">Worker:</label>
+        <select id="salary-print-employee-select" class="form-control" style="max-width:260px;">
+          <option value="__all_workers__">All workers</option>
+        </select>
+        <button type="button" id="salary-week-print-btn" class="btn-print" style="margin-left:8px;"><i class="fa-solid fa-print"></i> Print Salaries</button>
       </div>
       <table class="data-table">
         <thead><tr><th>Date Paid</th><th>Employee</th><th>Week</th><th>Amount (GH)</th><th>Notes</th><th>Actions</th></tr></thead>

