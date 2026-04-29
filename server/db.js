@@ -205,6 +205,7 @@ const appDataSchema = new mongoose.Schema({
 const trashBinSchema = new mongoose.Schema({
   module:      { type: String, required: true },
   record_data: { type: mongoose.Schema.Types.Mixed, required: true },
+  restore_meta:{ type: mongoose.Schema.Types.Mixed, default: null },
   deleted_by:  { type: String, required: true },
   deleted_at:  { type: Date, required: true, default: Date.now },
   expires_at:  { type: Date, required: true },

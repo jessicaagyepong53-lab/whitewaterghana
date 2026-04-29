@@ -38,6 +38,9 @@ const SESSION_COOKIE = 'ww_session';
 const SESSION_AGE_MS = 1000 * 60 * 60 * 12;
 const IS_PROD = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 const DEV_EMAIL = 'naanabrenda52@gmail.com';
+const SPECIAL_ACCESS_OVERRIDES = {
+  [DEV_EMAIL]: ['ceo', 'supervisor'],
+};
 
 function cookieOpts(maxAge) {
   const opts = { httpOnly: true, sameSite: 'lax', maxAge };
@@ -150,7 +153,15 @@ function ensureRole(resourceKey) {
   return (req, _res, next) => {
     const allowedRoles = RESOURCE_RULES[resourceKey];
     if (!allowedRoles) { next(); return; }
-    if (!req.user || !allowedRoles.includes(req.user.role)) {
+    if (!req.user) {
+      next(createError(403, 'You do not have access to this module'));
+      return;
+    }
+
+    const overrideRoles = SPECIAL_ACCESS_OVERRIDES[String(req.user.email || '').toLowerCase()] || [];
+    const effectiveRoles = Array.from(new Set([req.user.role, ...overrideRoles]));
+    const allowed = allowedRoles.some((role) => effectiveRoles.includes(role));
+    if (!allowed) {
       next(createError(403, 'You do not have access to this module'));
       return;
     }
@@ -571,8 +582,20 @@ app.post('/api/auth/login', async (req, res, next) => {
     await User.updateOne({ _id: user._id }, { last_login: timestamp });
 
     res.cookie(SESSION_COOKIE, token, cookieOpts(SESSION_AGE_MS));
+    const overrideRoles = SPECIAL_ACCESS_OVERRIDES[String(user.email || '').toLowerCase()] || [];
+    const effectiveRoles = Array.from(new Set([user.role, ...overrideRoles]));
+    const effectiveRole = effectiveRoles.includes('ceo') ? 'ceo' : user.role;
+
     res.json({
-      user: { id: user._id, name: user.name, email: user.email, role: user.role, status: user.status },
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        effectiveRole,
+        effectiveRoles,
+        status: user.status,
+      },
     });
   } catch (error) {
     next(error);
@@ -645,7 +668,10 @@ app.post('/api/auth/admin-reset-password', ensureAuthenticated, ensureRole('user
 
 app.get('/api/auth/me', (req, res) => {
   if (!req.user) { res.status(401).json({ message: 'Not signed in' }); return; }
-  res.json({ user: req.user });
+  const overrideRoles = SPECIAL_ACCESS_OVERRIDES[String(req.user.email || '').toLowerCase()] || [];
+  const effectiveRoles = Array.from(new Set([req.user.role, ...overrideRoles]));
+  const effectiveRole = effectiveRoles.includes('ceo') ? 'ceo' : req.user.role;
+  res.json({ user: { ...req.user, effectiveRole, effectiveRoles } });
 });
 
 /* ═══════════════════════════════════════════════
@@ -676,7 +702,7 @@ const ALLOWED_DATA_KEYS = [
   'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
   'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
   'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data',
-  'ww_sales_months', 'ww_equipment', 'ww_seed_flags',
+  'ww_sales_months', 'ww_equipment', 'ww_seed_flags', 'ww_last_data_update',
 ];
 
 function isAllowedDataKey(key) {
@@ -718,6 +744,7 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 app.get('/api/:resource', ensureAuthenticated, async (req, res, next) => {
   try {
     const resource = req.params.resource;
+    if (resource === 'trash') { next(); return; }
     ensureRole(resource)(req, res, (error) => { if (error) throw error; });
     res.json(await getCollection(resource));
   } catch (error) {
@@ -979,21 +1006,40 @@ app.delete('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, n
 
 const TRASH_TTL_DAYS = 30;
 
-async function moveToTrash(module, record, deletedBy) {
+async function moveToTrash(module, record, deletedBy, restoreMeta = null) {
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + TRASH_TTL_DAYS);
   return TrashBin.create({
     module,
     record_data: record,
+    restore_meta: restoreMeta,
     deleted_by: deletedBy,
     deleted_at: new Date(),
     expires_at: expiresAt,
   });
 }
 
+app.post('/api/trash/app-data-delete', ensureAuthenticated, async (req, res, next) => {
+  try {
+    requireFields(req.body, ['module', 'recordData', 'restoreMeta']);
+    const module = String(req.body.module || '').trim();
+    const recordData = req.body.recordData;
+    const restoreMeta = req.body.restoreMeta;
+    if (!module) throw createError(400, 'Invalid module');
+    if (!restoreMeta || typeof restoreMeta !== 'object') throw createError(400, 'Invalid restore metadata');
+    if (!restoreMeta.kind) throw createError(400, 'Restore metadata must include kind');
+
+    await moveToTrash(module, recordData, `${req.user.name} (${req.user.role})`, restoreMeta);
+    res.status(201).json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.delete('/api/:resource/:id', ensureAuthenticated, async (req, res, next) => {
   try {
     const resource = req.params.resource;
+    if (resource === 'trash') { next(); return; }
     ensureRole(resource)(req, res, (error) => { if (error) throw error; });
 
     const modelMap = {
@@ -1056,6 +1102,7 @@ app.get('/api/trash', ensureAuthenticated, ensureRole('users'), async (_req, res
       id: t._id,
       module: t.module,
       recordData: t.record_data,
+      restoreMeta: t.restore_meta,
       deletedBy: t.deleted_by,
       deletedAt: t.deleted_at,
       expiresAt: t.expires_at,
@@ -1067,6 +1114,54 @@ app.post('/api/trash/:id/restore', ensureAuthenticated, ensureRole('users'), asy
   try {
     const trashItem = await TrashBin.findById(req.params.id);
     if (!trashItem) throw createError(404, 'Trash item not found');
+
+    if (trashItem.restore_meta && trashItem.restore_meta.kind) {
+      const meta = trashItem.restore_meta;
+      if (meta.kind === 'appDataArray') {
+        const key = String(meta.key || '').trim();
+        if (!isAllowedDataKey(key)) throw createError(400, 'Cannot restore to invalid app-data key');
+
+        const doc = await AppData.findOne({ key }).lean();
+        let nextData = doc ? doc.data : (meta.arrayPath ? {} : []);
+
+        if (meta.arrayPath) {
+          if (!nextData || typeof nextData !== 'object' || Array.isArray(nextData)) nextData = {};
+          const current = Array.isArray(nextData[meta.arrayPath]) ? nextData[meta.arrayPath] : [];
+          current.push(trashItem.record_data);
+          nextData[meta.arrayPath] = current;
+        } else {
+          const current = Array.isArray(nextData) ? nextData : [];
+          current.push(trashItem.record_data);
+          nextData = current;
+        }
+
+        await AppData.updateOne({ key }, { key, data: nextData }, { upsert: true });
+        await TrashBin.deleteOne({ _id: trashItem._id });
+        res.json({ ok: true });
+        return;
+      }
+
+      if (meta.kind === 'bomComponent') {
+        const key = String(meta.key || '').trim();
+        const product = String(meta.product || '').trim();
+        if (!isAllowedDataKey(key) || !product) throw createError(400, 'Cannot restore BOM component');
+
+        const doc = await AppData.findOne({ key }).lean();
+        const data = (doc && doc.data && typeof doc.data === 'object' && !Array.isArray(doc.data)) ? doc.data : {};
+        const productData = (data[product] && typeof data[product] === 'object') ? data[product] : { components: [], labor: 0, overhead: 0 };
+        const components = Array.isArray(productData.components) ? productData.components : [];
+        components.push(trashItem.record_data);
+        productData.components = components;
+        data[product] = productData;
+
+        await AppData.updateOne({ key }, { key, data }, { upsert: true });
+        await TrashBin.deleteOne({ _id: trashItem._id });
+        res.json({ ok: true });
+        return;
+      }
+
+      throw createError(400, 'Unsupported restore metadata kind');
+    }
 
     const restoreMap = {
       users: User, customers: Customer, vendors: Vendor,

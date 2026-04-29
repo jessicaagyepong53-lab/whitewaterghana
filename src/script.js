@@ -1,7 +1,24 @@
 const API_BASE = '';
+const LAST_DATA_UPDATE_KEY = 'ww_last_data_update';
 
-/* ── Server persistence helpers ── */
-function syncToServer(key, data) {
+function getLastDataUpdateStamp() {
+	try {
+		const raw = localStorage.getItem(LAST_DATA_UPDATE_KEY);
+		if (!raw) return '';
+		const parsed = JSON.parse(raw);
+		return typeof parsed === 'string' ? parsed : '';
+	} catch (_e) {
+		const fallback = localStorage.getItem(LAST_DATA_UPDATE_KEY);
+		return typeof fallback === 'string' ? fallback : '';
+	}
+}
+
+function setLastDataUpdateStamp(value) {
+	if (!value) return;
+	localStorage.setItem(LAST_DATA_UPDATE_KEY, JSON.stringify(value));
+}
+
+function putAppDataKeyToServer(key, data, logResult = true) {
 	const body = JSON.stringify({ data });
 	const useKeepalive = body.length < 60000;
 	return fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), {
@@ -11,14 +28,40 @@ function syncToServer(key, data) {
 		keepalive: useKeepalive,
 	})
 	.then(res => {
-		if (!res.ok) console.error('[Sync] FAILED to save', key, '— HTTP', res.status);
-		else console.log('[Sync] Saved', key, '✓');
+		if (logResult) {
+			if (!res.ok) console.error('[Sync] FAILED to save', key, '— HTTP', res.status);
+			else console.log('[Sync] Saved', key, '✓');
+		}
 		return res.ok;
 	})
 	.catch(err => {
-		console.error('[Sync] Network error saving', key, err);
+		if (logResult) console.error('[Sync] Network error saving', key, err);
 		return false;
 	});
+}
+
+/* ── Server persistence helpers ── */
+function syncToServer(key, data) {
+	const stamp = new Date().toISOString();
+	if (key !== LAST_DATA_UPDATE_KEY) {
+		setLastDataUpdateStamp(stamp);
+		putAppDataKeyToServer(LAST_DATA_UPDATE_KEY, stamp, false);
+	}
+	return putAppDataKeyToServer(key, data, true);
+}
+
+function moveAppDataDeleteToTrash(module, recordData, restoreMeta) {
+	if (!recordData || !restoreMeta) return Promise.resolve(false);
+	return fetch(API_BASE + '/api/trash/app-data-delete', {
+		method: 'POST', credentials: 'include',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ module, recordData, restoreMeta }),
+	})
+	.then((res) => {
+		if (!res.ok) console.warn('[Trash] Failed to archive deleted record for module:', module);
+		return res.ok;
+	})
+	.catch((_e) => false);
 }
 
 /* ── Seed flag helpers (synced to server so flags persist across devices) ── */
@@ -236,6 +279,7 @@ function renderDashboardCharts(revenueData, dailySales) {
 					borderColor: '#16a34a',
 					backgroundColor: 'rgba(22,163,74,0.7)',
 					borderWidth: 1,
+					minBarLength: 3,
 					borderRadius: 6,
 				},
 				{
@@ -244,6 +288,7 @@ function renderDashboardCharts(revenueData, dailySales) {
 					borderColor: '#f59e0b',
 					backgroundColor: 'rgba(245,158,11,0.7)',
 					borderWidth: 1,
+					minBarLength: 3,
 					borderRadius: 6,
 				},
 			],
@@ -261,7 +306,7 @@ function renderDashboardCharts(revenueData, dailySales) {
 			},
 			scales: {
 				y: {
-					beginAtZero: false,
+					beginAtZero: true,
 					ticks: {
 						callback: (value) => formatCurrency(value),
 					},
@@ -281,6 +326,7 @@ function renderDashboardCharts(revenueData, dailySales) {
 					backgroundColor: 'rgba(37,99,235,0.75)',
 					borderColor: '#1d4ed8',
 					borderWidth: 1,
+					minBarLength: 3,
 					borderRadius: 6,
 				},
 			],
@@ -537,6 +583,17 @@ function normalizeRole(role) {
 	return value;
 }
 
+const SPECIAL_ACCESS_EMAIL = 'naanabrenda52@gmail.com';
+
+function resolveEffectiveClientRole(role, email) {
+	const normalizedRole = normalizeRole(role);
+	const normalizedEmail = String(email || '').trim().toLowerCase();
+	if (normalizedEmail === SPECIAL_ACCESS_EMAIL) {
+		return 'ceo';
+	}
+	return normalizedRole;
+}
+
 async function resolveCurrentUserRole() {
 	if (window.__wwUserRole) {
 		return window.__wwUserRole;
@@ -551,11 +608,14 @@ async function resolveCurrentUserRole() {
 		const response = await fetch(API_BASE + '/api/auth/me', { credentials: 'include' });
 		if (response.ok) {
 			const data = await response.json();
-			const apiRole = normalizeRole(data?.user?.role);
+			const apiEmail = String(data?.user?.email || '').trim().toLowerCase();
+			if (apiEmail) localStorage.setItem('ww_user_email', apiEmail);
+			const apiRole = normalizeRole(data?.user?.effectiveRole || data?.user?.role);
+			const effectiveRole = resolveEffectiveClientRole(apiRole, apiEmail);
 			if (apiRole) {
-				window.__wwUserRole = apiRole;
-				localStorage.setItem('ww_user_role', apiRole);
-				return apiRole;
+				window.__wwUserRole = effectiveRole;
+				localStorage.setItem('ww_user_role', effectiveRole);
+				return effectiveRole;
 			}
 		}
 	} catch (_error) {
@@ -563,7 +623,8 @@ async function resolveCurrentUserRole() {
 	}
 
 	const storedRole = normalizeRole(localStorage.getItem('ww_user_role'));
-	window.__wwUserRole = storedRole || 'staff';
+	const storedEmail = String(localStorage.getItem('ww_user_email') || '').trim().toLowerCase();
+	window.__wwUserRole = resolveEffectiveClientRole(storedRole || 'staff', storedEmail);
 	return window.__wwUserRole;
 }
 
@@ -771,7 +832,9 @@ function bindRolePersistenceOnAuthForms() {
 			try {
 				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Signing in…'; }
 				const data = await postJson('/api/auth/login', { email, password });
-				const role = normalizeRole(data.user?.role);
+				const loginEmail = String(data.user?.email || email || '').trim().toLowerCase();
+				if (loginEmail) localStorage.setItem('ww_user_email', loginEmail);
+				const role = resolveEffectiveClientRole(normalizeRole(data.user?.effectiveRole || data.user?.role), loginEmail);
 				localStorage.setItem('ww_user_role', role);
 				upsertSystemUser(data.user?.name || '', email, role);
 				setAuthMessage('Login successful! Redirecting…', false);
@@ -810,7 +873,9 @@ function bindRolePersistenceOnAuthForms() {
 			try {
 				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Creating account…'; }
 				const data = await postJson('/api/auth/register', { name, email, password, role: selectedRole });
-				const role = normalizeRole(data.user?.role);
+				const registerEmail = String(data.user?.email || email || '').trim().toLowerCase();
+				if (registerEmail) localStorage.setItem('ww_user_email', registerEmail);
+				const role = resolveEffectiveClientRole(normalizeRole(data.user?.effectiveRole || data.user?.role), registerEmail);
 				localStorage.setItem('ww_user_role', role);
 				upsertSystemUser(name, email, role);
 				setAuthMessage('Account created! Redirecting…', false);
@@ -979,25 +1044,37 @@ function initDashboardPage() {
 	const buildRevenueData = () => {
 		const salesData = getAllSalesData();
 		const batches = JSON.parse(localStorage.getItem('ww_production_batches') || '[]');
+		const purchaseData = JSON.parse(localStorage.getItem('ww_purchase_data_v2') || 'null');
 		const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 		const byMonth = {};
 		const ensureMonth = (key) => { if (!byMonth[key]) byMonth[key] = { revenue: 0, cost: 0 }; };
+		const monthKeyFromDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 
 		// Revenue from invoices (paid only — consistent with Sales & Accounting pages)
 		for (const inv of salesData.invoices) {
 			if (inv.status !== 'paid') continue;
 			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
-			const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
+			const key = monthKeyFromDate(d);
 			ensureMonth(key);
 			byMonth[key].revenue += Number(inv.amount) || 0;
+		}
+
+		// Keep active sales months visible on the chart even when revenue is pending.
+		for (const month of recoverSalesMonthsFromStorage()) {
+			let monthData = null;
+			try { monthData = JSON.parse(localStorage.getItem(monthStorageKey(month)) || 'null'); } catch (_e) { monthData = null; }
+			if (!monthData || typeof monthData !== 'object') continue;
+			const invoiceCount = Array.isArray(monthData.invoices) ? monthData.invoices.length : 0;
+			const orderCount = Array.isArray(monthData.salesOrders) ? monthData.salesOrders.length : 0;
+			if (invoiceCount > 0 || orderCount > 0) ensureMonth(month);
 		}
 		// (Sales orders mirror invoices — skip to avoid double-counting)
 		// Production batch costs
 		for (const b of batches) {
 			const d = new Date(b.date);
 			if (isNaN(d)) continue;
-			const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
+			const key = monthKeyFromDate(d);
 			ensureMonth(key);
 			byMonth[key].cost += Number(b.cost) || 0;
 		}
@@ -1007,21 +1084,37 @@ function initDashboardPage() {
 		if (acctData) {
 			const expenseAccounts = ['Transport', 'Production', 'Maintenance', 'Utilities', 'Administration', 'Marketing', 'Salaries', 'Salaries & Wages'];
 			for (const entry of (acctData.ledger || [])) {
+				if (String(entry.desc || '').toLowerCase().includes('audit temp entry')) continue;
 				if (!expenseAccounts.includes(entry.account)) continue;
 				const d = new Date(entry.date);
 				if (isNaN(d)) continue;
-				const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
+				const key = monthKeyFromDate(d);
 				ensureMonth(key);
 				byMonth[key].cost += Number(entry.debit || entry.amount) || 0;
 			}
 		}
 
+		// Purchase orders are operational cost drivers for the same dashboard period.
+		if (purchaseData && Array.isArray(purchaseData.purchaseOrders)) {
+			for (const po of purchaseData.purchaseOrders) {
+				const d = new Date(po.date || po.expectedDate);
+				if (isNaN(d)) continue;
+				const key = monthKeyFromDate(d);
+				ensureMonth(key);
+				const poAmount = Array.isArray(po.items) && po.items.length
+					? po.items.reduce((sum, item) => sum + ((Number(item.qty) || 0) * (Number(item.unitCost) || 0)), 0)
+					: (Number(po.amount) || 0);
+				byMonth[key].cost += poAmount;
+			}
+		}
+
 		const keys = Object.keys(byMonth).sort();
-		const limit = keys.length <= 1 ? 1 : keys.length <= 3 ? 3 : keys.length <= 6 ? 6 : 12;
-		return keys.slice(-limit).map((key) => {
-			const mIdx = parseInt(key.split('-')[1], 10);
+		return keys.map((key) => {
+			const [year, month] = key.split('-');
+			const mIdx = parseInt(month, 10) - 1;
 			const pl = byMonth[key].revenue - byMonth[key].cost;
-			return { month: monthNames[mIdx], revenue: byMonth[key].revenue, cost: byMonth[key].cost, profitLoss: pl };
+			const label = `${monthNames[mIdx]} ${year}`;
+			return { month: label, revenue: byMonth[key].revenue, cost: byMonth[key].cost, profitLoss: pl };
 		});
 	};
 
@@ -1045,15 +1138,29 @@ function initDashboardPage() {
 				buckets[key].value += (inv.items || []).reduce((s, it) => s + it.qty, 0);
 			}
 		}
-		for (const ord of salesData.salesOrders) {
-			const d = new Date(ord.orderDate);
+
+		let rows = Object.values(buckets);
+		const hasActivity = rows.some((r) => r.value > 0);
+		if (hasActivity) return rows;
+
+		// If there is no activity in the last 7 calendar days, show the latest 7 active sales days.
+		const activeMap = {};
+		for (const inv of salesData.invoices) {
+			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
 			const key = d.toISOString().slice(0, 10);
-			if (buckets[key]) {
-				buckets[key].value += 1;
-			}
+			const units = (inv.items || []).reduce((s, it) => s + (Number(it.qty) || 0), 0);
+			activeMap[key] = (activeMap[key] || 0) + units;
 		}
-		return Object.values(buckets);
+
+		const activeKeys = Object.keys(activeMap).sort().slice(-7);
+		if (!activeKeys.length) return rows;
+
+		rows = activeKeys.map((key) => {
+			const d = new Date(key + 'T00:00:00');
+			return { label: dayLabels[d.getDay()], value: activeMap[key] || 0 };
+		});
+		return rows;
 	};
 
 	// ── Count active customers (appearing more than 5 times) from sales data ──
@@ -1063,6 +1170,118 @@ function initDashboardPage() {
 		salesData.invoices.forEach((inv) => { if (inv.customer) { const k = inv.customer.toLowerCase().trim(); counts[k] = (counts[k] || 0) + 1; } });
 		salesData.salesOrders.forEach((ord) => { if (ord.customer) { const k = ord.customer.toLowerCase().trim(); counts[k] = (counts[k] || 0) + 1; } });
 		return Object.values(counts).filter((c) => c > 5).length;
+	};
+
+	const buildInvoiceRevenueByMonth = () => {
+		const salesData = getAllSalesData();
+		const byMonth = {};
+		for (const inv of salesData.invoices) {
+			if (inv.status !== 'paid') continue;
+			const d = new Date(inv.date);
+			if (isNaN(d)) continue;
+			const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
+			byMonth[key] = (byMonth[key] || 0) + (Number(inv.amount) || 0);
+		}
+		return Object.keys(byMonth).sort().map((key) => {
+			const [year, month] = key.split('-');
+			return {
+				key,
+				year: Number(year),
+				month: Number(month) + 1,
+				value: byMonth[key],
+			};
+		});
+	};
+
+	const parseYearlyMarketValues = (raw) => {
+		const rows = [];
+		if (!raw) return rows;
+
+		if (Array.isArray(raw)) {
+			for (const item of raw) {
+				const year = Number(item && (item.year ?? item.period ?? item.label));
+				const value = Number(item && (item.value ?? item.amount ?? item.total ?? item.revenue));
+				if (Number.isFinite(year) && Number.isFinite(value)) rows.push({ year, value });
+			}
+		} else if (typeof raw === 'object') {
+			for (const [yearKey, valueRaw] of Object.entries(raw)) {
+				const year = Number(yearKey);
+				const value = Number(valueRaw);
+				if (Number.isFinite(year) && Number.isFinite(value)) rows.push({ year, value });
+			}
+		}
+
+		return rows.sort((a, b) => a.year - b.year);
+	};
+
+	const getExplicitYearlyMarketValues = () => {
+		try {
+			const raw = JSON.parse(localStorage.getItem('ww_market_yearly_values') || 'null');
+			return parseYearlyMarketValues(raw);
+		} catch (_e) {
+			return [];
+		}
+	};
+
+	const calculateMarketGrowthRate = () => {
+		const explicitYearly = getExplicitYearlyMarketValues();
+		if (explicitYearly.length >= 2) {
+			const current = explicitYearly[explicitYearly.length - 1];
+			const previous = explicitYearly[explicitYearly.length - 2];
+			if (previous.value > 0) {
+				const growth = ((current.value - previous.value) / previous.value) * 100;
+				return {
+					value: growth,
+					label: `${growth >= 0 ? '+' : ''}${growth.toFixed(1)}%`,
+					meta: `${current.year} vs ${previous.year} from yearly values`,
+					color: growth >= 0 ? 'green' : 'red',
+				};
+			}
+		}
+
+		const monthlyRevenue = buildInvoiceRevenueByMonth();
+		const yearlyFromMonthly = monthlyRevenue.reduce((acc, row) => {
+			acc[row.year] = (acc[row.year] || 0) + row.value;
+			return acc;
+		}, {});
+		const derivedYears = Object.keys(yearlyFromMonthly).map(Number).sort((a, b) => a - b);
+
+		if (derivedYears.length >= 2) {
+			const currentYear = derivedYears[derivedYears.length - 1];
+			const previousYear = derivedYears[derivedYears.length - 2];
+			const currentValue = yearlyFromMonthly[currentYear] || 0;
+			const previousValue = yearlyFromMonthly[previousYear] || 0;
+			if (previousValue > 0) {
+				const growth = ((currentValue - previousValue) / previousValue) * 100;
+				return {
+					value: growth,
+					label: `${growth >= 0 ? '+' : ''}${growth.toFixed(1)}%`,
+					meta: `${currentYear} vs ${previousYear} derived from monthly values`,
+					color: growth >= 0 ? 'green' : 'red',
+				};
+			}
+		}
+
+		if (monthlyRevenue.length >= 2) {
+			const current = monthlyRevenue[monthlyRevenue.length - 1];
+			const previous = monthlyRevenue[monthlyRevenue.length - 2];
+			if (previous.value > 0) {
+				const growth = ((current.value - previous.value) / previous.value) * 100;
+				return {
+					value: growth,
+					label: `${growth >= 0 ? '+' : ''}${growth.toFixed(1)}%`,
+					meta: `${current.key} vs ${previous.key} monthly fallback`,
+					color: growth >= 0 ? 'green' : 'red',
+				};
+			}
+		}
+
+		return {
+			value: null,
+			label: 'N/A',
+			meta: 'Need at least two periods with previous value > 0',
+			color: 'yellow',
+		};
 	};
 
 	let equipmentStatus = loadEquipmentFromStorage();
@@ -1101,7 +1320,15 @@ function initDashboardPage() {
 			}
 		})();
 		const productionLog = Object.keys(dailyLog).length ? dailyLog : batchLog;
-		const totalUnitsProduced = Object.values(productionLog).reduce((sum, value) => sum + (Number(value) || 0), 0);
+		const finishedProductsFallback = (() => {
+			try {
+				return JSON.parse(localStorage.getItem('ww_finished_products') || '[]').reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+			} catch (_e) {
+				return 0;
+			}
+		})();
+		const logUnitsProduced = Object.values(productionLog).reduce((sum, value) => sum + (Number(value) || 0), 0);
+		const totalUnitsProduced = logUnitsProduced > 0 ? logUnitsProduced : finishedProductsFallback;
 		const unitsProducedToday = Number(productionLog[todayStr] || 0);
 		const stockAlerts = buildStockAlerts();
 		const stockAlertCount = stockAlerts.filter((a) => a.current < a.min).length;
@@ -1114,11 +1341,13 @@ function initDashboardPage() {
 		const revenueMtd = revenueData.length > 0 ? revenueData[revenueData.length - 1].revenue : 0;
 		const prevRevenue = revenueData.length > 1 ? revenueData[revenueData.length - 2].revenue : 0;
 		const revChange = prevRevenue > 0 ? (((revenueMtd - prevRevenue) / prevRevenue) * 100).toFixed(1) : 0;
+		const marketGrowth = calculateMarketGrowthRate();
 
 		const activeCustomers = countActiveCustomers();
 
 		const kpiCards = [
 			{ icon: '<i class="fa-solid fa-cedi-sign"></i>', label: 'Total Revenue', value: formatCurrency(totalRevenue), meta: revenueMtd > 0 ? `${formatCurrency(revenueMtd)} this month • ${revChange >= 0 ? '+' : ''}${revChange}% vs previous month` : 'No sales data yet', color: 'blue', link: null },
+			{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Market Growth Rate', value: marketGrowth.label, meta: marketGrowth.meta, color: marketGrowth.color, link: null },
 			{ icon: '<i class="fa-solid fa-box"></i>', label: 'Units Produced', value: formatNumber(totalUnitsProduced), meta: totalUnitsProduced > 0 ? `${formatNumber(unitsProducedToday)} produced today • ${calcWeeklyEfficiencyLabel(productionLog, todayStr)}` : 'No production data yet', color: 'green', link: null },
 			{ icon: '<i class="fa-solid fa-users"></i>', label: 'Active Customers', value: formatNumber(activeCustomers), meta: activeCustomers > 0 ? 'Unique customers from sales' : 'No customers yet', color: 'purple', link: null },
 			{ icon: '<i class="fa-solid fa-triangle-exclamation"></i>', label: 'Stock Alerts', value: String(stockAlertCount), meta: `${stockCriticalCount} critically low \u2014 needs reorder`, color: stockCriticalCount > 0 ? 'red' : 'yellow', link: `${resolvePageHref('inventory')}?tab=materials` },
@@ -1249,7 +1478,8 @@ function initDashboardPage() {
 
 		const stamp = document.getElementById('dash-timestamp');
 		if (stamp) {
-			stamp.textContent = new Date().toLocaleString();
+			const lastUpdate = getLastDataUpdateStamp();
+			stamp.textContent = lastUpdate ? new Date(lastUpdate).toLocaleString() : '--';
 		}
 	};
 
@@ -1367,7 +1597,7 @@ function initDashboardPage() {
 
 		// Cross-tab: localStorage storage event
 		window.addEventListener('storage', (event) => {
-			const dashKeys = ['ww_raw_materials', 'ww_daily_production', 'ww_equipment', 'ww_production_batches', 'ww_accounting_data_v2', 'ww_purchase_data_v2'];
+			const dashKeys = ['ww_raw_materials', 'ww_daily_production', 'ww_equipment', 'ww_production_batches', 'ww_accounting_data_v2', 'ww_purchase_data_v2', 'ww_market_yearly_values'];
 			if (dashKeys.includes(event.key) || (event.key && event.key.startsWith('ww_sales_'))) {
 				refreshDashboardView();
 			}
@@ -1943,10 +2173,23 @@ async function initInventoryPage() {
 				const entity = deleteBtn.getAttribute('data-delete-entity');
 				const idx = Number(deleteBtn.getAttribute('data-delete-idx'));
 				if (!confirm('Delete this ' + entity + '? This cannot be undone.')) return;
-				if (entity === 'material') { rawMaterials.splice(idx, 1); saveRawMaterialsToStorage(rawMaterials); }
-				else if (entity === 'product') { finishedProducts.splice(idx, 1); saveFinishedProductsToStorage(finishedProducts); }
+				if (entity === 'material') {
+					const removed = rawMaterials[idx];
+					if (removed) moveAppDataDeleteToTrash('inventory', removed, { kind: 'appDataArray', key: 'ww_raw_materials' });
+					rawMaterials.splice(idx, 1);
+					saveRawMaterialsToStorage(rawMaterials);
+				}
+				else if (entity === 'product') {
+					const removed = finishedProducts[idx];
+					if (removed) moveAppDataDeleteToTrash('inventory', removed, { kind: 'appDataArray', key: 'ww_finished_products' });
+					finishedProducts.splice(idx, 1);
+					saveFinishedProductsToStorage(finishedProducts);
+				}
 				else if (entity === 'equipment') {
 					const removed = equipment[idx];
+					if (removed && !removed.id) {
+						moveAppDataDeleteToTrash('factory-equipment', removed, { kind: 'appDataArray', key: 'ww_equipment' });
+					}
 					equipment.splice(idx, 1);
 					if (removed && removed.id) {
 						fetch(API_BASE + '/api/factory-equipment/' + removed.id, { method: 'DELETE', credentials: 'include' }).catch(() => {});
@@ -2000,6 +2243,22 @@ function monthStorageKey(month) {
 	return `ww_sales_${month}`;
 }
 
+function recoverSalesMonthsFromStorage() {
+	const existing = getSalesMonths();
+	const recovered = new Set(existing);
+	for (let i = 0; i < localStorage.length; i += 1) {
+		const key = localStorage.key(i);
+		if (!key) continue;
+		const match = /^ww_sales_(\d{4}-\d{2})$/.exec(key);
+		if (match && match[1]) recovered.add(match[1]);
+	}
+	const merged = Array.from(recovered).sort();
+	if (merged.length !== existing.length || merged.some((m, idx) => m !== existing[idx])) {
+		saveSalesMonths(merged);
+	}
+	return merged;
+}
+
 function monthLabel(month) {
 	const [y, m] = month.split('-');
 	const names = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -2008,7 +2267,7 @@ function monthLabel(month) {
 
 /** Aggregate invoices + salesOrders across ALL months (used by Dashboard, Reports, etc.) */
 function getAllSalesData() {
-	const months = getSalesMonths();
+	const months = recoverSalesMonthsFromStorage();
 	const allInvoices = [];
 	const allOrders = [];
 	for (const m of months) {
@@ -2035,6 +2294,9 @@ function ensureMonthExists(month) {
 function loadSalesDataFromStorage() {
 	/* Clean up any old key */
 	try { localStorage.removeItem('ww_sales_data'); } catch(_e) {}
+
+	/* Recover month index from available monthly keys */
+	recoverSalesMonthsFromStorage();
 
 	/* Ensure March 2026 month exists */
 	ensureMonthExists('2026-03');
@@ -2812,21 +3074,29 @@ async function initSalesInvoicesPage() {
 			if (!confirm('Delete this ' + label + '? This cannot be undone.')) return;
 			if (entity === 'invoice') {
 				const inv = salesModuleData.invoices[idx];
+				if (inv) moveAppDataDeleteToTrash('invoices', inv, { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'invoices' });
 				salesModuleData.invoices.splice(idx, 1);
 				// Also remove matching sales order
 				if (inv) {
 					const soId = 'SO' + inv.id.slice(3);
 					const soIdx = salesModuleData.salesOrders.findIndex(o => o.id === soId);
-					if (soIdx !== -1) salesModuleData.salesOrders.splice(soIdx, 1);
+					if (soIdx !== -1) {
+						moveAppDataDeleteToTrash('sales', salesModuleData.salesOrders[soIdx], { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'salesOrders' });
+						salesModuleData.salesOrders.splice(soIdx, 1);
+					}
 				}
 			} else if (entity === 'order') {
 				const ord = salesModuleData.salesOrders[idx];
+				if (ord) moveAppDataDeleteToTrash('sales', ord, { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'salesOrders' });
 				salesModuleData.salesOrders.splice(idx, 1);
 				// Also remove matching invoice
 				if (ord) {
 					const invId = 'INV' + ord.id.slice(2);
 					const invIdx = salesModuleData.invoices.findIndex(v => v.id === invId);
-					if (invIdx !== -1) salesModuleData.invoices.splice(invIdx, 1);
+					if (invIdx !== -1) {
+						moveAppDataDeleteToTrash('invoices', salesModuleData.invoices[invIdx], { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'invoices' });
+						salesModuleData.invoices.splice(invIdx, 1);
+					}
 				}
 			}
 			saveSalesDataToStorage();
@@ -3678,8 +3948,12 @@ function initPurchasePage() {
 			const label = entity === 'po' ? 'purchase order' : 'supplier';
 			if (!confirm('Delete this ' + label + '? This cannot be undone.')) return;
 			if (entity === 'po') {
+				const removedPo = purchaseModuleData.purchaseOrders.find((po) => po.id === id);
+				if (removedPo) moveAppDataDeleteToTrash('purchaseOrders', removedPo, { kind: 'appDataArray', key: 'ww_purchase_data_v2', arrayPath: 'purchaseOrders' });
 				purchaseModuleData.purchaseOrders = purchaseModuleData.purchaseOrders.filter((po) => po.id !== id);
 			} else if (entity === 'supplier') {
+				const removedSupplier = purchaseModuleData.suppliers.find((s) => s.id === id);
+				if (removedSupplier) moveAppDataDeleteToTrash('vendors', removedSupplier, { kind: 'appDataArray', key: 'ww_purchase_data_v2', arrayPath: 'suppliers' });
 				purchaseModuleData.suppliers = purchaseModuleData.suppliers.filter((s) => s.id !== id);
 			}
 			savePurchaseDataToStorage();
@@ -3784,6 +4058,21 @@ function initPurchasePage() {
 	}
 
 	renderPurchasePage();
+
+	if (!window.__wwPurchaseSyncBound) {
+		window.__wwPurchaseSyncBound = true;
+		const reloadPurchasePage = () => {
+			loadPurchaseDataFromStorage();
+			renderPurchasePage();
+		};
+		window.addEventListener('storage', (event) => {
+			if (event.key === 'ww_purchase_data_v2') reloadPurchasePage();
+		});
+		try {
+			if (!window.__wwPurchaseChannel) window.__wwPurchaseChannel = new BroadcastChannel('ww_purchase_sync');
+			window.__wwPurchaseChannel.onmessage = reloadPurchasePage;
+		} catch (_e) { /* ignore */ }
+	}
 }
 
 /* ---- Accounting Data Persistence ---- */
@@ -4227,19 +4516,40 @@ function initAccountingPage() {
 			const entity = deleteBtn.getAttribute('data-delete-entity');
 			const idx = Number(deleteBtn.getAttribute('data-delete-idx'));
 			if (!confirm('Delete this ' + entity + ' entry? This cannot be undone.')) return;
-			if (entity === 'ledger') accountingData.ledger.splice(idx, 1);
-			else if (entity === 'cashbook') accountingData.cashbook.splice(idx, 1);
-			else if (entity === 'account') accountingData.summary.splice(idx, 1);
-			else if (entity === 'currency') accountingData.currencies.splice(idx, 1);
+			if (entity === 'ledger') {
+				const removed = accountingData.ledger[idx];
+				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'ledger' });
+				accountingData.ledger.splice(idx, 1);
+			}
+			else if (entity === 'cashbook') {
+				const removed = accountingData.cashbook[idx];
+				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'cashbook' });
+				accountingData.cashbook.splice(idx, 1);
+			}
+			else if (entity === 'account') {
+				const removed = accountingData.summary[idx];
+				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'summary' });
+				accountingData.summary.splice(idx, 1);
+			}
+			else if (entity === 'currency') {
+				const removed = accountingData.currencies[idx];
+				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'currencies' });
+				accountingData.currencies.splice(idx, 1);
+			}
 			else if (entity === 'salary') {
 				const sal = accountingData.salaries[idx];
+				if (sal) moveAppDataDeleteToTrash('accounting', sal, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'salaries' });
 				if (sal) {
 					const li = accountingData.ledger.findIndex(e => e.account === 'Salaries' && e.desc === `Salary — ${sal.employee}` && e.date === sal.date);
 					if (li >= 0) accountingData.ledger.splice(li, 1);
 				}
 				accountingData.salaries.splice(idx, 1);
 			}
-			else if (entity === 'asset-item') accountingData.assets.splice(idx, 1);
+			else if (entity === 'asset-item') {
+				const removed = accountingData.assets[idx];
+				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'assets' });
+				accountingData.assets.splice(idx, 1);
+			}
 			saveAccountingDataToStorage();
 			renderAccountingPage();
 		}
@@ -4533,6 +4843,26 @@ function initAccountingPage() {
 	}
 
 	renderAccountingPage();
+
+	if (!window.__wwAccountingSyncBound) {
+		window.__wwAccountingSyncBound = true;
+		const reloadAccountingPage = () => {
+			loadAccountingDataFromStorage();
+			renderAccountingPage();
+		};
+		window.addEventListener('storage', (event) => {
+			if (event.key === 'ww_accounting_data_v2' || event.key === 'ww_purchase_data_v2' || event.key === MONTHS_KEY || (event.key && event.key.startsWith('ww_sales_')) || event.key === 'ww_production_batches' || event.key === 'ww_daily_production') {
+				reloadAccountingPage();
+			}
+		});
+		const channels = ['ww_accounting_sync', 'ww_sales_sync', 'ww_purchase_sync'];
+		for (const ch of channels) {
+			try {
+				const bc = new BroadcastChannel(ch);
+				bc.onmessage = reloadAccountingPage;
+			} catch (_e) { /* ignore */ }
+		}
+	}
 }
 
 function initProductionPage() {
@@ -4719,7 +5049,10 @@ function initProductionPage() {
 		const deleteBtn = event.target.closest('.prod-delete-batch');
 		if (deleteBtn) {
 			if (!confirm('Delete this batch? This cannot be undone.')) return;
-			prodBatches.splice(Number(deleteBtn.dataset.idx), 1);
+			const batchIdx = Number(deleteBtn.dataset.idx);
+			const removedBatch = prodBatches[batchIdx];
+			if (removedBatch) moveAppDataDeleteToTrash('production', removedBatch, { kind: 'appDataArray', key: 'ww_production_batches' });
+			prodBatches.splice(batchIdx, 1);
 			saveBatches();
 			renderProductionPage();
 			renderProfitabilityChart();
@@ -4736,7 +5069,12 @@ function initProductionPage() {
 		const deleteComp = event.target.closest('.bom-delete-comp');
 		if (deleteComp && selectedProduct && billOfMaterials[selectedProduct]) {
 			if (!confirm('Delete this component?')) return;
-			billOfMaterials[selectedProduct].components.splice(Number(deleteComp.dataset.idx), 1);
+			const compIdx = Number(deleteComp.dataset.idx);
+			const removedComp = billOfMaterials[selectedProduct].components[compIdx];
+			if (removedComp) {
+				moveAppDataDeleteToTrash('production', removedComp, { kind: 'bomComponent', key: 'ww_bom_data', product: selectedProduct });
+			}
+			billOfMaterials[selectedProduct].components.splice(compIdx, 1);
 			saveBom();
 			renderBom(selectedProduct);
 			renderCostAnalysis();
@@ -5089,6 +5427,82 @@ function initReportsPage() {
 		}
 	}
 }
+
+window.exportReports = function () {
+	const main = document.querySelector('.ops-main');
+	if (!main) {
+		alert('Nothing to export on this page yet.');
+		return;
+	}
+
+	const title = 'White Water Wells - Reports';
+	const stamp = new Date().toLocaleString('en-GB');
+	const printCss = `${window.location.origin}/src/script.css?v=20260331`;
+	const exportHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <link rel="stylesheet" href="${printCss}">
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #fff; color: #0f172a; }
+    .export-wrap { padding: 20px; }
+    .export-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #e2e8f0; margin-bottom: 12px; padding-bottom: 8px; }
+    .export-head h1 { font-size: 1.1rem; margin: 0; }
+    .export-head p { font-size: 0.85rem; color: #64748b; margin: 0; }
+    .ops-sidebar, .ops-topbar, .logout-link, .btn-print, .tab-bar button, .btn-edit, .btn-delete, .rep-budget-btn, .modal-backdrop { display: none !important; }
+    .panel, .stat-card, .kpi-card-v2, .data-table, .chart-wrap { break-inside: avoid; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style>
+</head>
+<body>
+  <div class="export-wrap">
+    <div class="export-head">
+      <h1>${title}</h1>
+      <p>Generated: ${stamp}</p>
+    </div>
+    ${main.innerHTML}
+  </div>
+</body>
+</html>`;
+
+	try {
+		const printWin = window.open('', '_blank', 'width=1100,height=900');
+		if (printWin && printWin.document) {
+			printWin.document.open();
+			printWin.document.write(exportHtml);
+			printWin.document.close();
+			setTimeout(() => {
+				try {
+					printWin.focus();
+					printWin.print();
+				} catch (_e) {
+					// ignored; fallback below handles hard failures.
+				}
+			}, 350);
+			return;
+		}
+	} catch (_e) {
+		// ignored; fallback below
+	}
+
+	// Fallback: download an HTML export if print pop-up is blocked.
+	try {
+		const blob = new Blob([exportHtml], { type: 'text/html;charset=utf-8' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = `reports-export-${new Date().toISOString().slice(0, 10)}.html`;
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
+		alert('Print preview was blocked. A downloadable HTML export was generated instead.');
+	} catch (_e) {
+		try { window.print(); } catch (_err) { /* final fallback */ }
+	}
+};
 
 window.applyReportsFilter = function () {
 	const filterType = document.getElementById('rep-filter-type');
@@ -5607,7 +6021,8 @@ function setAuthMessage(message, isError) {
 	if (!messageNode) {
 		return;
 	}
-	messageNode.textContent = message;
+	const safeMessage = String(message || '').replace(/\bceo\b/gi, 'CEO');
+	messageNode.textContent = safeMessage;
 	if (isError) {
 		messageNode.style.cssText = 'color:#b42318;background:#fef3f2;border:1px solid #fecdca;padding:10px 14px;border-radius:8px;font-weight:500;margin-top:12px;';
 	} else {
@@ -5724,7 +6139,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 	const isOpsPage = document.body.classList.contains('ops-page');
 	try {
 		const meRes = await fetch(API_BASE + '/api/auth/me', { credentials: 'include', cache: 'no-store' });
-		if (meRes.ok) authenticated = true;
+		if (meRes.ok) {
+			authenticated = true;
+			const me = await meRes.json();
+			const meEmail = String(me?.user?.email || '').trim().toLowerCase();
+			if (meEmail) localStorage.setItem('ww_user_email', meEmail);
+			const meRole = resolveEffectiveClientRole(normalizeRole(me?.user?.effectiveRole || me?.user?.role), meEmail);
+			if (meRole) {
+				localStorage.setItem('ww_user_role', meRole);
+				window.__wwUserRole = meRole;
+				enforceRoleAccess();
+			}
+		}
 	} catch (_e) { /* offline */ }
 
 	// Redirect to login if not authenticated on ops pages
@@ -5743,7 +6169,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 			'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
 			'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
 			'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data',
-			'ww_equipment',
+			'ww_equipment', 'ww_market_yearly_values', 'ww_last_data_update',
 			...salesKeys,
 		]);
 		// Re-load sales months in case server had more
@@ -5754,6 +6180,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 		}
 		console.log('[Init] Server hydration complete');
 	} catch (_e) { console.warn('[Init] Server hydration failed:', _e); }
+
+	if (authenticated && isOpsPage && !window.__wwRemoteSyncPolling) {
+		window.__wwRemoteSyncPolling = true;
+		window.__wwLastSeenDataUpdate = getLastDataUpdateStamp();
+		setInterval(async () => {
+			try {
+				const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(LAST_DATA_UPDATE_KEY), { credentials: 'include', cache: 'no-store' });
+				if (!res.ok) return;
+				const json = await res.json();
+				const remoteStamp = typeof json.data === 'string' ? json.data : '';
+				if (!remoteStamp) return;
+				const localStamp = window.__wwLastSeenDataUpdate || getLastDataUpdateStamp();
+				if (localStamp && new Date(remoteStamp).getTime() <= new Date(localStamp).getTime()) return;
+				setLastDataUpdateStamp(remoteStamp);
+				window.__wwLastSeenDataUpdate = remoteStamp;
+				window.location.reload();
+			} catch (_e) { /* keep polling */ }
+		}, 10000);
+	}
 
 	initDashboardPage();
 	initInventoryPage();

@@ -129,12 +129,33 @@
         <div class="inv-modal-body">
           <div class="inv-modal-field"><label for="um-name">Full Name <span class="req">*</span></label><input id="um-name" type="text" required placeholder="Full name"></div>
           <div class="inv-modal-field"><label for="um-email">Email <span class="req">*</span></label><input id="um-email" type="email" required placeholder="user@whitewater.com"></div>
-          <div class="inv-modal-field"><label for="um-role">Role <span class="req">*</span></label><select id="um-role" required><option value="Manager">Manager</option><option value="Supervisor">Supervisor</option><option value="Staff">Staff</option></select></div>
+          <div class="inv-modal-field"><label for="um-role">Role <span class="req">*</span></label><select id="um-role" required><option value="CEO">CEO</option><option value="Manager">Manager</option><option value="Supervisor">Supervisor</option><option value="Staff">Staff</option></select></div>
           <div class="inv-modal-field"><label for="um-password">Temporary Password <span class="req">*</span></label><input id="um-password" type="password" required placeholder="Set initial password" minlength="6"></div>
         </div>
         <div class="inv-modal-footer">
           <button type="button" class="btn-secondary" id="um-modal-cancel">Cancel</button>
           <button type="submit" class="btn-primary">Create User</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Reset Password Modal -->
+  <div id="um-reset-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+    <div class="inv-modal">
+      <div class="inv-modal-header">
+        <h3>Reset User Password</h3>
+        <button type="button" class="inv-modal-close" id="um-reset-close" aria-label="Close">&times;</button>
+      </div>
+      <form id="um-reset-form" novalidate>
+        <div class="inv-modal-body">
+          <div class="inv-modal-field"><label for="um-reset-user">User</label><input id="um-reset-user" type="text" readonly></div>
+          <div class="inv-modal-field"><label for="um-reset-password">New Password <span class="req">*</span></label><input id="um-reset-password" type="password" required minlength="6" placeholder="At least 6 characters"></div>
+          <div class="inv-modal-field"><label for="um-reset-confirm">Confirm Password <span class="req">*</span></label><input id="um-reset-confirm" type="password" required minlength="6" placeholder="Re-enter password"></div>
+        </div>
+        <div class="inv-modal-footer">
+          <button type="button" class="btn-secondary" id="um-reset-cancel">Cancel</button>
+          <button type="submit" class="btn-primary">Reset Password</button>
         </div>
       </form>
     </div>
@@ -156,7 +177,12 @@
   let cachedUsers = [];
   let editingUserId = null;
 
-  function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+  function formatRoleLabel(role) {
+    var normalized = String(role || '').trim().toLowerCase();
+    if (!normalized) return '';
+    if (normalized === 'ceo') return 'CEO';
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
 
   function formatLogin(dt) {
     if (!dt) return 'Never';
@@ -177,7 +203,7 @@
         return '<tr>' +
           '<td>' + (u.name || '') + '</td>' +
           '<td>' + (u.email || '') + '</td>' +
-          '<td>' + capitalize(u.role) + '</td>' +
+          '<td>' + formatRoleLabel(u.role) + '</td>' +
           '<td>' + access + '</td>' +
           '<td><span class="status-pill ' + (u.status === 'Active' ? 'pill-success' : 'pill-warning') + '">' + (u.status || 'Active') + '</span></td>' +
           '<td>' + formatLogin(u.lastLogin) + '</td>' +
@@ -208,11 +234,30 @@
   const closeBtn = document.getElementById('um-modal-close');
   const cancelBtn = document.getElementById('um-modal-cancel');
 
+  const resetModal = document.getElementById('um-reset-modal');
+  const resetForm = document.getElementById('um-reset-form');
+  const resetCloseBtn = document.getElementById('um-reset-close');
+  const resetCancelBtn = document.getElementById('um-reset-cancel');
+  const resetUserInput = document.getElementById('um-reset-user');
+  const resetPasswordInput = document.getElementById('um-reset-password');
+  const resetConfirmInput = document.getElementById('um-reset-confirm');
+  let resettingUserId = null;
+
   function closeModal() { editingUserId = null; if (modal) modal.style.display = 'none'; if (form) form.reset(); var h = modal && modal.querySelector('.inv-modal-header h3'); if (h) h.textContent = 'Add New User'; }
+  function closeResetModal() {
+    resettingUserId = null;
+    if (resetModal) resetModal.style.display = 'none';
+    if (resetForm) resetForm.reset();
+    if (resetUserInput) resetUserInput.value = '';
+  }
+
   if (addBtn) addBtn.addEventListener('click', function() { editingUserId = null; if (modal) modal.style.display = 'flex'; });
   if (closeBtn) closeBtn.addEventListener('click', closeModal);
   if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
   if (modal) modal.addEventListener('click', function(e) { if (e.target === modal) closeModal(); });
+  if (resetCloseBtn) resetCloseBtn.addEventListener('click', closeResetModal);
+  if (resetCancelBtn) resetCancelBtn.addEventListener('click', closeResetModal);
+  if (resetModal) resetModal.addEventListener('click', function(e) { if (e.target === resetModal) closeResetModal(); });
 
   if (usersTbody) usersTbody.addEventListener('click', async function(e) {
     var editBtn = e.target.closest('.um-edit-btn');
@@ -227,26 +272,28 @@
       var h = modal && modal.querySelector('.inv-modal-header h3'); if (h) h.textContent = 'Edit User';
       document.getElementById('um-name').value = u.name || '';
       document.getElementById('um-email').value = u.email || '';
-      document.getElementById('um-role').value = capitalize(u.role);
+      var roleEl = document.getElementById('um-role');
+      var nextRole = formatRoleLabel(u.role);
+      if (roleEl) {
+        var hasOption = Array.from(roleEl.options).some(function(opt) { return opt.value === nextRole; });
+        if (!hasOption && nextRole) {
+          var opt = document.createElement('option');
+          opt.value = nextRole;
+          opt.textContent = nextRole;
+          roleEl.appendChild(opt);
+        }
+        roleEl.value = nextRole;
+      }
       document.getElementById('um-password').value = '';
     }
     if (resetPwdBtn) {
       var id3 = resetPwdBtn.dataset.id;
       var u3 = cachedUsers.find(function(x) { return String(x.id) === id3; });
       if (!u3) return;
-      var newPwd = prompt('Enter new password for "' + u3.name + '" (min 6 characters):');
-      if (!newPwd) return;
-      if (newPwd.length < 6) { alert('Password must be at least 6 characters'); return; }
-      try {
-        var res3 = await fetch('/api/auth/admin-reset-password', {
-          method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: id3, newPassword: newPwd }),
-        });
-        var data3 = await res3.json().catch(function() { return {}; });
-        if (!res3.ok) { alert(data3.message || 'Reset failed'); return; }
-        alert(data3.message || 'Password reset successfully');
-      } catch (err) { alert('Password reset failed'); }
+      resettingUserId = id3;
+      if (resetUserInput) resetUserInput.value = u3.name + ' (' + (u3.email || '') + ')';
+      if (resetModal) resetModal.style.display = 'flex';
+      if (resetPasswordInput) resetPasswordInput.focus();
     }
     if (deleteBtn) {
       var id2 = deleteBtn.dataset.id;
@@ -291,6 +338,32 @@
       loadUsers();
       closeModal();
     } catch (err) { alert('Operation failed'); }
+  });
+
+  if (resetForm) resetForm.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    if (!resettingUserId) return;
+
+    var newPwd = (resetPasswordInput && resetPasswordInput.value || '').trim();
+    var confirmPwd = (resetConfirmInput && resetConfirmInput.value || '').trim();
+
+    if (!newPwd) { alert('New password is required'); return; }
+    if (newPwd.length < 6) { alert('Password must be at least 6 characters'); return; }
+    if (newPwd !== confirmPwd) { alert('Passwords do not match'); return; }
+
+    try {
+      var res3 = await fetch('/api/auth/admin-reset-password', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: resettingUserId, newPassword: newPwd }),
+      });
+      var data3 = await res3.json().catch(function() { return {}; });
+      if (!res3.ok) { alert(data3.message || 'Reset failed'); return; }
+      alert(data3.message || 'Password reset successfully');
+      closeResetModal();
+    } catch (err) {
+      alert('Password reset failed');
+    }
   });
 })();
 
