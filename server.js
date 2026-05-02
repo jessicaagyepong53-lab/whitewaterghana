@@ -701,7 +701,7 @@ app.get('/api/reports', ensureAuthenticated, ensureRole('reports'), async (_req,
 const ALLOWED_DATA_KEYS = [
   'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
   'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
-  'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data',
+  'ww_cost_centre_budgets', 'ww_bom_data',
   'ww_sales_months', 'ww_equipment', 'ww_seed_flags', 'ww_last_data_update',
 ];
 

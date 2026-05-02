@@ -1739,6 +1739,27 @@ body {
 	cursor: pointer;
 }
 
+.inv-modal-summary-error {
+	margin: 0;
+	font-size: 0.8rem;
+	font-weight: 600;
+	color: #b91c1c;
+	min-height: 1.1rem;
+}
+
+.inv-modal-error {
+	margin: 0;
+	font-size: 0.78rem;
+	color: #b91c1c;
+	min-height: 1rem;
+}
+
+.inv-modal-field.has-error input,
+.inv-modal-field.has-error select {
+	border-color: #dc2626;
+	background: #fef2f2;
+}
+
 /* ═══════════════════  WAYBILL  ═══════════════════ */
 .waybill-toolbar {
 	display: flex;

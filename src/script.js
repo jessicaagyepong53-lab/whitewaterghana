@@ -1063,12 +1063,7 @@ function initDashboardPage() {
 
 		// Keep active sales months visible on the chart even when revenue is pending.
 		for (const month of recoverSalesMonthsFromStorage()) {
-			let monthData = null;
-			try { monthData = JSON.parse(localStorage.getItem(monthStorageKey(month)) || 'null'); } catch (_e) { monthData = null; }
-			if (!monthData || typeof monthData !== 'object') continue;
-			const invoiceCount = Array.isArray(monthData.invoices) ? monthData.invoices.length : 0;
-			const orderCount = Array.isArray(monthData.salesOrders) ? monthData.salesOrders.length : 0;
-			if (invoiceCount > 0 || orderCount > 0) ensureMonth(month);
+			if (/^\d{4}-\d{2}$/.test(month)) ensureMonth(month);
 		}
 		// (Sales orders mirror invoices — skip to avoid double-counting)
 		// Production batch costs
@@ -1176,11 +1171,14 @@ function initDashboardPage() {
 	const buildInvoiceRevenueByMonth = () => {
 		const salesData = getAllSalesData();
 		const byMonth = {};
+		recoverSalesMonthsFromStorage().forEach((month) => {
+			if (/^\d{4}-\d{2}$/.test(month)) byMonth[month] = byMonth[month] || 0;
+		});
 		for (const inv of salesData.invoices) {
 			if (inv.status !== 'paid') continue;
 			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
-			const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
+			const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 			byMonth[key] = (byMonth[key] || 0) + (Number(inv.amount) || 0);
 		}
 		return Object.keys(byMonth).sort().map((key) => {
@@ -1188,7 +1186,7 @@ function initDashboardPage() {
 			return {
 				key,
 				year: Number(year),
-				month: Number(month) + 1,
+				month: Number(month),
 				value: byMonth[key],
 			};
 		});
@@ -1354,38 +1352,70 @@ function initDashboardPage() {
 			{ icon: '<i class="fa-solid fa-triangle-exclamation"></i>', label: 'Stock Alerts', value: String(stockAlertCount), meta: `${stockCriticalCount} critically low \u2014 needs reorder`, color: stockCriticalCount > 0 ? 'red' : 'yellow', link: `${resolvePageHref('inventory')}?tab=materials` },
 		];
 
-		// Fetch online store stats (non-blocking)
-		fetch(API_BASE + '/api/store/admin/stats').then((r) => r.ok ? r.json() : null).then((stats) => {
+		// Fetch online store stats (non-blocking) with cache/throttle so dashboard refresh stays snappy.
+		const applyOnlineStatsToDashboard = (stats) => {
 			if (!stats) return;
 			const onlineKpi = document.getElementById('kpi-online-orders');
 			if (onlineKpi) {
 				onlineKpi.querySelector('.kpi-value').textContent = String(stats.pendingOrders);
 				onlineKpi.querySelector('.kpi-meta').textContent = `${stats.orderCount} total · ${stats.customerCount} customers`;
-			} else {
-				const kpiGrid = document.getElementById('dash-kpi-grid');
-				if (kpiGrid) {
-					const card = document.createElement('article');
-					card.className = 'kpi-card-dashboard kpi-card-link';
-					card.id = 'kpi-online-orders';
-					card.setAttribute('role', 'link');
-					card.setAttribute('tabindex', '0');
-					card.setAttribute('data-kpi-link', 'invoices.html');
-					card.style.cursor = 'pointer';
-					card.innerHTML = `
-						<div class="kpi-head">
-							<div>
-								<p class="kpi-label">Online Orders</p>
-								<p class="kpi-value">${stats.pendingOrders}</p>
-							</div>
-							<div class="kpi-icon-square ${stats.pendingOrders > 0 ? 'red' : 'green'}"><i class="fa-solid fa-globe"></i></div>
-						</div>
-						<p class="kpi-meta">${stats.orderCount} total · ${stats.customerCount} customers</p>
-					`;
-					card.addEventListener('click', () => { window.location.href = resolvePageHref('invoices'); });
-					kpiGrid.appendChild(card);
+				const iconWrap = onlineKpi.querySelector('.kpi-icon-square');
+				if (iconWrap) {
+					iconWrap.classList.remove('red', 'green');
+					iconWrap.classList.add(stats.pendingOrders > 0 ? 'red' : 'green');
 				}
+				return;
 			}
-		}).catch(() => {});
+
+			const kpiGrid = document.getElementById('dash-kpi-grid');
+			if (!kpiGrid) return;
+			const card = document.createElement('article');
+			card.className = 'kpi-card-dashboard kpi-card-link';
+			card.id = 'kpi-online-orders';
+			card.setAttribute('role', 'link');
+			card.setAttribute('tabindex', '0');
+			card.setAttribute('data-kpi-link', 'invoices.html');
+			card.style.cursor = 'pointer';
+			card.innerHTML = `
+				<div class="kpi-head">
+					<div>
+						<p class="kpi-label">Online Orders</p>
+						<p class="kpi-value">${stats.pendingOrders}</p>
+					</div>
+					<div class="kpi-icon-square ${stats.pendingOrders > 0 ? 'red' : 'green'}"><i class="fa-solid fa-globe"></i></div>
+				</div>
+				<p class="kpi-meta">${stats.orderCount} total · ${stats.customerCount} customers</p>
+			`;
+			card.addEventListener('click', () => { window.location.href = resolvePageHref('invoices'); });
+			kpiGrid.appendChild(card);
+		};
+
+		if (window.__wwDashboardOnlineStats) {
+			Promise.resolve().then(() => applyOnlineStatsToDashboard(window.__wwDashboardOnlineStats));
+		}
+		const nowMs = Date.now();
+		const lastFetchMs = Number(window.__wwDashboardOnlineStatsFetchedAt || 0);
+		if (!window.__wwDashboardOnlineStatsInFlight && (nowMs - lastFetchMs > 15000)) {
+			window.__wwDashboardOnlineStatsInFlight = true;
+			const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+			const timeoutId = setTimeout(() => {
+				if (controller) controller.abort();
+			}, 5000);
+			fetch(API_BASE + '/api/store/admin/stats', {
+				cache: 'no-store',
+				signal: controller ? controller.signal : undefined,
+			}).then((r) => r.ok ? r.json() : null).then((stats) => {
+				if (!stats) return;
+				window.__wwDashboardOnlineStats = stats;
+				window.__wwDashboardOnlineStatsFetchedAt = Date.now();
+				applyOnlineStatsToDashboard(stats);
+			}).catch(() => {
+				/* keep dashboard responsive even if online stats API is slow */
+			}).finally(() => {
+				clearTimeout(timeoutId);
+				window.__wwDashboardOnlineStatsInFlight = false;
+			});
+		}
 
 		const kpiGrid = document.getElementById('dash-kpi-grid');
 		if (kpiGrid) {
@@ -2807,7 +2837,7 @@ async function initSalesInvoicesPage() {
 				{ id: 'customer', label: 'Customer Name', type: 'text', required: true },
 				{ id: 'address', label: 'Address / P.O. Box', type: 'text', placeholder: 'City / Street / P.O. Box' },
 				{ id: 'phone', label: 'Telephone', type: 'text', placeholder: '000-000-0000' },
-				{ id: 'product', label: 'Product', type: 'text', required: true, placeholder: 'e.g. Mobile Water 500ml' },
+				{ id: 'product', label: 'Product', type: 'select', required: true, options: ['Mobile water 500ML'] },
 				{ id: 'qty', label: 'Quantity', type: 'number', min: '1', required: true },
 				{ id: 'promo', label: 'Promo', type: 'number', min: '0', defaultValue: '0' },
 				{ id: 'unitPrice', label: 'Unit Price (GH)', type: 'number', min: '0', step: '0.01', required: true },
@@ -2835,9 +2865,49 @@ async function initSalesInvoicesPage() {
 	let currentEntity = null;
 	let editingSiIdx = -1;
 
+	const clearModalValidation = () => {
+		if (!modalFieldsEl) return;
+		modalFieldsEl.querySelectorAll('.inv-modal-field').forEach((field) => field.classList.remove('has-error'));
+		modalFieldsEl.querySelectorAll('.inv-modal-error').forEach((msg) => { msg.textContent = ''; });
+		const summary = modalFieldsEl.querySelector('#si-modal-error-summary');
+		if (summary) summary.textContent = '';
+	};
+
+	const setFieldValidationError = (fieldId, message) => {
+		const input = document.getElementById(`si-field-${fieldId}`);
+		if (!input) return;
+		const fieldWrap = input.closest('.inv-modal-field');
+		if (fieldWrap) fieldWrap.classList.add('has-error');
+		const msgEl = document.getElementById(`si-err-${fieldId}`);
+		if (msgEl) msgEl.textContent = message;
+	};
+
+	const validateModalRequiredFields = () => {
+		const config = SI_MODAL_CONFIGS[currentEntity];
+		if (!config) return true;
+		clearModalValidation();
+		const missing = [];
+		for (const field of config.fields) {
+			if (!field.required) continue;
+			const value = getValue(field.id);
+			if (value) continue;
+			missing.push(field);
+			setFieldValidationError(field.id, `${field.label} is required.`);
+		}
+		if (!missing.length) return true;
+		const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
+		if (summary) {
+			summary.textContent = 'Please fill the highlighted required fields.';
+		}
+		const firstMissing = document.getElementById(`si-field-${missing[0].id}`);
+		if (firstMissing) firstMissing.focus();
+		return false;
+	};
+
 	const closeModal = () => {
 		if (addModal) addModal.style.display = 'none';
 		if (modalForm) modalForm.reset();
+		clearModalValidation();
 		currentEntity = null;
 		editingSiIdx = -1;
 	};
@@ -2849,7 +2919,7 @@ async function initSalesInvoicesPage() {
 		editingSiIdx = typeof editIdx === 'number' ? editIdx : -1;
 		if (modalTitle) modalTitle.textContent = editingSiIdx >= 0 ? config.title.replace('Add', 'Edit') : config.title;
 		if (modalFieldsEl) {
-			modalFieldsEl.innerHTML = config.fields.map((f) => {
+			modalFieldsEl.innerHTML = `<p class="inv-modal-summary-error" id="si-modal-error-summary" aria-live="polite"></p>` + config.fields.map((f) => {
 				if (f.type === 'select') {
 					return `
 						<div class="inv-modal-field">
@@ -2857,6 +2927,7 @@ async function initSalesInvoicesPage() {
 							<select id="si-field-${f.id}" name="${f.id}" ${f.required ? 'required' : ''}>
 								${f.options.map((o) => `<option value="${o}">${o.charAt(0).toUpperCase() + o.slice(1)}</option>`).join('')}
 							</select>
+							<p class="inv-modal-error" id="si-err-${f.id}" aria-live="polite"></p>
 						</div>
 					`;
 				}
@@ -2873,6 +2944,7 @@ async function initSalesInvoicesPage() {
 							${f.placeholder ? `placeholder="${f.placeholder}"` : ''}
 							${f.defaultValue ? `value="${f.defaultValue}"` : ''}
 						>
+						<p class="inv-modal-error" id="si-err-${f.id}" aria-live="polite"></p>
 					</div>
 				`;
 			}).join('');
@@ -2919,6 +2991,7 @@ async function initSalesInvoicesPage() {
 		}
 		const firstInput = modalFieldsEl && modalFieldsEl.querySelector('input, select');
 		if (firstInput) firstInput.focus();
+		clearModalValidation();
 	};
 
 	document.getElementById('si-modal-close')?.addEventListener('click', closeModal);
@@ -2939,6 +3012,7 @@ async function initSalesInvoicesPage() {
 		modalForm.addEventListener('submit', (event) => {
 			event.preventDefault();
 			if (!currentEntity) return;
+			if (!validateModalRequiredFields()) return;
 
 			if (currentEntity === 'invoice') {
 				const customer = getValue('customer');
@@ -3167,22 +3241,16 @@ async function initSalesInvoicesPage() {
 
 		const stats = document.getElementById('si-stats-row');
 		if (stats) {
-			const waybills = (() => { try { return JSON.parse(localStorage.getItem('ww_waybills') || '[]'); } catch(_e) { return []; } })();
-			const waybillCount = waybills.length;
-			const waybillTotalQty = waybills.reduce((s, w) => s + (w.items || []).reduce((q, i) => q + (parseFloat(i.qty) || 0), 0), 0);
-			const waybillPending = waybills.filter((w) => !w.received).length;
-			const totalPromoBags = invoiceRows.reduce((sum, inv) => sum + (inv.promo || 0), 0) + orders.reduce((sum, o) => sum + (o.promo || 0), 0);
 			const invoicePromo = invoiceRows.reduce((sum, inv) => sum + (inv.promo || 0), 0);
 			const totalBagsSold = invoiceRows.reduce((sum, inv) => sum + ((inv.items && inv.items[0] ? inv.items[0].qty : 0) || 0), 0);
 			const nonPromoBags = totalBagsSold - invoicePromo;
 			const hideMoney = window.__wwUserRole === 'supervisor' || window.__wwUserRole === 'staff';
 			stats.innerHTML = `
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice"></i></div><p class="s-label">Total Invoices</p><p class="s-value">${totalInvoices}</p><p class="s-meta">${orders.length} sales order${orders.length !== 1 ? 's' : ''}</p></div>
-				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue + salesRevenue)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(invoiceRevenue)}</span><span>Sales: ${formatCurrency(salesRevenue)}</span><span>Waybills: ${formatNumber(waybillTotalQty)} units dispatched</span></p></div>
+				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue + salesRevenue)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(invoiceRevenue)}</span><span>Sales: ${formatCurrency(salesRevenue)}</span></p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-gift"></i></div><p class="s-label">Total Promo Bags</p><p class="s-value">${formatNumber(invoicePromo)}</p><p class="s-meta split-meta"><span>Total bags: ${formatNumber(totalBagsSold)}</span><span>Non-promo: ${formatNumber(nonPromoBags)}</span><span>Promo: ${formatNumber(invoicePromo)}</span></p></div>
-				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices + pendingSales)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(pendingInvoices)}</span><span>Sales: ${formatCurrency(pendingSales)}</span><span>Waybills: ${waybillPending} pending delivery</span></p></div>
+				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices + pendingSales)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(pendingInvoices)}</span><span>Sales: ${formatCurrency(pendingSales)}</span></p></div>
 				<div class="stat-card ${overdueTotal > 0 ? 'stat-card-alert' : ''}" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-circle-exclamation"></i></div><p class="s-label">Overdue</p><p class="s-value">${formatCurrency(overdueTotal)}</p><p class="s-meta">${overdueInvAmt > 0 ? 'Inv: ' + formatCurrency(overdueInvAmt) + ' ' : ''}${overdueOrdAmt > 0 ? 'Orders: ' + formatCurrency(overdueOrdAmt) : ''}${overdueTotal === 0 ? 'All clear' : ''}</p></div>
-				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-truck-fast"></i></div><p class="s-label">Total Waybills</p><p class="s-value" id="wb-stat-count">${waybillCount}</p><p class="s-meta">Dispatch documents</p></div>
 			`;
 		}
 
@@ -3305,11 +3373,14 @@ async function loadOnlineOrders() {
 	const tbody = document.getElementById('online-orders-tbody');
 	const badge = document.getElementById('online-orders-badge');
 	if (!tbody) return;
+	if (window.__wwOnlineOrdersLoading) return;
+	window.__wwOnlineOrdersLoading = true;
 
 	try {
 		const res = await fetch(API_BASE + '/api/store/admin/orders');
 		if (!res.ok) {
 			tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#587289;padding:24px">Unable to load online orders. Make sure you are logged in.</td></tr>';
+			tbody.dataset.ordersSignature = 'error';
 			return;
 		}
 		let orders = await res.json();
@@ -3328,8 +3399,17 @@ async function loadOnlineOrders() {
 			badge.textContent = pendingCount;
 		}
 
+		const signature = JSON.stringify({
+			filterVal,
+			rows: orders.map((o) => [o.id, o.status, o.total, o.created_at]),
+		});
+		if (tbody.dataset.ordersSignature === signature) {
+			return;
+		}
+
 		if (!orders.length) {
 			tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#587289;padding:24px"><i class="fa-solid fa-inbox"></i> No online orders' + (filterVal ? ' matching this filter' : ' yet') + '.</td></tr>';
+			tbody.dataset.ordersSignature = signature;
 			return;
 		}
 
@@ -3352,8 +3432,12 @@ async function loadOnlineOrders() {
 				</tr>
 			`;
 		}).join('');
+		tbody.dataset.ordersSignature = signature;
 	} catch (_e) {
 		tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#587289;padding:24px">Error loading orders.</td></tr>';
+		tbody.dataset.ordersSignature = 'error';
+	} finally {
+		window.__wwOnlineOrdersLoading = false;
 	}
 }
 window.loadOnlineOrders = loadOnlineOrders;
@@ -3375,318 +3459,6 @@ async function updateOnlineOrderStatus(orderId, newStatus) {
 	}
 }
 window.updateOnlineOrderStatus = updateOnlineOrderStatus;
-
-/* ═══════════════════  WAYBILL MODULE  ═══════════════════ */
-(async function initWaybillModule() {
-	const WB_KEY = 'ww_waybills';
-	const listTbody = document.getElementById('wb-list-tbody');
-	const editorEl = document.getElementById('wb-editor');
-	const listSection = document.getElementById('wb-list-section');
-
-	if (!listTbody) return; // not on invoices page
-
-	const wbUserRole = await resolveCurrentUserRole();
-	const wbIsApprover = canEditDelete(wbUserRole);
-
-	function loadWaybills() {
-		try { return JSON.parse(localStorage.getItem(WB_KEY) || '[]'); } catch (_e) { return []; }
-	}
-	function saveWaybills(arr) { localStorage.setItem(WB_KEY, JSON.stringify(arr)); syncToServer(WB_KEY, arr); }
-
-	function nextWaybillNo() {
-		const year = new Date().getFullYear();
-		const prefix = `WWW${year}`;
-		const all = loadWaybills();
-		const nums = all
-			.filter((w) => String(w.no).startsWith(prefix))
-			.map((w) => { const m = String(w.no).match(/(\d+)$/); return m ? Number(m[1]) : 0; });
-		const next = (Math.max(0, ...nums) + 1);
-		return `${prefix}${String(next).padStart(4, '0')}`;
-	}
-
-	let editingWbIdx = -1;
-
-	function renderWaybillDetail(w) {
-		const target = document.getElementById('wb-detail-content');
-		if (!target || !w) return;
-		const items = (w.items || []).filter((i) => i.desc || i.qty);
-		const wbStatus = w.status || 'approved';
-		const pendingBanner = wbStatus === 'pending_approval'
-			? `<div class="approval-banner"><i class="fa-solid fa-hourglass-half"></i> Pending Approval${wbIsApprover ? ' — <button class="btn-approve-inline wb-detail-approve-btn">Approve</button>' : ''}</div>`
-			: '';
-		function fmtDate(d) {
-			if (!d) return '';
-			const dt = new Date(d + 'T00:00:00');
-			if (isNaN(dt)) return d;
-			return dt.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
-		}
-		target.innerHTML = `
-			${pendingBanner}
-			<div class="waybill-doc wb-detail-doc" id="wb-detail-document">
-				<div class="wb-header">
-					<div class="wb-logo-area"><img src="../images/Final%20Logo.jpg" alt="Logo" class="wb-logo"></div>
-					<div class="wb-company-info">
-						<h2 class="wb-company-name">White Water Wells LTD</h2>
-						<p>P.O. Box 18204, Accra</p>
-						<p>Location: Comm 25 Peace B Down</p>
-						<p>Accra-Prampram Road</p>
-						<p>GPS Address: GN-0709-4736</p>
-						<p>Mobile: 0243108878 / 0244483793</p>
-						<p>E-mail: whitewaterwellscompanyltd@gmail.com</p>
-					</div>
-					<div class="wb-number-area"><label>No:</label> <span style="color:#1a3d5c;font-family:monospace;font-size:1.05rem">${w.no}</span></div>
-				</div>
-				<h3 class="wb-title">WAYBILL</h3>
-				<div class="wb-detail-fields">
-					<div class="wb-detail-row"><span class="wb-detail-label">TO:</span><span class="wb-detail-val">${w.to || '—'}</span></div>
-					<div class="wb-detail-row"><span class="wb-detail-label">Driver's Name:</span><span class="wb-detail-val">${w.driver || '—'}</span></div>
-					<div class="wb-detail-row"><span class="wb-detail-label">Address:</span><span class="wb-detail-val">${w.address || '—'}</span></div>
-					<div class="wb-detail-row-split">
-						<div class="wb-detail-row"><span class="wb-detail-label">Car Number:</span><span class="wb-detail-val">${w.car || '—'}</span></div>
-						<div class="wb-detail-row"><span class="wb-detail-label">Date:</span><span class="wb-detail-val">${fmtDate(w.date)}</span></div>
-					</div>
-				</div>
-				<table class="wb-items-table">
-					<thead><tr><th style="width:18%">Quantity</th><th style="width:52%">Description</th><th style="width:30%">Remarks</th></tr></thead>
-					<tbody>
-						${items.length ? items.map((it) => `<tr><td>${it.qty || ''}</td><td>${it.desc || ''}</td><td>${it.rem || ''}</td></tr>`).join('') : '<tr><td colspan="3" style="text-align:center;color:#94a3b8;padding:12px">No items</td></tr>'}
-					</tbody>
-				</table>
-				<div class="wb-signatures" style="pointer-events:none">
-					<div class="wb-sig-field"><label>Despatched By:</label><span class="wb-detail-val">${w.despatched || ''}</span><div class="wb-sig-line"></div></div>
-					<div class="wb-sig-field"><label>Received By:</label><span class="wb-detail-val">${w.received || ''}</span><div class="wb-sig-line"></div></div>
-					<div class="wb-sig-field"><label>Driver's Signature:</label><div class="wb-sig-line"></div></div>
-				</div>
-				<p class="wb-tagline">Pure. Reliable. Refreshing.</p>
-			</div>
-			<div class="wb-detail-actions">
-				<button type="button" class="btn-primary wb-detail-print-btn"><i class="fa-solid fa-print"></i> Print Waybill</button>
-			</div>
-		`;
-
-		target.querySelector('.wb-detail-approve-btn')?.addEventListener('click', () => {
-			const waybills = loadWaybills();
-			const idx = waybills.findIndex((wb) => wb.no === w.no);
-			if (idx >= 0) {
-				waybills[idx].status = 'approved';
-				saveWaybills(waybills);
-				renderWaybillList();
-				updateWaybillStat();
-				renderWaybillDetail(waybills[idx]);
-			}
-		});
-
-		target.querySelector('.wb-detail-print-btn')?.addEventListener('click', () => {
-			const doc = document.getElementById('wb-detail-document');
-			if (!doc) return;
-			const printWin = window.open('', '_blank', 'width=800,height=1000');
-			printWin.document.write('<!DOCTYPE html><html><head><title>Waybill ' + w.no + '</title><style>' +
-				'* { margin:0; padding:0; box-sizing:border-box; }' +
-				'body { font-family: "Segoe UI", Arial, sans-serif; padding: 30px; color: #1e293b; }' +
-				'.wb-header { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 10px; }' +
-				'.wb-logo { width: 80px; height: 80px; border-radius: 8px; object-fit: cover; }' +
-				'.wb-company-info { flex: 1; }' +
-				'.wb-company-name { font-size: 1.3rem; font-weight: 700; color: #1a3d5c; margin-bottom: 2px; }' +
-				'.wb-company-info p { font-size: 0.82rem; line-height: 1.5; color: #334155; margin: 0; }' +
-				'.wb-number-area { text-align: right; font-weight: 700; font-size: 0.95rem; }' +
-				'.wb-number-area label { color: #64748b; }' +
-				'.wb-title { text-align: center; font-size: 1.3rem; text-decoration: underline; margin: 14px 0; letter-spacing: 2px; color: #1a3d5c; }' +
-				'.wb-detail-fields { margin: 10px 0; }' +
-				'.wb-detail-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: baseline; }' +
-				'.wb-detail-label { font-weight: 600; min-width: 130px; font-size: 0.9rem; color: #334155; }' +
-				'.wb-detail-val { font-size: 0.92rem; border-bottom: 1px solid #cbd5e1; flex: 1; padding-bottom: 2px; }' +
-				'.wb-detail-row-split { display: flex; gap: 24px; }' +
-				'.wb-detail-row-split .wb-detail-row { flex: 1; }' +
-				'.wb-items-table { width: 100%; border-collapse: collapse; margin: 14px 0; }' +
-				'.wb-items-table th { background: #1a3d5c; color: #fff; padding: 8px 10px; text-align: left; font-size: 0.85rem; }' +
-				'.wb-items-table td { border: 1px solid #cbd5e1; padding: 6px 10px; font-size: 0.88rem; }' +
-				'.wb-signatures { margin-top: 20px; }' +
-				'.wb-sig-field { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }' +
-				'.wb-sig-field label { font-weight: 600; min-width: 150px; font-size: 0.9rem; }' +
-				'.wb-sig-line { flex: 1; border-bottom: 1px solid #94a3b8; min-height: 20px; }' +
-				'.wb-tagline { text-align: center; font-style: italic; color: #2563eb; margin-top: 24px; font-size: 0.95rem; font-weight: 600; }' +
-				'.wb-detail-actions { display: none; }' +
-				'@media print { body { padding: 10px; } }' +
-			'</style></head><body>' + doc.outerHTML + '</body></html>');
-			printWin.document.close();
-			setTimeout(() => { printWin.focus(); printWin.print(); }, 300);
-		});
-	}
-
-	function renderWaybillList() {
-		const waybills = loadWaybills();
-		if (waybills.length === 0) {
-			listTbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#94a3b8;padding:20px">No waybills yet. Click "New Waybill" to create one.</td></tr>';
-		} else {
-			listTbody.innerHTML = waybills.map((w, idx) => {
-				const itemCount = (w.items || []).filter((i) => i.desc).length;
-				const wbStatus = w.status || 'approved';
-				const statusLabel = wbStatus === 'pending_approval' ? 'Pending Approval' : wbStatus;
-				const approveBtn = wbIsApprover && wbStatus === 'pending_approval'
-					? `<button class="btn-approve wb-approve-btn" data-idx="${idx}" title="Approve"><i class="fa-solid fa-check"></i></button>`
-					: '';
-				return `<tr class="selectable" data-wb-idx="${idx}">
-					<td><strong>${w.no}</strong></td>
-					<td>${w.to || '—'}</td>
-					<td>${w.driver || '—'}</td>
-					<td>${w.car || '—'}</td>
-					<td>${formatDateDisplay(w.date) || '—'}</td>
-					<td>${itemCount} item${itemCount !== 1 ? 's' : ''}</td>
-					<td><span class="status-pill ${statusPillClass(wbStatus)}">${statusLabel}</span></td>
-					<td><div class="row-actions">
-						${approveBtn}
-						<button class="btn-edit wb-edit-btn" data-idx="${idx}" title="Edit"><i class="fa-solid fa-pen-to-square"></i></button>
-						<button class="btn-delete wb-delete-btn" data-idx="${idx}" title="Delete"><i class="fa-solid fa-trash"></i></button>
-					</div></td>
-				</tr>`;
-			}).join('');
-		}
-	}
-
-	function showEditor(waybill) {
-		listSection.style.display = 'none';
-		editorEl.style.display = 'block';
-		document.getElementById('wb-new-btn').style.display = 'none';
-
-		document.getElementById('wb-no-display').textContent = waybill.no || nextWaybillNo();
-		document.getElementById('wb-to').value = waybill.to || '';
-		document.getElementById('wb-driver').value = waybill.driver || '';
-		document.getElementById('wb-address').value = waybill.address || '';
-		document.getElementById('wb-car').value = waybill.car || '';
-		document.getElementById('wb-date').value = waybill.date || new Date().toISOString().slice(0, 10);
-		document.getElementById('wb-despatched').value = waybill.despatched || '';
-		document.getElementById('wb-received').value = waybill.received || '';
-
-		const itemsTbody = document.getElementById('wb-items-tbody');
-		const items = waybill.items && waybill.items.length ? waybill.items : [{ qty: '', desc: '', rem: '' }];
-		itemsTbody.innerHTML = items.map((it) => `<tr><td><input type="text" class="wb-input wb-item-qty" value="${it.qty || ''}" placeholder="0"></td><td><input type="text" class="wb-input wb-item-desc" value="${it.desc || ''}" placeholder="Item description"></td><td><input type="text" class="wb-input wb-item-rem" value="${it.rem || ''}" placeholder="Remarks"></td></tr>`).join('');
-	}
-
-	function updateWaybillStat() {
-		const el = document.getElementById('wb-stat-count');
-		if (el) el.textContent = loadWaybills().length;
-	}
-
-	function showList() {
-		editorEl.style.display = 'none';
-		listSection.style.display = 'block';
-		document.getElementById('wb-new-btn').style.display = '';
-		editingWbIdx = -1;
-		renderWaybillList();
-		updateWaybillStat();
-	}
-
-	function collectFormData() {
-		const items = [];
-		document.querySelectorAll('#wb-items-tbody tr').forEach((row) => {
-			const qty = row.querySelector('.wb-item-qty')?.value.trim() || '';
-			const desc = row.querySelector('.wb-item-desc')?.value.trim() || '';
-			const rem = row.querySelector('.wb-item-rem')?.value.trim() || '';
-			if (qty || desc || rem) items.push({ qty, desc, rem });
-		});
-		return {
-			no: document.getElementById('wb-no-display').textContent,
-			to: document.getElementById('wb-to').value.trim(),
-			driver: document.getElementById('wb-driver').value.trim(),
-			address: document.getElementById('wb-address').value.trim(),
-			car: document.getElementById('wb-car').value.trim(),
-			date: document.getElementById('wb-date').value,
-			despatched: document.getElementById('wb-despatched').value.trim(),
-			received: document.getElementById('wb-received').value.trim(),
-			items,
-		};
-	}
-
-	// --- Event listeners ---
-	document.getElementById('wb-new-btn')?.addEventListener('click', () => {
-		editingWbIdx = -1;
-		showEditor({ no: nextWaybillNo() });
-	});
-
-	document.getElementById('wb-cancel-btn')?.addEventListener('click', () => {
-		editorEl.querySelectorAll('input').forEach((inp) => inp.removeAttribute('readonly'));
-		document.getElementById('wb-add-row').style.display = '';
-		document.getElementById('wb-save-btn').style.display = '';
-		showList();
-	});
-
-	document.getElementById('wb-add-row')?.addEventListener('click', () => {
-		const tbody = document.getElementById('wb-items-tbody');
-		const row = document.createElement('tr');
-		row.innerHTML = '<td><input type="text" class="wb-input wb-item-qty" placeholder="0"></td><td><input type="text" class="wb-input wb-item-desc" placeholder="Item description"></td><td><input type="text" class="wb-input wb-item-rem" placeholder="Remarks"></td>';
-		tbody.appendChild(row);
-	});
-
-	document.getElementById('wb-save-btn')?.addEventListener('click', () => {
-		const data = collectFormData();
-		if (!data.to && !data.driver) { alert('Please fill in at least the recipient or driver name.'); return; }
-		if (!wbIsApprover) {
-			data.status = 'pending_approval';
-		} else if (!data.status || data.status === 'pending_approval') {
-			data.status = 'approved';
-		}
-		const waybills = loadWaybills();
-		if (editingWbIdx >= 0 && waybills[editingWbIdx]) {
-			waybills[editingWbIdx] = data;
-		} else {
-			waybills.push(data);
-		}
-		saveWaybills(waybills);
-		if (!wbIsApprover) {
-			alert('Waybill saved as "Pending Approval". A Manager or CEO will review and approve it.');
-		}
-		showList();
-	});
-
-	listTbody.addEventListener('click', (e) => {
-		const editBtn = e.target.closest('.wb-edit-btn');
-		const deleteBtn = e.target.closest('.wb-delete-btn');
-		const approveBtn = e.target.closest('.wb-approve-btn');
-		const waybills = loadWaybills();
-		if (approveBtn) {
-			e.stopPropagation();
-			const idx = Number(approveBtn.dataset.idx);
-			if (waybills[idx]) {
-				waybills[idx].status = 'approved';
-				saveWaybills(waybills);
-				renderWaybillList();
-				updateWaybillStat();
-			}
-			return;
-		}
-		if (editBtn) {
-			e.stopPropagation();
-			const idx = Number(editBtn.dataset.idx);
-			if (waybills[idx]) { editingWbIdx = idx; showEditor(waybills[idx]); }
-			return;
-		}
-		if (deleteBtn) {
-			e.stopPropagation();
-			const idx = Number(deleteBtn.dataset.idx);
-			if (!waybills[idx]) return;
-			if (!confirm('Delete waybill ' + waybills[idx].no + '?')) return;
-			waybills.splice(idx, 1);
-			saveWaybills(waybills);
-			renderWaybillList();
-			updateWaybillStat();
-			const detailEl = document.getElementById('wb-detail-content');
-			if (detailEl) detailEl.innerHTML = '<p class="detail-placeholder">&#128666; Select a waybill to view full details</p>';
-			return;
-		}
-		/* Row click → show detail */
-		const row = e.target.closest('tr[data-wb-idx]');
-		if (row) {
-			const idx = Number(row.dataset.wbIdx);
-			if (waybills[idx]) {
-				listTbody.querySelectorAll('tr').forEach((r) => r.classList.remove('row-selected'));
-				row.classList.add('row-selected');
-				renderWaybillDetail(waybills[idx]);
-			}
-		}
-	});
-
-	renderWaybillList();
-})();
 
 function escapeHtml(str) {
 	const d = document.createElement('div');
@@ -5745,18 +5517,23 @@ function renderReportsData() {
 
 	// ── Sales Trends: aggregate invoices by month (revenue + bags + promo, paid only) ──
 	const salesByMonth = {};
+	for (const month of recoverSalesMonthsFromStorage()) {
+		if (!/^\d{4}-\d{2}$/.test(month)) continue;
+		if (!inRange(`${month}-01`)) continue;
+		salesByMonth[month] = salesByMonth[month] || { sales: 0, units: 0, promo: 0 };
+	}
 	for (const inv of invoices) {
 		if (inv.status !== 'paid') continue;
 		const d = new Date(inv.date);
 		if (isNaN(d)) continue;
-		const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
+		const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 		if (!salesByMonth[key]) salesByMonth[key] = { sales: 0, units: 0, promo: 0 };
 		salesByMonth[key].sales += Number(inv.amount) || 0;
 		salesByMonth[key].units += Number(inv.items && inv.items[0] ? inv.items[0].qty : 0) || 0;
 		salesByMonth[key].promo += Number(inv.promo) || 0;
 	}
 	const salesTrends = Object.keys(salesByMonth).sort().slice(-12).map((key) => {
-		const monthIdx = parseInt(key.split('-')[1], 10);
+		const monthIdx = parseInt(key.split('-')[1], 10) - 1;
 		return { month: monthNames[monthIdx], sales: salesByMonth[key].sales, units: salesByMonth[key].units, promo: salesByMonth[key].promo };
 	});
 
@@ -6348,7 +6125,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 		await loadBulkFromServer([
 			'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
 			'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
-			'ww_waybills', 'ww_cost_centre_budgets', 'ww_bom_data',
+			'ww_cost_centre_budgets', 'ww_bom_data',
 			'ww_equipment', 'ww_market_yearly_values', 'ww_last_data_update',
 			...salesKeys,
 		]);
@@ -6375,7 +6152,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 				if (localStamp && new Date(remoteStamp).getTime() <= new Date(localStamp).getTime()) return;
 				setLastDataUpdateStamp(remoteStamp);
 				window.__wwLastSeenDataUpdate = remoteStamp;
-				window.location.reload();
+				console.info('[Sync] Remote data changed; keeping current page state without forced reload.');
 			} catch (_e) { /* keep polling */ }
 		}, 10000);
 	}
