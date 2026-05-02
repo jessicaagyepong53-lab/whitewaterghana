@@ -2837,7 +2837,7 @@ async function initSalesInvoicesPage() {
 				{ id: 'customer', label: 'Customer Name', type: 'text', required: true },
 				{ id: 'address', label: 'Address / P.O. Box', type: 'text', placeholder: 'City / Street / P.O. Box' },
 				{ id: 'phone', label: 'Telephone', type: 'text', placeholder: '000-000-0000' },
-				{ id: 'product', label: 'Product', type: 'select', required: true, options: ['Mobile water 500ML'] },
+				{ id: 'product', label: 'Product', type: 'select', required: true, options: ['mobile water (500ML)'] },
 				{ id: 'qty', label: 'Quantity', type: 'number', min: '1', required: true },
 				{ id: 'promo', label: 'Promo', type: 'number', min: '0', defaultValue: '0' },
 				{ id: 'unitPrice', label: 'Unit Price (GH)', type: 'number', min: '0', step: '0.01', required: true },
