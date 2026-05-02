@@ -40,6 +40,6 @@
     { "src": "/store", "dest": "/store.html" },
     { "src": "/login", "dest": "/login.html" },
     { "src": "^/$", "dest": "/login.html" },
-    { "src": "/(.*)", "dest": "/api/index.js" }
+    { "src": "/(.*)", "dest": "/login.html" }
   ]
 }
