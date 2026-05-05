@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sales & Invoicing</title>
-  <link rel="stylesheet" href="../src/script.css?v=20260331">
+  <link rel="stylesheet" href="../src/script.css?v=20260504">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
   <style>
     .online-badge { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; background: #dc2626; color: #fff; border-radius: 10px; font-size: 0.72rem; font-weight: 700; margin-left: 6px; vertical-align: middle; }
@@ -69,7 +69,7 @@
         <div class="two-panel-left">
           <h3>Invoice Register</h3>
           <table class="data-table">
-            <thead><tr><th>Invoice #</th><th>Customer</th><th>Promo</th><th>Bags</th><th>Price (₵)</th><th>Date</th><th>Total (₵)</th><th>Payment</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Invoice #</th><th>Customer</th><th>Promo</th><th>Bags</th><th>Price (₵)</th><th>Date</th><th>Total (₵)</th><th>Payment</th><th>Car No.</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody id="invoice-tbody"></tbody>
           </table>
           <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary si-add-btn" data-add-entity="invoice">Add Invoice <i class="fa-solid fa-plus"></i></button></div>
@@ -87,7 +87,7 @@
     </div>
     <div id="si-tab-orders" class="tab-panel">
       <table class="data-table">
-        <thead><tr><th>Order ID</th><th>Customer</th><th>Promo</th><th>Bags</th><th>Price (₵)</th><th>Date</th><th>Total (₵)</th><th>Payment</th><th>Status</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Order ID</th><th>Customer</th><th>Promo</th><th>Bags</th><th>Price (₵)</th><th>Date</th><th>Total (₵)</th><th>Payment</th><th>Car No.</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody id="orders-tbody"></tbody>
       </table>
       <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary si-add-btn" data-add-entity="order">Add Sales Order <i class="fa-solid fa-plus"></i></button></div>
@@ -101,7 +101,6 @@
           <label style="font-weight:600;font-size:0.9rem">Filter:</label>
           <select id="online-status-filter" onchange="loadOnlineOrders()" style="padding:6px 10px;border:1px solid #c8ddec;border-radius:8px;font:inherit;font-size:0.9rem">
             <option value="">All Statuses</option>
-            <option value="Pending">Pending</option>
             <option value="Confirmed">Confirmed</option>
             <option value="Processing">Processing</option>
             <option value="Dispatched">Dispatched</option>
@@ -149,6 +148,6 @@
     </div>
   </div>
 </main>
-<script src="../src/script.js?v=20260331"></script>
+<script src="../src/script.js?v=20260504"></script>
 </body>
 </html>

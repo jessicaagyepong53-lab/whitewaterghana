@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Accounting & Finance</title>
-  <link rel="stylesheet" href="../src/script.css?v=20260331">
+  <link rel="stylesheet" href="../src/script.css?v=20260504">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
 </head>
 <body class="ops-page" data-page="accounting">
@@ -83,10 +83,10 @@
     </div>
     <div id="acc-tab-salaries" class="tab-panel">
       <div class="info-box" style="margin-bottom:14px;">
-        <p><strong>Salaries</strong> — Staff payment records on a weekly basis. Select a week to view or add payments.</p>
+        <p><strong>Salaries</strong> — Staff payment records on a monthly basis. Select a month to view or add payments.</p>
       </div>
       <div class="month-selector-bar" id="salary-week-bar" style="margin-bottom:14px;">
-        <label for="salary-week-select" style="font-weight:600;margin-right:8px;">Week:</label>
+        <label for="salary-week-select" style="font-weight:600;margin-right:8px;">Month:</label>
         <select id="salary-week-select" class="form-control" style="max-width:300px;"></select>
         <span style="margin-left:8px;color:#64748b;font-size:0.85rem;" id="salary-week-range"></span>
         <label for="salary-print-employee-select" style="font-weight:600;margin-left:auto;margin-right:8px;">Worker:</label>
@@ -96,7 +96,7 @@
         <button type="button" id="salary-week-print-btn" class="btn-print" style="margin-left:8px;"><i class="fa-solid fa-print"></i> Print Salaries</button>
       </div>
       <table class="data-table">
-        <thead><tr><th>Date Paid</th><th>Employee</th><th>Week</th><th>Amount (GH)</th><th>Notes</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Date Paid</th><th>Employee</th><th>Month</th><th>Amount (GH)</th><th>Notes</th><th>Actions</th></tr></thead>
         <tbody id="salaries-tbody"></tbody>
       </table>
       <div id="salaries-summary-cards" style="margin-top:14px;"></div>
@@ -153,6 +153,6 @@
     </div>
   </div>
 </main>
-<script src="../src/script.js?v=20260331"></script>
+<script src="../src/script.js?v=20260504"></script>
 </body>
 </html>

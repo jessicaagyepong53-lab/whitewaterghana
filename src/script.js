@@ -64,6 +64,22 @@ function moveAppDataDeleteToTrash(module, recordData, restoreMeta) {
 	.catch((_e) => false);
 }
 
+/* ── Delete toast notification ── */
+function showDeleteToast(message) {
+	let container = document.getElementById('ww-toast-container');
+	if (!container) {
+		container = document.createElement('div');
+		container.id = 'ww-toast-container';
+		container.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+		document.body.appendChild(container);
+	}
+	const toast = document.createElement('div');
+	toast.style.cssText = 'background:#ef4444;color:#fff;padding:10px 18px;border-radius:8px;font-size:0.9rem;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,0.18);opacity:1;transition:opacity 0.4s;max-width:320px;pointer-events:none;display:flex;align-items:center;gap:8px;';
+	toast.innerHTML = `<i class="fa-solid fa-trash-can" style="flex-shrink:0"></i><span>${message}</span>`;
+	container.appendChild(toast);
+	setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 420); }, 3000);
+}
+
 /* ── Seed flag helpers (synced to server so flags persist across devices) ── */
 function _getSeedFlags() {
 	try { return JSON.parse(localStorage.getItem('ww_seed_flags') || '{}'); } catch (_e) { return {}; }
@@ -105,6 +121,58 @@ async function loadBulkFromServer(keys) {
 		}
 	} catch (_e) { /* fall back to localStorage */ }
 	return {};
+}
+
+function emitStorageKeyChange(key) {
+	if (!key) return;
+	try {
+		const evt = new StorageEvent('storage', {
+			key,
+			newValue: localStorage.getItem(key),
+			storageArea: localStorage,
+			url: window.location.href,
+		});
+		window.dispatchEvent(evt);
+		return;
+	} catch (_e) {
+		const evt = new Event('storage');
+		try { Object.defineProperty(evt, 'key', { value: key }); } catch (_e2) { evt.key = key; }
+		window.dispatchEvent(evt);
+	}
+}
+
+function broadcastRemoteSyncRefresh() {
+	const channels = [
+		{ name: 'ww_sales_sync', payload: { type: 'sales_updated' } },
+		{ name: 'ww_purchase_sync', payload: { type: 'purchase_updated' } },
+		{ name: 'ww_accounting_sync', payload: { type: 'accounting_updated' } },
+		{ name: 'ww_raw_materials_sync', payload: { type: 'inventory_updated' } },
+		{ name: 'ww_finished_products_sync', payload: { type: 'inventory_updated' } },
+		{ name: 'ww_equipment_sync', payload: { type: 'inventory_updated' } },
+	];
+	channels.forEach((entry) => {
+		try {
+			const bc = new BroadcastChannel(entry.name);
+			bc.postMessage(entry.payload);
+			bc.close();
+		} catch (_e) { /* ignore */ }
+	});
+}
+
+async function pullRemoteDataAndRefreshUi() {
+	await loadFromServer('ww_seed_flags');
+	await loadFromServer('ww_sales_months');
+	const salesMonths = getSalesMonths();
+	const salesKeys = salesMonths.map((m) => 'ww_sales_' + m);
+	const baseKeys = [
+		'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
+		'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
+		'ww_cost_centre_budgets', 'ww_bom_data', 'ww_equipment', 'ww_market_yearly_values',
+	];
+	const keysToRefresh = [...baseKeys, ...salesKeys];
+	await loadBulkFromServer(keysToRefresh);
+	keysToRefresh.forEach((key) => emitStorageKeyChange(key));
+	broadcastRemoteSyncRefresh();
 }
 
 function formatCurrency(value) {
@@ -1757,7 +1825,9 @@ async function initInventoryPage() {
 		if (!materialsBody) {
 			return;
 		}
-		materialsBody.innerHTML = rawMaterials.map((m, idx) => {
+		const matDraft = getInvDraft('material');
+		const draftRow = matDraft ? `<tr class="draft-row"><td>${escapeHtml(matDraft.material || 'Unsaved material')}</td><td>${escapeHtml(matDraft.quantity || '')}</td><td>${escapeHtml(matDraft.minLevel || '')}</td><td>${escapeHtml(matDraft.supplier || '')}</td><td>${escapeHtml(matDraft.restocked || '')}</td><td><span class="badge badge-orange">Draft</span></td><td><div class="row-actions"><button class="btn-edit inv-resume-draft-btn" data-draft-entity="material" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete inv-clear-draft-btn" data-draft-entity="material" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
+		materialsBody.innerHTML = draftRow + rawMaterials.map((m, idx) => {
 			const isCritical = m.quantity < m.minLevel * 0.5;
 			const isLow = m.quantity < m.minLevel;
 			const statusLabel = isCritical ? 'Critical - Auto Reorder' : (isLow ? 'Low Stock' : 'Adequate');
@@ -1802,7 +1872,9 @@ async function initInventoryPage() {
 		if (!productsBody) {
 			return;
 		}
-		productsBody.innerHTML = finishedProducts.map((p, idx) => {
+		const prodDraft = getInvDraft('product');
+		const draftRow = prodDraft ? `<tr class="draft-row"><td>${escapeHtml(prodDraft.product || 'Unsaved product')}</td><td>${escapeHtml(prodDraft.qty || '')}</td><td>${escapeHtml(prodDraft.location || '')}</td><td>${escapeHtml(prodDraft.date || '')}</td><td><span class="badge badge-orange">Draft</span></td><td><div class="row-actions"><button class="btn-edit inv-resume-draft-btn" data-draft-entity="product" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete inv-clear-draft-btn" data-draft-entity="product" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
+		productsBody.innerHTML = draftRow + finishedProducts.map((p, idx) => {
 			const isReady = Number(p.qty || 0) > 0;
 			const distributionLabel = isReady
 				? '<i class="fa-solid fa-circle-check"></i> Ready for Sale'
@@ -1826,7 +1898,9 @@ async function initInventoryPage() {
 		if (!equipmentBody) {
 			return;
 		}
-		equipmentBody.innerHTML = equipment.map((eq, idx) => {
+		const eqDraft = getInvDraft('equipment');
+		const eqDraftRow = eqDraft ? `<tr class="draft-row"><td>—</td><td>${escapeHtml(eqDraft.equipmentName || 'Unsaved equipment')}</td><td><span class="badge badge-orange">Draft</span></td><td>—</td><td>${escapeHtml(eqDraft.lastMaintenance || '')}</td><td>${escapeHtml(eqDraft.nextMaintenance || '')}</td><td><div class="row-actions"><button class="btn-edit inv-resume-draft-btn" data-draft-entity="equipment" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete inv-clear-draft-btn" data-draft-entity="equipment" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
+		equipmentBody.innerHTML = eqDraftRow + equipment.map((eq, idx) => {
 			const issues = getEquipmentIssues(eq.status);
 			const tone = getEquipmentWarningTone(eq.status);
 			const statusOptions = [
@@ -1869,7 +1943,9 @@ async function initInventoryPage() {
 		if (!customersBody) {
 			return;
 		}
-		customersBody.innerHTML = customers.map((c, idx) => {
+		const custDraft = getInvDraft('customer');
+		const custDraftRow = custDraft ? `<tr class="draft-row"><td>${escapeHtml(custDraft.name || 'Unsaved customer')}</td><td>${escapeHtml(custDraft.contact || '')}</td><td>—</td><td>${escapeHtml(custDraft.lastOrder || '')}</td><td><span class="badge badge-orange">Draft</span></td><td><div class="row-actions"><button class="btn-edit inv-resume-draft-btn" data-draft-entity="customer" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete inv-clear-draft-btn" data-draft-entity="customer" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
+		customersBody.innerHTML = custDraftRow + customers.map((c, idx) => {
 			return `
 				<tr>
 					<td>${c.name}</td>
@@ -2008,14 +2084,52 @@ async function initInventoryPage() {
 	let currentEntity = null;
 	let editingIdx = -1;
 
+	/* ── Inventory draft helpers ── */
+	const invDraftKey = (entity) => `ww_inv_modal_draft_${entity}`;
+	const getInvDraft = (entity) => { try { return JSON.parse(localStorage.getItem(invDraftKey(entity))); } catch (_e) { return null; } };
+	const clearInvDraft = (entity) => { localStorage.removeItem(invDraftKey(entity)); };
+	const saveInvDraft = (entity) => {
+		const config = MODAL_CONFIGS[entity];
+		if (!config) return;
+		const data = {};
+		config.fields.forEach((f) => {
+			const el = document.getElementById(`inv-field-${f.id}`);
+			if (el) data[f.id] = el.value;
+		});
+		localStorage.setItem(invDraftKey(entity), JSON.stringify(data));
+	};
+	const restoreInvDraft = (entity) => {
+		const draft = getInvDraft(entity);
+		if (!draft) return;
+		const config = MODAL_CONFIGS[entity];
+		if (!config) return;
+		config.fields.forEach((f) => {
+			const el = document.getElementById(`inv-field-${f.id}`);
+			if (el && draft[f.id] !== undefined) el.value = draft[f.id];
+		});
+	};
+	const bindInvModalLiveHandlers = () => {
+		if (!modalFieldsEl || !currentEntity) return;
+		modalFieldsEl.querySelectorAll('input, select, textarea').forEach((el) => {
+			el.addEventListener('input', () => { if (editingIdx < 0) saveInvDraft(currentEntity); }, { passive: true });
+		});
+	};
+
+
 	const closeModal = () => {
+		const savedEntity = currentEntity;
+		const wasAdding = editingIdx < 0;
+		if (wasAdding && savedEntity) saveInvDraft(savedEntity);
 		if (addModal) addModal.style.display = 'none';
 		if (modalForm) modalForm.reset();
 		currentEntity = null;
 		editingIdx = -1;
+		if (wasAdding && savedEntity) rerenderInventory();
 	};
 
-	const openModal = (entity, editIndex) => {
+	window.addEventListener('beforeunload', () => { if (editingIdx < 0 && currentEntity) saveInvDraft(currentEntity); });
+
+	const openModal = (entity, editIndex, resumeDraft = false) => {
 		const config = MODAL_CONFIGS[entity];
 		if (!config || !addModal) return;
 		currentEntity = entity;
@@ -2053,9 +2167,11 @@ async function initInventoryPage() {
 				});
 			}
 		}
+		if (resumeDraft) restoreInvDraft(entity);
 		addModal.style.display = 'flex';
 		const firstInput = modalFieldsEl && modalFieldsEl.querySelector('input');
 		if (firstInput) firstInput.focus();
+		bindInvModalLiveHandlers();
 	};
 
 	document.getElementById('inv-modal-close')?.addEventListener('click', closeModal);
@@ -2176,6 +2292,7 @@ async function initInventoryPage() {
 			}
 
 			closeModal();
+			clearInvDraft(currentEntity);
 			rerenderInventory();
 		});
 	}
@@ -2189,7 +2306,16 @@ async function initInventoryPage() {
 					alert('You do not have permission to add rows.');
 					return;
 				}
-				openModal(button.getAttribute('data-add-entity'));
+				openModal(button.getAttribute('data-add-entity'), undefined, false);
+				return;
+			}
+			const resumeDraftBtn = event.target.closest('.inv-resume-draft-btn[data-draft-entity]');
+			if (resumeDraftBtn) { event.stopPropagation(); openModal(resumeDraftBtn.getAttribute('data-draft-entity'), undefined, true); return; }
+			const clearDraftBtn = event.target.closest('.inv-clear-draft-btn[data-draft-entity]');
+			if (clearDraftBtn) {
+				event.stopPropagation();
+				clearInvDraft(clearDraftBtn.getAttribute('data-draft-entity'));
+				rerenderInventory();
 				return;
 			}
 			const editBtn = event.target.closest('.inv-edit-btn');
@@ -2203,7 +2329,7 @@ async function initInventoryPage() {
 				event.stopPropagation();
 				const entity = deleteBtn.getAttribute('data-delete-entity');
 				const idx = Number(deleteBtn.getAttribute('data-delete-idx'));
-				if (!confirm('Delete this ' + entity + '? This cannot be undone.')) return;
+				if (!window.confirm('Delete this ' + entity + '? This cannot be undone.')) return;
 				if (entity === 'material') {
 					const removed = rawMaterials[idx];
 					if (removed) moveAppDataDeleteToTrash('inventory', removed, { kind: 'appDataArray', key: 'ww_raw_materials' });
@@ -2229,6 +2355,8 @@ async function initInventoryPage() {
 				}
 				else if (entity === 'customer') { customers.splice(idx, 1); }
 				rerenderInventory();
+				const toastMsgs = { material: 'Raw material removed from inventory.', product: 'Finished product removed from inventory.', equipment: 'Equipment record deleted.', customer: 'Customer removed.' };
+				if (toastMsgs[entity]) setTimeout(() => showDeleteToast(toastMsgs[entity]), 50);
 			}
 		});
 	}
@@ -2446,6 +2574,7 @@ function loadMonthData(month) {
 	});
 
 	if (dirty) saveSalesDataToStorage();
+
 }
 
 function seedMarchSalesData() {
@@ -2566,7 +2695,7 @@ function seedMarchSalesData() {
 			id: `SO-2026-${idx}`, customer: r.c,
 			orderDate: r.d, deliveryDate: r.d,
 			amount: r.a, bags: r.b, rate, paymentMode: r.p || '', promo,
-			status: r.s === 'paid' ? 'delivered' : 'pending',
+			status: r.s === 'paid' ? 'delivered' : 'confirmed',
 		});
 	});
 	saveSalesDataToStorage();
@@ -2599,6 +2728,33 @@ function nextOrderId() {
 	});
 	const next = (Math.max(0, ...nums) + 1);
 	return `SO-${new Date().getFullYear()}-${String(next).padStart(3, '0')}`;
+}
+
+function upsertSalesOrderFromInvoice(invoice) {
+	if (!invoice || !invoice.id) return;
+	const derivedId = `SO${String(invoice.id).slice(3)}`;
+	const targetIdx = salesModuleData.salesOrders.findIndex((o) => o.sourceInvoiceId === invoice.id || o.id === derivedId);
+	const qty = invoice.items && invoice.items[0] ? Number(invoice.items[0].qty || 0) : 0;
+	const rate = Number(invoice.rate || (invoice.items && invoice.items[0] ? invoice.items[0].unitPrice : 0) || 0);
+	const orderData = {
+		customer: invoice.customer,
+		orderDate: invoice.date,
+		deliveryDate: invoice.date,
+		amount: Number(invoice.amount || 0),
+		bags: qty,
+		rate,
+		paymentMode: invoice.paymentMode || '',
+		promo: Number(invoice.promo || 0),
+		promoNote: invoice.promoNote || '',
+		status: invoice.status === 'paid' ? 'delivered' : (invoice.status === 'overdue' ? 'overdue' : 'confirmed'),
+		sourceInvoiceId: invoice.id,
+	};
+	if (targetIdx >= 0) {
+		Object.assign(salesModuleData.salesOrders[targetIdx], orderData);
+		return;
+	}
+	const idTaken = salesModuleData.salesOrders.some((o) => o.id === derivedId);
+	salesModuleData.salesOrders.push({ id: idTaken ? nextOrderId() : derivedId, ...orderData });
 }
 
 function invoiceTotal(invoice) {
@@ -2700,8 +2856,64 @@ function renderInvoiceDetail(invoice) {
 	document.getElementById('inv-print-btn')?.addEventListener('click', () => {
 		const doc = document.getElementById('inv-document');
 		if (!doc) return;
-		const printWin = window.open('', '_blank', 'width=800,height=1100');
-		printWin.document.write('<!DOCTYPE html><html><head><title>Invoice ' + invNo + '</title><style>' +
+		const invoiceCss = `
+			* { margin:0; padding:0; box-sizing:border-box; }
+			body { font-family: "Segoe UI", Arial, sans-serif; padding: 30px; color: #1e293b; font-size: 13px; }
+			.inv-doc { max-width: 760px; margin: 0 auto; }
+			.inv-doc-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
+			.inv-doc-logo { width: 72px; height: 72px; border-radius: 8px; object-fit: cover; }
+			.inv-doc-company { flex: 1; }
+			.inv-doc-company-name { font-size: 1.25rem; font-weight: 700; color: #1a3d5c; margin-bottom: 2px; }
+			.inv-doc-company p { font-size: 0.82rem; line-height: 1.5; color: #334155; margin: 0; }
+			.inv-doc-title-area { text-align: right; }
+			.inv-doc-title { font-size: 1.5rem; color: #1a3d5c; letter-spacing: 2px; }
+			.inv-doc-meta { display: flex; justify-content: space-between; margin: 16px 0; gap: 20px; }
+			.inv-doc-bill-to { flex: 1; }
+			.inv-doc-label { font-weight: 700; font-size: 0.85rem; color: #475569; margin-bottom: 4px; }
+			.inv-doc-val-big { font-size: 1rem; font-weight: 600; }
+			.inv-doc-val-sub { font-size: 0.85rem; color: #475569; }
+			.inv-doc-numbers { text-align: right; }
+			.inv-doc-num-row { margin-bottom: 4px; font-size: 0.88rem; }
+			.inv-doc-num-row span { color: #64748b; margin-right: 8px; }
+			.inv-doc-table { width: 100%; border-collapse: collapse; margin: 16px 0 8px; }
+			.inv-doc-table th { background: #1a3d5c; color: #fff; padding: 8px 10px; text-align: left; font-size: 0.82rem; font-weight: 600; }
+			.inv-doc-table td { border: 1px solid #cbd5e1; padding: 6px 10px; font-size: 0.85rem; }
+			.inv-doc-totals { margin-left: auto; width: 280px; margin-top: 4px; }
+			.inv-doc-total-row { display: flex; justify-content: space-between; padding: 5px 10px; font-size: 0.88rem; border-bottom: 1px solid #e2e8f0; }
+			.inv-doc-grand { font-weight: 700; background: #f1f5f9; border-bottom: 2px solid #1a3d5c; }
+			.inv-doc-terms { margin-top: 20px; }
+			.inv-doc-terms p { font-size: 0.82rem; color: #475569; }
+			.inv-doc-signatures { display: flex; gap: 24px; margin-top: 28px; }
+			.inv-doc-sig { flex: 1; font-size: 0.85rem; font-weight: 600; }
+			.inv-doc-sig-line { border-bottom: 1px solid #94a3b8; min-height: 30px; margin-top: 4px; }
+			.inv-doc-tagline { text-align: center; font-style: italic; color: #2563eb; margin-top: 28px; font-size: 0.95rem; font-weight: 600; }
+			.inv-doc-actions { display: none; }
+			@media print { body { padding: 10px; } }
+		`;
+		const fullHtml = '<!DOCTYPE html><html><head><title>Invoice ' + invNo + '</title><style>' + invoiceCss + '</style></head><body>' + doc.outerHTML + '</body></html>';
+		// Try popup print first; fall back to blob download
+		try {
+			const printWin = window.open('', '_blank', 'width=800,height=1100');
+			if (printWin && printWin.document) {
+				printWin.document.write(fullHtml);
+				printWin.document.close();
+				setTimeout(() => { printWin.focus(); printWin.print(); }, 300);
+				return;
+			}
+		} catch (_e) { /* popup blocked */ }
+		// Blob fallback
+		const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = 'invoice-' + invNo + '.html';
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
+	});
+	// Dummy reference to satisfy old code path — actual styles now inlined above
+	const _unusedPrintRef = '<!DOCTYPE html><html><head><title>Invoice ' + invNo + '</title><style>' +
 			'* { margin:0; padding:0; box-sizing:border-box; }' +
 			'body { font-family: "Segoe UI", Arial, sans-serif; padding: 30px; color: #1e293b; font-size: 13px; }' +
 			'.inv-doc { max-width: 760px; margin: 0 auto; }' +
@@ -2724,21 +2936,6 @@ function renderInvoiceDetail(invoice) {
 			'.inv-doc-table th { background: #1a3d5c; color: #fff; padding: 8px 10px; text-align: left; font-size: 0.82rem; font-weight: 600; }' +
 			'.inv-doc-table td { border: 1px solid #cbd5e1; padding: 6px 10px; font-size: 0.85rem; }' +
 			'.inv-doc-totals { margin-left: auto; width: 280px; margin-top: 4px; }' +
-			'.inv-doc-total-row { display: flex; justify-content: space-between; padding: 5px 10px; font-size: 0.88rem; border-bottom: 1px solid #e2e8f0; }' +
-			'.inv-doc-grand { font-weight: 700; background: #f1f5f9; border-bottom: 2px solid #1a3d5c; }' +
-			'.inv-doc-terms { margin-top: 20px; }' +
-			'.inv-doc-terms p { font-size: 0.82rem; color: #475569; }' +
-			'.inv-doc-signatures { display: flex; gap: 24px; margin-top: 28px; }' +
-			'.inv-doc-sig { flex: 1; font-size: 0.85rem; font-weight: 600; }' +
-			'.inv-doc-sig-line { border-bottom: 1px solid #94a3b8; min-height: 30px; margin-top: 4px; }' +
-			'.inv-doc-tagline { text-align: center; font-style: italic; color: #2563eb; margin-top: 28px; font-size: 0.95rem; font-weight: 600; }' +
-			'.inv-doc-actions { display: none; }' +
-			'@media print { body { padding: 10px; } }' +
-		'</style></head><body>' + doc.outerHTML + '</body></html>');
-		printWin.document.close();
-		setTimeout(() => { printWin.focus(); printWin.print(); }, 300);
-	});
-
 	target.querySelector('.inv-detail-approve-btn')?.addEventListener('click', () => {
 		const idx = salesModuleData.invoices.findIndex((inv) => inv.id === invoice.id);
 		if (idx >= 0) {
@@ -2834,6 +3031,7 @@ async function initSalesInvoicesPage() {
 		invoice: {
 			title: 'Add Invoice',
 			fields: [
+				{ id: 'carNumber', label: 'Car Number', type: 'text', placeholder: 'e.g. GR-1234-20' },
 				{ id: 'customer', label: 'Customer Name', type: 'text', required: true },
 				{ id: 'address', label: 'Address / P.O. Box', type: 'text', placeholder: 'City / Street / P.O. Box' },
 				{ id: 'phone', label: 'Telephone', type: 'text', placeholder: '000-000-0000' },
@@ -2842,12 +3040,14 @@ async function initSalesInvoicesPage() {
 				{ id: 'promo', label: 'Promo', type: 'number', min: '0', defaultValue: '0' },
 				{ id: 'unitPrice', label: 'Unit Price (GH)', type: 'number', min: '0', step: '0.01', required: true },
 				{ id: 'date', label: 'Invoice Date', type: 'date', defaultValue: todayStr, required: true },
+				{ id: 'status', label: 'Status', type: 'select', options: ['overdue', 'paid', 'pending'], defaultValue: 'paid' },
 				{ id: 'paymentMode', label: 'Payment Mode', type: 'select', options: ['', 'Cash', 'Momo', 'Cash + Momo'] },
 			],
 		},
 		order: {
 			title: 'Add Sales Order',
 			fields: [
+				{ id: 'carNumber', label: 'Car Number', type: 'text', placeholder: 'e.g. GR-1234-20' },
 				{ id: 'customer', label: 'Customer Name', type: 'text', required: true },
 				{ id: 'orderDate', label: 'Order Date', type: 'date', defaultValue: todayStr, required: true },
 				{ id: 'unitPrice', label: 'Unit Price (GH)', type: 'number', min: '0', step: '0.01', required: true },
@@ -2864,6 +3064,7 @@ async function initSalesInvoicesPage() {
 	const modalForm = document.getElementById('si-add-form');
 	let currentEntity = null;
 	let editingSiIdx = -1;
+	const siDraftStorageKey = (entity) => `ww_sales_modal_draft_${currentSalesMonth}_${entity}`;
 
 	const clearModalValidation = () => {
 		if (!modalFieldsEl) return;
@@ -2882,7 +3083,10 @@ async function initSalesInvoicesPage() {
 		if (msgEl) msgEl.textContent = message;
 	};
 
-	const validateModalRequiredFields = () => {
+	const validateModalRequiredFields = (options) => {
+		const opts = options || {};
+		const focusFirst = opts.focusFirst !== false;
+		const showSummary = opts.showSummary !== false;
 		const config = SI_MODAL_CONFIGS[currentEntity];
 		if (!config) return true;
 		clearModalValidation();
@@ -2896,23 +3100,102 @@ async function initSalesInvoicesPage() {
 		}
 		if (!missing.length) return true;
 		const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
-		if (summary) {
+		if (summary && showSummary) {
 			summary.textContent = 'Please fill the highlighted required fields.';
 		}
-		const firstMissing = document.getElementById(`si-field-${missing[0].id}`);
-		if (firstMissing) firstMissing.focus();
+		if (focusFirst) {
+			const firstMissing = document.getElementById(`si-field-${missing[0].id}`);
+			if (firstMissing) firstMissing.focus();
+		}
 		return false;
 	};
 
+	const saveModalDraft = (entity) => {
+		if (!entity || editingSiIdx >= 0) return;
+		const config = SI_MODAL_CONFIGS[entity];
+		if (!config) return;
+		const values = {};
+		config.fields.forEach((field) => {
+			const el = document.getElementById(`si-field-${field.id}`);
+			if (!el) return;
+			values[field.id] = el.value;
+		});
+		try {
+			localStorage.setItem(siDraftStorageKey(entity), JSON.stringify({ values, ts: Date.now() }));
+		} catch (_e) { /* ignore */ }
+	};
+
+	const clearModalDraft = (entity) => {
+		if (!entity) return;
+		try {
+			localStorage.removeItem(siDraftStorageKey(entity));
+		} catch (_e) { /* ignore */ }
+	};
+
+	const restoreModalDraft = (entity) => {
+		if (!entity || editingSiIdx >= 0) return;
+		try {
+			const raw = localStorage.getItem(siDraftStorageKey(entity));
+			if (!raw) return;
+			const parsed = JSON.parse(raw);
+			const values = parsed && parsed.values ? parsed.values : null;
+			if (!values || typeof values !== 'object') return;
+			Object.keys(values).forEach((fieldId) => {
+				const el = document.getElementById(`si-field-${fieldId}`);
+				if (!el) return;
+				if (!String(el.value || '').trim() && values[fieldId] !== undefined && values[fieldId] !== null) {
+					el.value = String(values[fieldId]);
+				}
+			});
+		} catch (_e) { /* ignore */ }
+	};
+
+	const getModalDraft = (entity) => {
+		if (!entity) return null;
+		try {
+			const raw = localStorage.getItem(siDraftStorageKey(entity));
+			if (!raw) return null;
+			const parsed = JSON.parse(raw);
+			const values = parsed && parsed.values ? parsed.values : null;
+			if (!values || typeof values !== 'object') return null;
+			const hasAnyValue = Object.values(values).some((v) => String(v || '').trim() !== '');
+			return hasAnyValue ? values : null;
+		} catch (_e) {
+			return null;
+		}
+	};
+
+	const bindModalLiveHandlers = () => {
+		if (!modalFieldsEl) return;
+		const controls = modalFieldsEl.querySelectorAll('input, select, textarea');
+		controls.forEach((ctrl) => {
+			const syncState = () => {
+				saveModalDraft(currentEntity);
+				validateModalRequiredFields({ focusFirst: false, showSummary: false });
+			};
+			ctrl.addEventListener('input', syncState);
+			ctrl.addEventListener('change', syncState);
+			ctrl.addEventListener('blur', () => {
+				validateModalRequiredFields({ focusFirst: false, showSummary: false });
+			});
+		});
+	};
+
 	const closeModal = () => {
+		const savedEntity = currentEntity;
+		const wasAdding = editingSiIdx < 0;
+		if (wasAdding && savedEntity) saveModalDraft(savedEntity);
 		if (addModal) addModal.style.display = 'none';
 		if (modalForm) modalForm.reset();
 		clearModalValidation();
 		currentEntity = null;
 		editingSiIdx = -1;
+		if (wasAdding && savedEntity) renderSalesPage();
 	};
 
-	const openModal = (entity, editIdx) => {
+	window.addEventListener('beforeunload', () => { if (editingSiIdx < 0 && currentEntity) saveModalDraft(currentEntity); });
+
+	const openModal = (entity, editIdx, resumeDraft = false) => {
 		const config = SI_MODAL_CONFIGS[entity];
 		if (!config || !addModal) return;
 		currentEntity = entity;
@@ -2925,7 +3208,7 @@ async function initSalesInvoicesPage() {
 						<div class="inv-modal-field">
 							<label for="si-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label>
 							<select id="si-field-${f.id}" name="${f.id}" ${f.required ? 'required' : ''}>
-								${f.options.map((o) => `<option value="${o}">${o.charAt(0).toUpperCase() + o.slice(1)}</option>`).join('')}
+								${f.options.map((o) => `<option value="${o}"${f.defaultValue !== undefined && String(f.defaultValue) === String(o) ? ' selected' : ''}>${o ? (o.charAt(0).toUpperCase() + o.slice(1)) : ''}</option>`).join('')}
 							</select>
 							<p class="inv-modal-error" id="si-err-${f.id}" aria-live="polite"></p>
 						</div>
@@ -2964,7 +3247,9 @@ async function initSalesInvoicesPage() {
 					setVal('unitPrice', row.items && row.items[0] ? row.items[0].unitPrice : row.amount);
 					setVal('promo', row.promo || 0);
 					setVal('date', row.date);
+					setVal('status', row.status || 'paid');
 					setVal('paymentMode', row.paymentMode);
+					setVal('carNumber', row.carNumber || '');
 				}
 			} else if (entity === 'order') {
 				row = salesModuleData.salesOrders[editingSiIdx];
@@ -2976,9 +3261,11 @@ async function initSalesInvoicesPage() {
 					setVal('amount', row.amount);
 					setVal('promo', row.promo || 0);
 					setVal('paymentMode', row.paymentMode);
+					setVal('carNumber', row.carNumber || '');
 				}
 			}
 		}
+		if (resumeDraft) restoreModalDraft(entity);
 		addModal.style.display = 'flex';
 		/* Auto-calculate promo when qty changes: 4 bags per 100 */
 		const qtyField = document.getElementById('si-field-qty');
@@ -2992,6 +3279,8 @@ async function initSalesInvoicesPage() {
 		const firstInput = modalFieldsEl && modalFieldsEl.querySelector('input, select');
 		if (firstInput) firstInput.focus();
 		clearModalValidation();
+		bindModalLiveHandlers();
+		validateModalRequiredFields({ focusFirst: false, showSummary: false });
 	};
 
 	document.getElementById('si-modal-close')?.addEventListener('click', closeModal);
@@ -3020,16 +3309,17 @@ async function initSalesInvoicesPage() {
 				if (!customer || !product) return;
 				const invDate = getValue('date') || todayStr;
 				const existingInvoice = editingSiIdx >= 0 ? salesModuleData.invoices[editingSiIdx] : null;
-				const chosenStatus = existingInvoice?.requestedStatus || existingInvoice?.status || 'pending';
+				const chosenStatus = getValue('status') || existingInvoice?.requestedStatus || existingInvoice?.status || 'paid';
 				const invData = {
 					customer,
 					address: getValue('address'),
 					phone: getValue('phone'),
 					date: invDate,
 					paidDate: chosenStatus === 'paid' ? invDate : '',
-					status: isApprover ? chosenStatus : 'pending_approval',
-					requestedStatus: isApprover ? undefined : chosenStatus,
+					status: chosenStatus,
+					requestedStatus: undefined,
 					paymentMode: getValue('paymentMode'),
+					carNumber: getValue('carNumber'),
 					promo: getNum('promo'),
 					promoNote: existingInvoice?.promoNote || '',
 					product,
@@ -3039,42 +3329,24 @@ async function initSalesInvoicesPage() {
 				};
 				invData.rate = invData.items[0].unitPrice;
 				invData.amount = invData.items[0].qty * invData.items[0].unitPrice;
+				let savedInvoice;
 				if (editingSiIdx >= 0 && salesModuleData.invoices[editingSiIdx]) {
 					Object.assign(salesModuleData.invoices[editingSiIdx], invData);
-					/* Sync matching sales order */
-					const matchIdx = salesModuleData.salesOrders.findIndex((o) => o.id === 'SO' + salesModuleData.invoices[editingSiIdx].id.slice(3));
-					if (matchIdx >= 0) {
-						Object.assign(salesModuleData.salesOrders[matchIdx], {
-							customer: invData.customer, orderDate: invData.date, deliveryDate: invData.date,
-							amount: invData.amount, bags: invData.items[0].qty, rate: invData.rate,
-							paymentMode: invData.paymentMode, promo: invData.promo, promoNote: invData.promoNote,
-							status: invData.status === 'paid' ? 'delivered' : invData.status === 'overdue' ? 'overdue' : 'pending',
-						});
-					}
+					savedInvoice = salesModuleData.invoices[editingSiIdx];
 				} else {
 					invData.id = nextInvoiceId();
 					if (!invData.createdAt) invData.createdAt = new Date().toISOString();
 					salesModuleData.invoices.push(invData);
-					/* Auto-create matching sales order */
-					const soId = 'SO' + invData.id.slice(3);
-					salesModuleData.salesOrders.push({
-						id: soId, customer: invData.customer,
-						orderDate: invData.date, deliveryDate: invData.date,
-						amount: invData.amount, bags: invData.items[0].qty, rate: invData.rate,
-						paymentMode: invData.paymentMode, promo: invData.promo, promoNote: invData.promoNote,
-						status: invData.status === 'paid' ? 'delivered' : 'pending',
-					});
+					savedInvoice = invData;
 				}
-				if (!isApprover) {
-					alert('Invoice saved as "Pending Approval". A Manager or CEO will review and approve it.');
-				}
+				upsertSalesOrderFromInvoice(savedInvoice);
 			}
 
 			if (currentEntity === 'order') {
 				const customer = getValue('customer');
 				if (!customer) return;
 				const existingOrder = editingSiIdx >= 0 ? salesModuleData.salesOrders[editingSiIdx] : null;
-				const chosenStatus = existingOrder?.requestedStatus || existingOrder?.status || 'confirmed';
+				const chosenStatus = existingOrder?.requestedStatus || existingOrder?.status || 'delivered';
 				const ordData = {
 					customer,
 					orderDate: getValue('orderDate') || todayStr,
@@ -3084,48 +3356,20 @@ async function initSalesInvoicesPage() {
 					promo: getNum('promo'),
 					promoNote: existingOrder?.promoNote || '',
 					paymentMode: getValue('paymentMode'),
-					status: isApprover ? chosenStatus : 'pending_approval',
-					requestedStatus: isApprover ? undefined : chosenStatus,
+					carNumber: getValue('carNumber'),
+					status: chosenStatus,
+					requestedStatus: undefined,
 				};
 				if (editingSiIdx >= 0 && salesModuleData.salesOrders[editingSiIdx]) {
 					Object.assign(salesModuleData.salesOrders[editingSiIdx], ordData);
-					/* Sync matching invoice */
-					const matchIdx = salesModuleData.invoices.findIndex((inv) => inv.id === 'INV' + salesModuleData.salesOrders[editingSiIdx].id.slice(2));
-					if (matchIdx >= 0) {
-						const inv = salesModuleData.invoices[matchIdx];
-						inv.customer = ordData.customer;
-						inv.date = ordData.orderDate;
-						inv.amount = ordData.amount;
-						inv.rate = ordData.rate;
-						inv.paymentMode = ordData.paymentMode;
-						inv.promo = ordData.promo;
-						inv.promoNote = ordData.promoNote;
-						if (inv.items && inv.items[0]) inv.items[0].unitPrice = ordData.rate;
-						inv.status = ordData.status === 'delivered' ? 'paid' : ordData.status === 'overdue' ? 'overdue' : 'pending';
-					}
 				} else {
 					ordData.id = nextOrderId();
 					salesModuleData.salesOrders.push(ordData);
-					/* Auto-create matching invoice */
-					const invId = 'INV' + ordData.id.slice(2);
-					const product = '500ml Sachet Water (500 pcs/bag)';
-					const rate = ordData.rate || (ordData.amount && ordData.bags ? +(ordData.amount / ordData.bags).toFixed(2) : 0);
-					salesModuleData.invoices.push({
-						id: invId, customer: ordData.customer, product,
-						date: ordData.orderDate, paidDate: '',
-						status: ordData.status === 'delivered' ? 'paid' : 'pending',
-						amount: ordData.amount, rate, paymentMode: ordData.paymentMode,
-						promo: ordData.promo, promoNote: ordData.promoNote,
-						items: [{ name: product, qty: ordData.bags || 1, unitPrice: rate }],
-						deliveryFee: 0,
-					});
-				}
-				if (!isApprover) {
-					alert('Sales Order saved as "Pending Approval". A Manager or CEO will review and approve it.');
 				}
 			}
 
 			saveSalesDataToStorage();
+			clearModalDraft(currentEntity);
 			closeModal();
 			renderSalesPage();
 		});
@@ -3133,7 +3377,16 @@ async function initSalesInvoicesPage() {
 
 	document.addEventListener('click', (event) => {
 		const button = event.target.closest('.si-add-btn[data-add-entity]');
-		if (button) { openModal(button.getAttribute('data-add-entity')); return; }
+		if (button) { openModal(button.getAttribute('data-add-entity'), undefined, false); return; }
+		const resumeDraftBtn = event.target.closest('.si-resume-draft-btn[data-draft-entity]');
+		if (resumeDraftBtn) { event.stopPropagation(); openModal(resumeDraftBtn.getAttribute('data-draft-entity'), undefined, true); return; }
+		const clearDraftBtn = event.target.closest('.si-clear-draft-btn[data-draft-entity]');
+		if (clearDraftBtn) {
+			event.stopPropagation();
+			clearModalDraft(clearDraftBtn.getAttribute('data-draft-entity'));
+			renderSalesPage();
+			return;
+		}
 		const editBtn = event.target.closest('.si-edit-btn');
 		if (editBtn) {
 			event.stopPropagation();
@@ -3146,33 +3399,24 @@ async function initSalesInvoicesPage() {
 			const entity = deleteBtn.getAttribute('data-delete-entity');
 			const idx = Number(deleteBtn.getAttribute('data-delete-idx'));
 			const label = entity === 'invoice' ? 'invoice' : 'sales order';
-			if (!confirm('Delete this ' + label + '? This cannot be undone.')) return;
+			if (!window.confirm('Delete this ' + label + '? This cannot be undone.')) return;
 			if (entity === 'invoice') {
 				const inv = salesModuleData.invoices[idx];
 				if (inv) moveAppDataDeleteToTrash('invoices', inv, { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'invoices' });
 				salesModuleData.invoices.splice(idx, 1);
-				// Also remove matching sales order
-				if (inv) {
-					const soId = 'SO' + inv.id.slice(3);
-					const soIdx = salesModuleData.salesOrders.findIndex(o => o.id === soId);
-					if (soIdx !== -1) {
+				if (inv && inv.id) {
+					const soIdx = salesModuleData.salesOrders.findIndex((o) => o.sourceInvoiceId === inv.id || o.id === `SO${String(inv.id).slice(3)}`);
+					if (soIdx >= 0) {
 						moveAppDataDeleteToTrash('sales', salesModuleData.salesOrders[soIdx], { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'salesOrders' });
 						salesModuleData.salesOrders.splice(soIdx, 1);
 					}
 				}
+				showDeleteToast(`Invoice ${inv ? inv.id : ''} deleted.`);
 			} else if (entity === 'order') {
 				const ord = salesModuleData.salesOrders[idx];
 				if (ord) moveAppDataDeleteToTrash('sales', ord, { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'salesOrders' });
 				salesModuleData.salesOrders.splice(idx, 1);
-				// Also remove matching invoice
-				if (ord) {
-					const invId = 'INV' + ord.id.slice(2);
-					const invIdx = salesModuleData.invoices.findIndex(v => v.id === invId);
-					if (invIdx !== -1) {
-						moveAppDataDeleteToTrash('invoices', salesModuleData.invoices[invIdx], { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'invoices' });
-						salesModuleData.invoices.splice(invIdx, 1);
-					}
-				}
+				showDeleteToast(`Sales order ${ord ? ord.id : ''} deleted.`);
 			}
 			saveSalesDataToStorage();
 			renderSalesPage();
@@ -3227,12 +3471,19 @@ async function initSalesInvoicesPage() {
 
 		const invoiceRows = salesModuleData.invoices.map((invoice) => {
 			return { ...invoice };
+		}).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+		let hadPendingSalesStatus = false;
+		salesModuleData.salesOrders.forEach((order) => {
+			if (order.status === 'pending') {
+				order.status = 'confirmed';
+				hadPendingSalesStatus = true;
+			}
 		});
-		const orders = salesModuleData.salesOrders;
+		if (hadPendingSalesStatus) saveSalesDataToStorage();
+		const orders = [...salesModuleData.salesOrders].sort((a, b) => (a.orderDate || a.date || '').localeCompare(b.orderDate || b.date || ''));
 
 		const totalInvoices = invoiceRows.length;
 		const invoiceRevenue = invoiceRows.filter((inv) => inv.status === 'paid').reduce((sum, inv) => sum + inv.amount, 0);
-		const salesRevenue = orders.filter((o) => o.status === 'delivered').reduce((sum, o) => sum + Number(o.amount || 0), 0);
 		const pendingInvoices = invoiceRows.filter((inv) => inv.status === 'pending').reduce((sum, inv) => sum + inv.amount, 0);
 		const pendingSales = orders.filter((o) => ['confirmed', 'processing', 'shipped'].includes(o.status)).reduce((sum, o) => sum + Number(o.amount || 0), 0);
 		const overdueInvAmt = invoiceRows.filter((inv) => inv.status === 'overdue').reduce((sum, inv) => sum + inv.amount, 0);
@@ -3247,7 +3498,7 @@ async function initSalesInvoicesPage() {
 			const hideMoney = window.__wwUserRole === 'supervisor' || window.__wwUserRole === 'staff';
 			stats.innerHTML = `
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice"></i></div><p class="s-label">Total Invoices</p><p class="s-value">${totalInvoices}</p><p class="s-meta">${orders.length} sales order${orders.length !== 1 ? 's' : ''}</p></div>
-				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue + salesRevenue)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(invoiceRevenue)}</span><span>Sales: ${formatCurrency(salesRevenue)}</span></p></div>
+				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue)}</p><p class="s-meta">From paid invoices</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-gift"></i></div><p class="s-label">Total Promo Bags</p><p class="s-value">${formatNumber(invoicePromo)}</p><p class="s-meta split-meta"><span>Total bags: ${formatNumber(totalBagsSold)}</span><span>Non-promo: ${formatNumber(nonPromoBags)}</span><span>Promo: ${formatNumber(invoicePromo)}</span></p></div>
 				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices + pendingSales)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(pendingInvoices)}</span><span>Sales: ${formatCurrency(pendingSales)}</span></p></div>
 				<div class="stat-card ${overdueTotal > 0 ? 'stat-card-alert' : ''}" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-circle-exclamation"></i></div><p class="s-label">Overdue</p><p class="s-value">${formatCurrency(overdueTotal)}</p><p class="s-meta">${overdueInvAmt > 0 ? 'Inv: ' + formatCurrency(overdueInvAmt) + ' ' : ''}${overdueOrdAmt > 0 ? 'Orders: ' + formatCurrency(overdueOrdAmt) : ''}${overdueTotal === 0 ? 'All clear' : ''}</p></div>
@@ -3256,8 +3507,25 @@ async function initSalesInvoicesPage() {
 
 		const invoiceBody = document.getElementById('invoice-tbody');
 		const hideMoney = window.__wwUserRole === 'supervisor' || window.__wwUserRole === 'staff';
+		const invoiceDraft = getModalDraft('invoice');
+		const orderDraft = getModalDraft('order');
 		if (invoiceBody) {
-			invoiceBody.innerHTML = invoiceRows.map((invoice, idx) => {
+			const draftRow = invoiceDraft ? `
+				<tr class="draft-row">
+					<td>DRAFT</td>
+					<td>${escapeHtml(invoiceDraft.customer || 'Unsaved invoice')}</td>
+					<td>${escapeHtml(invoiceDraft.promo || '')}</td>
+					<td>${escapeHtml(invoiceDraft.qty || '')}</td>
+					<td>${hideMoney ? '—' : escapeHtml(invoiceDraft.unitPrice || '')}</td>
+					<td>${escapeHtml(formatDateDisplay(invoiceDraft.date || ''))}</td>
+					<td>${hideMoney ? '—' : ''}</td>
+					<td>${escapeHtml(invoiceDraft.paymentMode || '')}</td>
+					<td>${escapeHtml(invoiceDraft.carNumber || '')}</td>
+					<td><span class="status-pill status-orange">Draft (Unsaved)</span></td>
+					<td><div class="row-actions"><button class="btn-edit si-resume-draft-btn" data-draft-entity="invoice" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete si-clear-draft-btn" data-draft-entity="invoice" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td>
+				</tr>
+			` : '';
+			invoiceBody.innerHTML = draftRow + invoiceRows.map((invoice, idx) => {
 				const statusLabel = invoice.status === 'pending_approval' ? 'Pending Approval' : invoice.status;
 				const approveBtn = isApprover && invoice.status === 'pending_approval'
 					? `<button class="btn-approve si-approve-btn" data-approve-entity="invoice" data-approve-idx="${idx}" title="Approve"><i class="fa-solid fa-check"></i></button>`
@@ -3272,13 +3540,14 @@ async function initSalesInvoicesPage() {
 						<td>${formatDateDisplay(invoice.date)}</td>
 						<td>${hideMoney ? '—' : formatCurrency(invoice.amount)}</td>
 						<td>${invoice.paymentMode || ''}</td>
+						<td>${invoice.carNumber || ''}</td>
 						<td><span class="status-pill ${statusPillClass(invoice.status)}">${statusLabel}</span></td>
 						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="invoice" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="invoice" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td>
 					</tr>
 				`;
 			}).join('');
 
-			invoiceBody.querySelectorAll('tr').forEach((row) => {
+			invoiceBody.querySelectorAll('tr[data-invoice-id]').forEach((row) => {
 				row.addEventListener('click', () => {
 					invoiceBody.querySelectorAll('tr').forEach((r) => r.classList.remove('row-selected'));
 					row.classList.add('row-selected');
@@ -3320,7 +3589,22 @@ async function initSalesInvoicesPage() {
 
 		const ordersBody = document.getElementById('orders-tbody');
 		if (ordersBody) {
-			ordersBody.innerHTML = orders.map((order, idx) => {
+			const draftOrderRow = orderDraft ? `
+				<tr class="draft-row">
+					<td>DRAFT</td>
+					<td>${escapeHtml(orderDraft.customer || 'Unsaved sales order')}</td>
+					<td>${escapeHtml(orderDraft.promo || '')}</td>
+					<td></td>
+					<td>${hideMoney ? '—' : escapeHtml(orderDraft.unitPrice || '')}</td>
+					<td>${escapeHtml(formatDateDisplay(orderDraft.orderDate || ''))}</td>
+					<td>${hideMoney ? '—' : escapeHtml(orderDraft.amount || '')}</td>
+					<td>${escapeHtml(orderDraft.paymentMode || '')}</td>
+					<td>${escapeHtml(orderDraft.carNumber || '')}</td>
+					<td><span class="status-pill status-orange">Draft (Unsaved)</span></td>
+					<td><div class="row-actions"><button class="btn-edit si-resume-draft-btn" data-draft-entity="order" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete si-clear-draft-btn" data-draft-entity="order" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td>
+				</tr>
+			` : '';
+			ordersBody.innerHTML = draftOrderRow + orders.map((order, idx) => {
 				const showFollowUp = ['overdue', 'confirmed', 'processing', 'shipped'].includes(order.status);
 				const followUpCount = (order.followUps && order.followUps.length) || 0;
 				const statusLabel = order.status === 'pending_approval' ? 'Pending Approval' : order.status;
@@ -3341,6 +3625,7 @@ async function initSalesInvoicesPage() {
 						<td>${orderDateDisplay}${deliveryDateNote}</td>
 						<td>${hideMoney ? '—' : formatCurrency(order.amount)}</td>
 						<td>${order.paymentMode || ''}</td>
+						<td>${order.carNumber || ''}</td>
 						<td><span class="status-pill ${statusPillClass(order.status)}">${statusLabel}</span></td>
 						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="order" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="order" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td>
 					</tr>
@@ -3384,6 +3669,7 @@ async function loadOnlineOrders() {
 			return;
 		}
 		let orders = await res.json();
+		orders = orders.map((o) => ({ ...o, status: o.status === 'Pending' ? 'Confirmed' : o.status }));
 
 		// Apply status filter if set
 		const filterSel = document.getElementById('online-status-filter');
@@ -3392,11 +3678,11 @@ async function loadOnlineOrders() {
 			orders = orders.filter((o) => o.status === filterVal);
 		}
 
-		// Update badge with pending count
-		const pendingCount = orders.filter((o) => o.status === 'Pending').length;
+		// Update badge with active count
+		const activeCount = orders.filter((o) => ['Confirmed', 'Processing', 'Dispatched'].includes(o.status)).length;
 		if (badge) {
-			badge.style.display = pendingCount > 0 ? '' : 'none';
-			badge.textContent = pendingCount;
+			badge.style.display = activeCount > 0 ? '' : 'none';
+			badge.textContent = activeCount;
 		}
 
 		const signature = JSON.stringify({
@@ -3416,9 +3702,9 @@ async function loadOnlineOrders() {
 		tbody.innerHTML = orders.map((o) => {
 			const items = o.items.map((i) => `${i.name} ×${i.qty}`).join(', ');
 			const date = new Date(o.created_at).toLocaleDateString('en-GH', { day: 'numeric', month: 'short', year: 'numeric' });
-			const statusOpts = ['Pending', 'Confirmed', 'Processing', 'Dispatched', 'Delivered', 'Cancelled']
+			const statusOpts = ['Confirmed', 'Processing', 'Dispatched', 'Delivered', 'Cancelled']
 				.map((s) => `<option value="${s}"${o.status === s ? ' selected' : ''}>${s}</option>`).join('');
-			const pillClass = o.status === 'Delivered' ? 'status-green' : o.status === 'Cancelled' ? 'status-red' : o.status === 'Pending' ? 'status-yellow' : 'status-blue';
+			const pillClass = o.status === 'Delivered' ? 'status-green' : o.status === 'Cancelled' ? 'status-red' : (o.status === 'Confirmed' ? 'status-yellow' : 'status-blue');
 			return `
 				<tr>
 					<td><strong>${o.order_code}</strong></td>
@@ -3575,33 +3861,154 @@ function initPurchasePage() {
 	const modalForm = document.getElementById('pu-add-form');
 	let currentEntity = null;
 	let editingId = null;
+	const puDraftStorageKey = (entity) => `ww_purchase_modal_draft_${entity}`;
 
-	const closeModal = () => {
-		if (addModal) addModal.style.display = 'none';
-		if (modalForm) modalForm.reset();
-		currentEntity = null;
-		editingId = null;
+	const clearModalValidation = () => {
+		if (!modalFieldsEl) return;
+		modalFieldsEl.querySelectorAll('.inv-modal-field').forEach((field) => field.classList.remove('has-error'));
+		modalFieldsEl.querySelectorAll('.inv-modal-error').forEach((msg) => { msg.textContent = ''; });
+		const summary = modalFieldsEl.querySelector('#pu-modal-error-summary');
+		if (summary) summary.textContent = '';
 	};
 
-	const openModal = (entity, existingId) => {
+	const setFieldValidationError = (fieldId, message) => {
+		const input = document.getElementById(`pu-field-${fieldId}`);
+		if (!input) return;
+		const fieldWrap = input.closest('.inv-modal-field');
+		if (fieldWrap) fieldWrap.classList.add('has-error');
+		const msgEl = document.getElementById(`pu-err-${fieldId}`);
+		if (msgEl) msgEl.textContent = message;
+	};
+
+	const validateModalRequiredFields = (options) => {
+		const opts = options || {};
+		const focusFirst = opts.focusFirst !== false;
+		const showSummary = opts.showSummary !== false;
+		const config = PU_MODAL_CONFIGS[currentEntity];
+		if (!config) return true;
+		clearModalValidation();
+		const missing = [];
+		for (const field of config.fields) {
+			if (!field.required) continue;
+			const el = document.getElementById(`pu-field-${field.id}`);
+			if (!el || el.disabled) continue;
+			const value = String(el.value || '').trim();
+			if (value) continue;
+			missing.push(field);
+			setFieldValidationError(field.id, `${field.label} is required.`);
+		}
+		if (!missing.length) return true;
+		const summary = modalFieldsEl ? modalFieldsEl.querySelector('#pu-modal-error-summary') : null;
+		if (summary && showSummary) summary.textContent = 'Please fill the highlighted required fields.';
+		if (focusFirst) {
+			const firstMissing = document.getElementById(`pu-field-${missing[0].id}`);
+			if (firstMissing) firstMissing.focus();
+		}
+		return false;
+	};
+
+	const saveModalDraft = (entity) => {
+		if (!entity || editingId) return;
+		const config = PU_MODAL_CONFIGS[entity];
+		if (!config) return;
+		const values = {};
+		config.fields.forEach((field) => {
+			const el = document.getElementById(`pu-field-${field.id}`);
+			if (!el || el.disabled) return;
+			values[field.id] = el.value;
+		});
+		try {
+			localStorage.setItem(puDraftStorageKey(entity), JSON.stringify({ values, ts: Date.now() }));
+		} catch (_e) { /* ignore */ }
+	};
+
+	const clearModalDraft = (entity) => {
+		if (!entity) return;
+		try { localStorage.removeItem(puDraftStorageKey(entity)); } catch (_e) { /* ignore */ }
+	};
+
+	const restoreModalDraft = (entity) => {
+		if (!entity || editingId) return;
+		try {
+			const raw = localStorage.getItem(puDraftStorageKey(entity));
+			if (!raw) return;
+			const parsed = JSON.parse(raw);
+			const values = parsed && parsed.values ? parsed.values : null;
+			if (!values || typeof values !== 'object') return;
+			Object.keys(values).forEach((fieldId) => {
+				const el = document.getElementById(`pu-field-${fieldId}`);
+				if (!el || el.disabled) return;
+				if (!String(el.value || '').trim() && values[fieldId] !== undefined && values[fieldId] !== null) {
+					el.value = String(values[fieldId]);
+				}
+			});
+		} catch (_e) { /* ignore */ }
+	};
+
+	const getModalDraft = (entity) => {
+		if (!entity) return null;
+		try {
+			const raw = localStorage.getItem(puDraftStorageKey(entity));
+			if (!raw) return null;
+			const parsed = JSON.parse(raw);
+			const values = parsed && parsed.values ? parsed.values : null;
+			if (!values || typeof values !== 'object') return null;
+			const hasAnyValue = Object.values(values).some((v) => String(v || '').trim() !== '');
+			return hasAnyValue ? values : null;
+		} catch (_e) {
+			return null;
+		}
+	};
+
+	const bindModalLiveHandlers = () => {
+		if (!modalFieldsEl) return;
+		const controls = modalFieldsEl.querySelectorAll('input, select, textarea');
+		controls.forEach((ctrl) => {
+			const syncState = () => {
+				saveModalDraft(currentEntity);
+				validateModalRequiredFields({ focusFirst: false, showSummary: false });
+			};
+			ctrl.addEventListener('input', syncState);
+			ctrl.addEventListener('change', syncState);
+			ctrl.addEventListener('blur', () => {
+				validateModalRequiredFields({ focusFirst: false, showSummary: false });
+			});
+		});
+	};
+
+	const closeModal = () => {
+		const savedEntity = currentEntity;
+		const wasAdding = !editingId;
+		if (wasAdding && savedEntity) saveModalDraft(savedEntity);
+		if (addModal) addModal.style.display = 'none';
+		if (modalForm) modalForm.reset();
+		clearModalValidation();
+		currentEntity = null;
+		editingId = null;
+		if (wasAdding && savedEntity) renderPurchasePage();
+	};
+
+	window.addEventListener('beforeunload', () => { if (!editingId && currentEntity) saveModalDraft(currentEntity); });
+
+	const openModal = (entity, existingId, resumeDraft = false) => {
 		const config = PU_MODAL_CONFIGS[entity];
 		if (!config || !addModal) return;
 		currentEntity = entity;
 		editingId = existingId || null;
 		if (modalTitle) modalTitle.textContent = editingId ? config.title.replace('Add', 'Edit') : config.title;
 		if (modalFieldsEl) {
-			modalFieldsEl.innerHTML = config.fields.map((f) => {
+			modalFieldsEl.innerHTML = `<p class="inv-modal-summary-error" id="pu-modal-error-summary" aria-live="polite"></p>` + config.fields.map((f) => {
 				if (f.type === 'supplier-select') {
 					const opts = purchaseModuleData.suppliers.map((s) => `<option value="${s.name}">${s.name}</option>`).join('');
 					if (!purchaseModuleData.suppliers.length) {
-						return `<div class="inv-modal-field"><label for="pu-field-${f.id}">${f.label} <span class="req">*</span></label><select id="pu-field-${f.id}" name="${f.id}" required disabled><option value="">No suppliers yet — add one first</option></select></div>`;
+						return `<div class="inv-modal-field"><label for="pu-field-${f.id}">${f.label} <span class="req">*</span></label><select id="pu-field-${f.id}" name="${f.id}" required disabled><option value="">No suppliers yet — add one first</option></select><p class="inv-modal-error" id="pu-err-${f.id}" aria-live="polite"></p></div>`;
 					}
-					return `<div class="inv-modal-field"><label for="pu-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><select id="pu-field-${f.id}" name="${f.id}" ${f.required ? 'required' : ''}><option value="">Select a supplier</option>${opts}</select></div>`;
+					return `<div class="inv-modal-field"><label for="pu-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><select id="pu-field-${f.id}" name="${f.id}" ${f.required ? 'required' : ''}><option value="">Select a supplier</option>${opts}</select><p class="inv-modal-error" id="pu-err-${f.id}" aria-live="polite"></p></div>`;
 				}
 				if (f.type === 'select') {
-					return `<div class="inv-modal-field"><label for="pu-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><select id="pu-field-${f.id}" name="${f.id}" ${f.required ? 'required' : ''}>${f.options.map((o) => `<option value="${o}">${o.charAt(0).toUpperCase() + o.slice(1)}</option>`).join('')}</select></div>`;
+					return `<div class="inv-modal-field"><label for="pu-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><select id="pu-field-${f.id}" name="${f.id}" ${f.required ? 'required' : ''}>${f.options.map((o) => `<option value="${o}">${o.charAt(0).toUpperCase() + o.slice(1)}</option>`).join('')}</select><p class="inv-modal-error" id="pu-err-${f.id}" aria-live="polite"></p></div>`;
 				}
-				return `<div class="inv-modal-field"><label for="pu-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><input id="pu-field-${f.id}" type="${f.type}" name="${f.id}" ${f.required ? 'required' : ''} ${f.min !== undefined ? `min="${f.min}"` : ''} ${f.step ? `step="${f.step}"` : ''} ${f.placeholder ? `placeholder="${f.placeholder}"` : ''} ${f.defaultValue ? `value="${f.defaultValue}"` : ''}></div>`;
+				return `<div class="inv-modal-field"><label for="pu-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><input id="pu-field-${f.id}" type="${f.type}" name="${f.id}" ${f.required ? 'required' : ''} ${f.min !== undefined ? `min="${f.min}"` : ''} ${f.step ? `step="${f.step}"` : ''} ${f.placeholder ? `placeholder="${f.placeholder}"` : ''} ${f.defaultValue ? `value="${f.defaultValue}"` : ''}><p class="inv-modal-error" id="pu-err-${f.id}" aria-live="polite"></p></div>`;
 			}).join('');
 		}
 		/* Pre-fill fields when editing */
@@ -3633,7 +4040,10 @@ function initPurchasePage() {
 		}
 		addModal.style.display = 'flex';
 		const firstInput = modalFieldsEl && modalFieldsEl.querySelector('input, select');
+		if (resumeDraft) restoreModalDraft(entity);
 		if (firstInput) firstInput.focus();
+		bindModalLiveHandlers();
+		validateModalRequiredFields({ focusFirst: false, showSummary: false });
 	};
 
 	document.getElementById('pu-modal-close')?.addEventListener('click', closeModal);
@@ -3648,6 +4058,7 @@ function initPurchasePage() {
 		modalForm.addEventListener('submit', (event) => {
 			event.preventDefault();
 			if (!currentEntity) return;
+			if (!validateModalRequiredFields()) return;
 
 			if (currentEntity === 'po') {
 				const supplier = getValue('supplier');
@@ -3700,6 +4111,7 @@ function initPurchasePage() {
 			}
 
 			savePurchaseDataToStorage();
+			clearModalDraft(currentEntity);
 			closeModal();
 			renderPurchasePage();
 		});
@@ -3707,7 +4119,16 @@ function initPurchasePage() {
 
 	document.addEventListener('click', (event) => {
 		const addBtn = event.target.closest('.pu-add-btn[data-add-entity]');
-		if (addBtn) { openModal(addBtn.getAttribute('data-add-entity')); return; }
+		if (addBtn) { openModal(addBtn.getAttribute('data-add-entity'), null, false); return; }
+		const resumeDraftBtn = event.target.closest('.pu-resume-draft-btn[data-draft-entity]');
+		if (resumeDraftBtn) { event.stopPropagation(); openModal(resumeDraftBtn.getAttribute('data-draft-entity'), null, true); return; }
+		const clearDraftBtn = event.target.closest('.pu-clear-draft-btn[data-draft-entity]');
+		if (clearDraftBtn) {
+			event.stopPropagation();
+			clearModalDraft(clearDraftBtn.getAttribute('data-draft-entity'));
+			renderPurchasePage();
+			return;
+		}
 		const editBtn = event.target.closest('.pu-edit-btn');
 		if (editBtn) {
 			event.stopPropagation();
@@ -3719,15 +4140,17 @@ function initPurchasePage() {
 			const entity = deleteBtn.getAttribute('data-delete-entity');
 			const id = deleteBtn.getAttribute('data-delete-id');
 			const label = entity === 'po' ? 'purchase order' : 'supplier';
-			if (!confirm('Delete this ' + label + '? This cannot be undone.')) return;
+			if (!window.confirm('Delete this ' + label + '? This cannot be undone.')) return;
 			if (entity === 'po') {
 				const removedPo = purchaseModuleData.purchaseOrders.find((po) => po.id === id);
 				if (removedPo) moveAppDataDeleteToTrash('purchaseOrders', removedPo, { kind: 'appDataArray', key: 'ww_purchase_data_v2', arrayPath: 'purchaseOrders' });
 				purchaseModuleData.purchaseOrders = purchaseModuleData.purchaseOrders.filter((po) => po.id !== id);
+				showDeleteToast(`Purchase order ${id} deleted.`);
 			} else if (entity === 'supplier') {
 				const removedSupplier = purchaseModuleData.suppliers.find((s) => s.id === id);
 				if (removedSupplier) moveAppDataDeleteToTrash('vendors', removedSupplier, { kind: 'appDataArray', key: 'ww_purchase_data_v2', arrayPath: 'suppliers' });
 				purchaseModuleData.suppliers = purchaseModuleData.suppliers.filter((s) => s.id !== id);
+				showDeleteToast(`Supplier "${removedSupplier ? removedSupplier.name : id}" removed.`);
 			}
 			savePurchaseDataToStorage();
 			renderPurchasePage();
@@ -3737,6 +4160,8 @@ function initPurchasePage() {
 	function renderPurchasePage() {
 		const orders = purchaseModuleData.purchaseOrders.map((po) => ({ ...po, amount: poTotal(po) }));
 		const suppliers = purchaseModuleData.suppliers;
+		const poDraft = getModalDraft('po');
+		const supplierDraft = getModalDraft('supplier');
 
 		const activePos = orders.filter((po) => po.status !== 'delivered');
 		const pendingCount = orders.filter((po) => po.status === 'pending').length;
@@ -3757,7 +4182,18 @@ function initPurchasePage() {
 
 		const poBody = document.getElementById('po-tbody');
 		if (poBody) {
-			poBody.innerHTML = orders.map((po) => {
+			const poDraftRow = poDraft ? `
+				<tr class="draft-row">
+					<td>DRAFT</td>
+					<td>${escapeHtml(poDraft.supplier || 'Unsaved PO')}</td>
+					<td>${escapeHtml(formatDateDisplay(poDraft.date || ''))}</td>
+					<td>${escapeHtml(formatDateDisplay(poDraft.expectedDate || ''))}</td>
+					<td></td>
+					<td><span class="status-pill status-orange">Draft (Unsaved)</span></td>
+					<td><div class="row-actions"><button class="btn-edit pu-resume-draft-btn" data-draft-entity="po" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete pu-clear-draft-btn" data-draft-entity="po" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td>
+				</tr>
+			` : '';
+			poBody.innerHTML = poDraftRow + orders.map((po) => {
 				return `
 					<tr class="selectable" data-po-id="${po.id}">
 						<td>${po.id}</td>
@@ -3771,7 +4207,7 @@ function initPurchasePage() {
 				`;
 			}).join('');
 
-			poBody.querySelectorAll('tr').forEach((row) => {
+			poBody.querySelectorAll('tr[data-po-id]').forEach((row) => {
 				row.addEventListener('click', () => {
 					poBody.querySelectorAll('tr').forEach((r) => r.classList.remove('row-selected'));
 					row.classList.add('row-selected');
@@ -3811,7 +4247,19 @@ function initPurchasePage() {
 
 		const suppliersBody = document.getElementById('suppliers-tbody');
 		if (suppliersBody) {
-			suppliersBody.innerHTML = suppliers.map((supplier) => {
+			const supplierDraftRow = supplierDraft ? `
+				<tr class="draft-row">
+					<td>${escapeHtml(supplierDraft.name || 'Unsaved supplier')}</td>
+					<td>${escapeHtml(supplierDraft.contact || '')}</td>
+					<td>${escapeHtml(supplierDraft.email || '')}</td>
+					<td>${escapeHtml(supplierDraft.materials || '')}</td>
+					<td></td>
+					<td><span class="badge badge-orange">Draft</span></td>
+					<td>Unsaved</td>
+					<td><div class="row-actions"><button class="btn-edit pu-resume-draft-btn" data-draft-entity="supplier" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete pu-clear-draft-btn" data-draft-entity="supplier" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td>
+				</tr>
+			` : '';
+			suppliersBody.innerHTML = supplierDraftRow + suppliers.map((supplier) => {
 				const orderCount = orders.filter((po) => po.supplier === supplier.name).length;
 				const stars = supplier.rating > 0 ? '★'.repeat(Math.round(supplier.rating)) : '—';
 				return `
@@ -3865,6 +4313,30 @@ function loadAccountingDataFromStorage() {
 			accountingData.assets = Array.isArray(stored.assets) ? stored.assets : [];
 		}
 	} catch (_e) { /* ignore */ }
+
+	// Normalize salary grouping: only March 2026 remains weekly; later months persist as monthly.
+	let normalizedSalaryCount = 0;
+	accountingData.salaries.forEach((row) => {
+		if (!row || typeof row !== 'object') return;
+		let monthFromWeekEnd = '';
+		if (row.week) {
+			const weekEndDate = new Date(String(row.week) + 'T00:00:00');
+			weekEndDate.setDate(weekEndDate.getDate() + 6);
+			monthFromWeekEnd = weekEndDate.toISOString().slice(0, 7);
+		}
+		const inferredMonth = row.month
+			? String(row.month).slice(0, 7)
+			: (monthFromWeekEnd || String(row.date || '').slice(0, 7));
+		if (!row.month && inferredMonth) {
+			row.month = inferredMonth;
+			normalizedSalaryCount += 1;
+		}
+		if (row.week && !(String(row.week) >= '2026-03-01' && String(row.week) < '2026-03-30')) {
+			delete row.week;
+			normalizedSalaryCount += 1;
+		}
+	});
+	if (normalizedSalaryCount > 0) saveAccountingDataToStorage();
 
 	// One-time seed: March 2026 operational costs
 	if (!getSeedFlag('opscost_march2026') && accountingData.ledger.length === 0) {
@@ -4072,16 +4544,20 @@ function initAccountingPage() {
 			fields: [
 				{ id: 'date', label: 'Date Paid', type: 'date', defaultValue: todayStr, required: true },
 				{ id: 'employee', label: 'Employee Name', type: 'text', required: true, placeholder: 'e.g. Ernest Boateng' },
-				{ id: 'week', label: 'Week Starting', type: 'date', required: true, defaultValue: todayStr },
+				{ id: 'month', label: 'Month', type: 'month', required: true, defaultValue: todayStr.slice(0, 7) },
 				{ id: 'amount', label: 'Amount (GH)', type: 'number', min: '0', step: '0.01', required: true },
-				{ id: 'note', label: 'Notes', type: 'text', placeholder: 'e.g. Deductions, adjustments' },
+				{ id: 'note1', label: 'Note 1', type: 'text', placeholder: 'e.g. Deductions' },
+				{ id: 'note2', label: 'Note 2', type: 'text', placeholder: '' },
+				{ id: 'note3', label: 'Note 3', type: 'text', placeholder: '' },
+				{ id: 'note4', label: 'Note 4', type: 'text', placeholder: '' },
+				{ id: 'note5', label: 'Note 5', type: 'text', placeholder: '' },
 			],
 		},
 		'asset-item': {
 			title: 'Add Asset',
 			fields: [
 				{ id: 'date', label: 'Date', type: 'date', defaultValue: todayStr, required: true },
-				{ id: 'name', label: 'Asset Name', type: 'text', required: true, placeholder: 'e.g. Salaries & Wages — Week 1' },
+				{ id: 'name', label: 'Asset Name', type: 'text', required: true, placeholder: 'e.g. Salaries & Wages - Week 1' },
 				{ id: 'category', label: 'Category', type: 'select', options: ['Salaries & Wages', 'Equipment', 'Vehicles', 'Property', 'Inventory', 'Furniture', 'Other'], required: true },
 				{ id: 'value', label: 'Value (GH)', type: 'number', min: '0', step: '0.01', required: true },
 				{ id: 'note', label: 'Notes', type: 'text', placeholder: 'e.g. Week 1 payroll' },
@@ -4109,8 +4585,34 @@ function initAccountingPage() {
 		const fmt = (d) => d.toLocaleDateString('en-GB', { day:'numeric', month:'short' });
 		return `${fmt(s)} – ${fmt(e)}, ${s.getFullYear()}`;
 	}
+	function salaryMonthFromWeekStart(startStr) {
+		if (!startStr) return null;
+		return getWeekEnd(startStr).slice(0, 7);
+	}
+	function isMarchWeeklyWindow(startStr) {
+		return !!startStr && String(startStr) >= '2026-03-01' && String(startStr) < '2026-03-30';
+	}
+	/* Group key: use week (YYYY-MM-DD) for old weekly entries, month (YYYY-MM) for new monthly entries */
+	function getSalaryGroup(s) {
+		if (s.week && isMarchWeeklyWindow(s.week)) return s.week; // keep March weeks only up to 29 Mar
+		if (s.month) return s.month;       // monthly entry
+		if (s.week) return salaryMonthFromWeekStart(s.week) || String(s.week).slice(0, 7); // e.g. 30 Mar week => April
+		if (s.date) return s.date.slice(0, 7); // fallback
+		return null;
+	}
+	/* Label a group key — 10-char key = week, 7-char key = month */
+	function groupLabel(key) {
+		if (!key) return '—';
+		return key.length === 10 ? weekLabel(key) : monthLabel(key);
+	}
+	function monthLabel(m) {
+		if (!m) return '—';
+		const [yr, mo] = m.split('-');
+		const d = new Date(Number(yr), Number(mo) - 1, 1);
+		return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+	}
 
-	let currentSalaryWeek = null;
+	let currentSalaryMonth = null;
 	let currentSalaryEmployee = '__all_workers__';
 
 	const CURRENCY_ICONS = { USD: 'fa-solid fa-dollar-sign', GBP: 'fa-solid fa-sterling-sign', EUR: 'fa-solid fa-euro-sign' };
@@ -4121,21 +4623,150 @@ function initAccountingPage() {
 	const modalForm = document.getElementById('acc-add-form');
 	let currentEntity = null;
 	let editingAccIdx = -1;
+	const accDraftStorageKey = (entity) => `ww_accounting_modal_draft_${entity}`;
 
-	const closeModal = () => { if (addModal) addModal.style.display = 'none'; if (modalForm) modalForm.reset(); currentEntity = null; editingAccIdx = -1; };
+	const clearModalValidation = () => {
+		if (!modalFieldsEl) return;
+		modalFieldsEl.querySelectorAll('.inv-modal-field').forEach((field) => field.classList.remove('has-error'));
+		modalFieldsEl.querySelectorAll('.inv-modal-error').forEach((msg) => { msg.textContent = ''; });
+		const summary = modalFieldsEl.querySelector('#acc-modal-error-summary');
+		if (summary) summary.textContent = '';
+	};
 
-	const openModal = (entity, editIdx) => {
+	const setFieldValidationError = (fieldId, message) => {
+		const input = document.getElementById(`acc-field-${fieldId}`);
+		if (!input) return;
+		const fieldWrap = input.closest('.inv-modal-field');
+		if (fieldWrap) fieldWrap.classList.add('has-error');
+		const msgEl = document.getElementById(`acc-err-${fieldId}`);
+		if (msgEl) msgEl.textContent = message;
+	};
+
+	const validateModalRequiredFields = (options) => {
+		const opts = options || {};
+		const focusFirst = opts.focusFirst !== false;
+		const showSummary = opts.showSummary !== false;
+		const config = ACC_MODAL_CONFIGS[currentEntity];
+		if (!config) return true;
+		clearModalValidation();
+		const missing = [];
+		for (const field of config.fields) {
+			if (!field.required) continue;
+			const el = document.getElementById(`acc-field-${field.id}`);
+			if (!el || el.disabled) continue;
+			const value = String(el.value || '').trim();
+			if (value) continue;
+			missing.push(field);
+			setFieldValidationError(field.id, `${field.label} is required.`);
+		}
+		if (!missing.length) return true;
+		const summary = modalFieldsEl ? modalFieldsEl.querySelector('#acc-modal-error-summary') : null;
+		if (summary && showSummary) summary.textContent = 'Please fill the highlighted required fields.';
+		if (focusFirst) {
+			const firstMissing = document.getElementById(`acc-field-${missing[0].id}`);
+			if (firstMissing) firstMissing.focus();
+		}
+		return false;
+	};
+
+	const saveModalDraft = (entity) => {
+		if (!entity || editingAccIdx >= 0) return;
+		const config = ACC_MODAL_CONFIGS[entity];
+		if (!config) return;
+		const values = {};
+		config.fields.forEach((field) => {
+			const el = document.getElementById(`acc-field-${field.id}`);
+			if (!el || el.disabled) return;
+			values[field.id] = el.value;
+		});
+		try {
+			localStorage.setItem(accDraftStorageKey(entity), JSON.stringify({ values, ts: Date.now() }));
+		} catch (_e) { /* ignore */ }
+	};
+
+	const clearModalDraft = (entity) => {
+		if (!entity) return;
+		try { localStorage.removeItem(accDraftStorageKey(entity)); } catch (_e) { /* ignore */ }
+	};
+
+	const restoreModalDraft = (entity) => {
+		if (!entity || editingAccIdx >= 0) return;
+		try {
+			const raw = localStorage.getItem(accDraftStorageKey(entity));
+			if (!raw) return;
+			const parsed = JSON.parse(raw);
+			const values = parsed && parsed.values ? parsed.values : null;
+			if (!values || typeof values !== 'object') return;
+			Object.keys(values).forEach((fieldId) => {
+				const el = document.getElementById(`acc-field-${fieldId}`);
+				if (!el || el.disabled) return;
+				if (!String(el.value || '').trim() && values[fieldId] !== undefined && values[fieldId] !== null) {
+					el.value = String(values[fieldId]);
+				}
+			});
+		} catch (_e) { /* ignore */ }
+	};
+
+	const getModalDraft = (entity) => {
+		if (!entity) return null;
+		try {
+			const raw = localStorage.getItem(accDraftStorageKey(entity));
+			if (!raw) return null;
+			const parsed = JSON.parse(raw);
+			const values = parsed && parsed.values ? parsed.values : null;
+			if (!values || typeof values !== 'object') return null;
+			const hasAnyValue = Object.values(values).some((v) => String(v || '').trim() !== '');
+			return hasAnyValue ? values : null;
+		} catch (_e) {
+			return null;
+		}
+	};
+
+	const bindModalLiveHandlers = () => {
+		if (!modalFieldsEl) return;
+		const controls = modalFieldsEl.querySelectorAll('input, select, textarea');
+		controls.forEach((ctrl) => {
+			const syncState = () => {
+				saveModalDraft(currentEntity);
+				validateModalRequiredFields({ focusFirst: false, showSummary: false });
+			};
+			ctrl.addEventListener('input', syncState);
+			ctrl.addEventListener('change', syncState);
+			ctrl.addEventListener('blur', () => {
+				validateModalRequiredFields({ focusFirst: false, showSummary: false });
+			});
+		});
+	};
+
+	const closeModal = (opts = {}) => {
+		const savedEntity = currentEntity;
+		const wasAdding = editingAccIdx < 0;
+		const shouldSaveDraft = opts.saveDraft !== false;
+		if (wasAdding && savedEntity && shouldSaveDraft) saveModalDraft(savedEntity);
+		if (addModal) addModal.style.display = 'none';
+		if (modalForm) modalForm.reset();
+		clearModalValidation();
+		currentEntity = null;
+		editingAccIdx = -1;
+		if (wasAdding && savedEntity) renderAccountingPage();
+	};
+	window.addEventListener('beforeunload', () => { if (editingAccIdx < 0 && currentEntity) saveModalDraft(currentEntity); });
+
+	const openModal = (entity, editIdx, resumeDraft = false) => {
 		const config = ACC_MODAL_CONFIGS[entity];
 		if (!config || !addModal) return;
 		currentEntity = entity;
 		editingAccIdx = typeof editIdx === 'number' ? editIdx : -1;
 		if (modalTitle) modalTitle.textContent = editingAccIdx >= 0 ? config.title.replace('Add', 'Edit') : config.title;
 		if (modalFieldsEl) {
-			modalFieldsEl.innerHTML = config.fields.map((f) => {
+			modalFieldsEl.innerHTML = `<p class="inv-modal-summary-error" id="acc-modal-error-summary" aria-live="polite"></p>` + config.fields.map((f) => {
 				if (f.type === 'select') {
-					return `<div class="inv-modal-field"><label for="acc-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><select id="acc-field-${f.id}" name="${f.id}" ${f.required ? 'required' : ''}>${f.options.map((o) => `<option value="${o}">${o.charAt(0).toUpperCase() + o.slice(1)}</option>`).join('')}</select></div>`;
+					return `<div class="inv-modal-field"><label for="acc-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><select id="acc-field-${f.id}" name="${f.id}" ${f.required ? 'required' : ''}>${f.options.map((o) => `<option value="${o}">${o.charAt(0).toUpperCase() + o.slice(1)}</option>`).join('')}</select><p class="inv-modal-error" id="acc-err-${f.id}" aria-live="polite"></p></div>`;
 				}
-				return `<div class="inv-modal-field"><label for="acc-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><input id="acc-field-${f.id}" type="${f.type}" name="${f.id}" ${f.required ? 'required' : ''} ${f.min !== undefined ? `min="${f.min}"` : ''} ${f.step ? `step="${f.step}"` : ''} ${f.placeholder ? `placeholder="${f.placeholder}"` : ''} ${f.defaultValue ? `value="${f.defaultValue}"` : ''}></div>`;
+				if (f.type === 'textarea') {
+					return `<div class="inv-modal-field"><label for="acc-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><textarea id="acc-field-${f.id}" name="${f.id}" rows="${f.rows || 5}" ${f.required ? 'required' : ''} ${f.placeholder ? `placeholder="${f.placeholder}"` : ''} style="width:100%;resize:vertical;"></textarea><p class="inv-modal-error" id="acc-err-${f.id}" aria-live="polite"></p></div>`;
+				}
+				return `<div class="inv-modal-field"><label for="acc-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label><input id="acc-field-${f.id}" type="${f.type}" name="${f.id}" ${f.required ? 'required' : ''} ${f.min !== undefined ? `min="${f.min}"` : ''} ${f.step ? `step="${f.step}"` : ''} ${f.placeholder ? `placeholder="${f.placeholder}"` : ''} ${f.defaultValue ? `value="${f.defaultValue}"` : ''}><p class="inv-modal-error" id="acc-err-${f.id}" aria-live="polite"></p></div>`;
 			}).join('');
 		}
 		/* Pre-fill for editing */
@@ -4150,11 +4781,21 @@ function initAccountingPage() {
 			if (row) {
 				const setVal = (id, v) => { const el = document.getElementById('acc-field-' + id); if (el && v !== undefined) el.value = v; };
 				Object.keys(row).forEach((k) => setVal(k, row[k]));
+				if (entity === 'salary' && !row.month && row.week) {
+					setVal('month', String(row.week).slice(0, 7));
+				}
+				/* Restore individual note fields from notes array */
+				if (Array.isArray(row.notes)) {
+					row.notes.forEach((n, i) => setVal('note' + (i + 1), n));
+				}
 			}
 		}
 		addModal.style.display = 'flex';
 		const firstInput = modalFieldsEl && modalFieldsEl.querySelector('input, select');
+		if (resumeDraft) restoreModalDraft(entity);
 		if (firstInput) firstInput.focus();
+		bindModalLiveHandlers();
+		validateModalRequiredFields({ focusFirst: false, showSummary: false });
 	};
 
 	document.getElementById('acc-modal-close')?.addEventListener('click', closeModal);
@@ -4169,6 +4810,7 @@ function initAccountingPage() {
 		modalForm.addEventListener('submit', (event) => {
 			event.preventDefault();
 			if (!currentEntity) return;
+			if (!validateModalRequiredFields()) return;
 
 			if (currentEntity === 'ledger') {
 				const desc = getValue('desc');
@@ -4231,25 +4873,32 @@ function initAccountingPage() {
 			if (currentEntity === 'salary') {
 				const employee = getValue('employee');
 				if (!employee) return;
-				const weekRaw = getValue('week') || todayStr;
-				const weekStart = getWeekStart(weekRaw);
+				const dateVal = getValue('date') || todayStr;
+				const monthVal = getValue('month') || String(dateVal).slice(0, 7);
+				const weekStart = getWeekStart(dateVal);
+				const keepMarchWeekly = monthVal === '2026-03' && isMarchWeeklyWindow(weekStart);
+				const notes = [getValue('note1'), getValue('note2'), getValue('note3'), getValue('note4'), getValue('note5')].filter(Boolean);
 				const data = {
-					date: getValue('date') || todayStr,
+					date: dateVal,
 					employee,
-					week: weekStart,
+					month: monthVal,
+					week: keepMarchWeekly ? weekStart : undefined,
 					amount: getNum('amount'),
-					note: getValue('note') || '',
+					notes,
+					note: notes.join(' · ') || '',
 				};
 				if (editingAccIdx >= 0 && accountingData.salaries[editingAccIdx]) {
 					const old = accountingData.salaries[editingAccIdx];
 					const li = accountingData.ledger.findIndex(e => e.account === 'Salaries' && e.desc === `Salary — ${old.employee}` && e.date === old.date);
 					if (li >= 0) { accountingData.ledger[li].date = data.date; accountingData.ledger[li].desc = `Salary — ${data.employee}`; accountingData.ledger[li].debit = data.amount; }
 					Object.assign(accountingData.salaries[editingAccIdx], data);
+					if (!keepMarchWeekly) delete accountingData.salaries[editingAccIdx].week;
 				} else {
+					if (!keepMarchWeekly) delete data.week;
 					accountingData.salaries.push(data);
 					accountingData.ledger.push({ date: data.date, desc: `Salary — ${data.employee}`, account: 'Salaries', type: 'expense', debit: data.amount, credit: 0 });
 				}
-				currentSalaryWeek = weekStart;
+				currentSalaryMonth = monthVal;
 			}
 
 			if (currentEntity === 'asset-item') {
@@ -4270,18 +4919,28 @@ function initAccountingPage() {
 			}
 
 			saveAccountingDataToStorage();
-			closeModal();
+			clearModalDraft(currentEntity);
+			closeModal({ saveDraft: false });
 			renderAccountingPage();
 		});
 	}
 
 	document.addEventListener('click', (event) => {
 		const btn = event.target.closest('.acc-add-btn[data-add-entity]');
-		if (btn) { openModal(btn.getAttribute('data-add-entity')); return; }
-		const weekPickBtn = event.target.closest('.acc-week-pick-btn[data-week]');
+		if (btn) { openModal(btn.getAttribute('data-add-entity'), undefined, false); return; }
+		const resumeDraftBtn = event.target.closest('.acc-resume-draft-btn[data-draft-entity]');
+		if (resumeDraftBtn) { event.stopPropagation(); openModal(resumeDraftBtn.getAttribute('data-draft-entity'), undefined, true); return; }
+		const clearDraftBtn = event.target.closest('.acc-clear-draft-btn[data-draft-entity]');
+		if (clearDraftBtn) {
+			event.stopPropagation();
+			clearModalDraft(clearDraftBtn.getAttribute('data-draft-entity'));
+			renderAccountingPage();
+			return;
+		}
+		const weekPickBtn = event.target.closest('.acc-week-pick-btn[data-month]');
 		if (weekPickBtn) {
 			event.stopPropagation();
-			currentSalaryWeek = weekPickBtn.getAttribute('data-week') || currentSalaryWeek;
+			currentSalaryMonth = weekPickBtn.getAttribute('data-month') || currentSalaryMonth;
 			currentSalaryEmployee = '__all_workers__';
 			renderAccountingPage();
 			return;
@@ -4297,26 +4956,31 @@ function initAccountingPage() {
 			event.stopPropagation();
 			const entity = deleteBtn.getAttribute('data-delete-entity');
 			const idx = Number(deleteBtn.getAttribute('data-delete-idx'));
-			if (!confirm('Delete this ' + entity + ' entry? This cannot be undone.')) return;
+			if (!window.confirm('Delete this ' + entity + ' entry? This cannot be undone.')) return;
+			let toastMsg = '';
 			if (entity === 'ledger') {
 				const removed = accountingData.ledger[idx];
 				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'ledger' });
 				accountingData.ledger.splice(idx, 1);
+				toastMsg = 'Ledger entry deleted.';
 			}
 			else if (entity === 'cashbook') {
 				const removed = accountingData.cashbook[idx];
 				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'cashbook' });
 				accountingData.cashbook.splice(idx, 1);
+				toastMsg = 'Cashbook entry deleted.';
 			}
 			else if (entity === 'account') {
 				const removed = accountingData.summary[idx];
 				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'summary' });
 				accountingData.summary.splice(idx, 1);
+				toastMsg = 'Account removed.';
 			}
 			else if (entity === 'currency') {
 				const removed = accountingData.currencies[idx];
 				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'currencies' });
 				accountingData.currencies.splice(idx, 1);
+				toastMsg = 'Currency removed.';
 			}
 			else if (entity === 'salary') {
 				const sal = accountingData.salaries[idx];
@@ -4326,14 +4990,17 @@ function initAccountingPage() {
 					if (li >= 0) accountingData.ledger.splice(li, 1);
 				}
 				accountingData.salaries.splice(idx, 1);
+				toastMsg = `Salary record for ${sal ? sal.employee : 'employee'} deleted.`;
 			}
 			else if (entity === 'asset-item') {
 				const removed = accountingData.assets[idx];
 				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'assets' });
 				accountingData.assets.splice(idx, 1);
+				toastMsg = `Asset "${removed ? removed.name : 'item'}" deleted.`;
 			}
 			saveAccountingDataToStorage();
 			renderAccountingPage();
+			if (toastMsg) setTimeout(() => showDeleteToast(toastMsg), 50);
 		}
 	});
 
@@ -4342,6 +5009,10 @@ function initAccountingPage() {
 		const cashbook = accountingData.cashbook;
 		const manualAccounts = accountingData.summary;
 		const currencies = accountingData.currencies;
+		const ledgerDraft = getModalDraft('ledger');
+		const cashbookDraft = getModalDraft('cashbook');
+		const salaryDraft = getModalDraft('salary');
+		const assetDraft = getModalDraft('asset-item');
 
 		/* Build account summary: merge manual accounts + auto-computed from ledger */
 		const TYPE_TO_CATEGORY = { asset: 'Assets', liability: 'Liabilities', equity: 'Equity', revenue: 'Revenue', expense: 'Expenses' };
@@ -4416,8 +5087,9 @@ function initAccountingPage() {
 		/* General Ledger — grouped by day with subtotals */
 		const ledgerBody = document.getElementById('ledger-tbody');
 		if (ledgerBody) {
+			const ledgerDraftRow = ledgerDraft ? `<tr class="draft-row"><td>${escapeHtml(ledgerDraft.date || '')}</td><td>${escapeHtml(ledgerDraft.desc || 'Unsaved ledger entry')}</td><td>${escapeHtml(ledgerDraft.account || '')}</td><td><span class="badge badge-orange">Draft</span></td><td>${escapeHtml(ledgerDraft.debit || '')}</td><td>${escapeHtml(ledgerDraft.credit || '')}</td><td><div class="row-actions"><button class="btn-edit acc-resume-draft-btn" data-draft-entity="ledger" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete acc-clear-draft-btn" data-draft-entity="ledger" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
 			if (ledger.length === 0) {
-				ledgerBody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#94a3b8;">No entries yet. Click "Add Entry" to start.</td></tr>';
+				ledgerBody.innerHTML = ledgerDraftRow || '<tr><td colspan="7" style="text-align:center;color:#94a3b8;">No entries yet. Click "Add Entry" to start.</td></tr>';
 			} else {
 				// Group entries by date
 				const byDate = {};
@@ -4448,15 +5120,16 @@ function initAccountingPage() {
 				}
 				// Grand total row
 				html += `<tr class="ledger-grand-total"><td colspan="4" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">GRAND TOTAL</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandDebit)}</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandCredit)}</td><td style="background:#1e40af;"></td></tr>`;
-				ledgerBody.innerHTML = html;
+				ledgerBody.innerHTML = ledgerDraftRow + html;
 			}
 		}
 
 		/* Cashbook — grouped by day with subtotals */
 		const cashbookBody = document.getElementById('cashbook-tbody');
 		if (cashbookBody) {
+			const cashbookDraftRow = cashbookDraft ? `<tr class="draft-row"><td>${escapeHtml(cashbookDraft.date || '')}</td><td>${escapeHtml(cashbookDraft.desc || 'Unsaved cashbook entry')}</td><td>${escapeHtml(cashbookDraft.amount || '')}</td><td></td><td><div class="row-actions"><button class="btn-edit acc-resume-draft-btn" data-draft-entity="cashbook" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete acc-clear-draft-btn" data-draft-entity="cashbook" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
 			if (cashbook.length === 0) {
-				cashbookBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;">No entries yet. Click "Add Entry" to start.</td></tr>';
+				cashbookBody.innerHTML = cashbookDraftRow || '<tr><td colspan="5" style="text-align:center;color:#94a3b8;">No entries yet. Click "Add Entry" to start.</td></tr>';
 			} else {
 				const byDate = {};
 				cashbook.forEach((entry, idx) => {
@@ -4480,7 +5153,7 @@ function initAccountingPage() {
 					html += `<tr><td colspan="2" style="text-align:right;font-weight:700;background:#f8fafc;color:#475569;padding:8px 14px;">Subtotal — ${dateLabel}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(dayTotal)}</td><td style="background:#f8fafc;"></td><td style="background:#f8fafc;"></td></tr>`;
 				}
 				html += `<tr><td colspan="2" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">GRAND TOTAL</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandTotal)}</td><td style="background:#1e40af;"></td><td style="background:#1e40af;"></td></tr>`;
-				cashbookBody.innerHTML = html;
+				cashbookBody.innerHTML = cashbookDraftRow + html;
 			}
 
 			const totalSpent = cashbook.reduce((sum, e) => sum + (e.amount || 0), 0);
@@ -4519,8 +5192,9 @@ function initAccountingPage() {
 		const assetsArr = accountingData.assets;
 		const assetsBody = document.getElementById('assets-tbody');
 		if (assetsBody) {
+			const assetDraftRow = assetDraft ? `<tr class="draft-row"><td>${escapeHtml(assetDraft.date || '')}</td><td style="font-weight:600;">${escapeHtml(assetDraft.name || 'Unsaved asset')}</td><td>${escapeHtml(assetDraft.category || '')}</td><td>${escapeHtml(assetDraft.value || '')}</td><td style="color:#64748b;font-size:0.85rem;">${escapeHtml(assetDraft.note || '')}</td><td><div class="row-actions"><button class="btn-edit acc-resume-draft-btn" data-draft-entity="asset-item" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete acc-clear-draft-btn" data-draft-entity="asset-item" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
 			if (assetsArr.length === 0) {
-				assetsBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No assets yet. Click "Add Asset" to start.</td></tr>';
+				assetsBody.innerHTML = assetDraftRow || '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No assets yet. Click "Add Asset" to start.</td></tr>';
 			} else {
 				const sorted = assetsArr.map((a, i) => ({ ...a, _idx: i })).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 				let html = '';
@@ -4543,7 +5217,7 @@ function initAccountingPage() {
 					html += `<tr><td colspan="3" style="text-align:right;font-weight:700;background:#f8fafc;color:#475569;padding:8px 14px;">Subtotal — ${cat}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(catTotal)}</td><td colspan="2" style="background:#f8fafc;"></td></tr>`;
 				}
 				html += `<tr><td colspan="3" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">TOTAL ASSETS</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandTotal)}</td><td colspan="2" style="background:#1e40af;"></td></tr>`;
-				assetsBody.innerHTML = html;
+				assetsBody.innerHTML = assetDraftRow + html;
 			}
 			const assetsSummary = document.getElementById('assets-summary-cards');
 			if (assetsSummary) {
@@ -4566,47 +5240,47 @@ function initAccountingPage() {
 		const weekRange = document.getElementById('salary-week-range');
 		const printEmployeeSelect = document.getElementById('salary-print-employee-select');
 
-		// Build unique weeks from all salary data
-		const allWeeks = [...new Set(salaries.map(s => s.week || getWeekStart(s.date)))].sort();
-		if (!currentSalaryWeek && allWeeks.length > 0) currentSalaryWeek = allWeeks[allWeeks.length - 1];
+		// Build unique groups: weeks for old entries, months for new entries
+		const allMonths = [...new Set(salaries.map(s => getSalaryGroup(s)).filter(Boolean))].sort();
+		if (!currentSalaryMonth && allMonths.length > 0) currentSalaryMonth = allMonths[allMonths.length - 1];
 
 		if (weekSelect) {
-			weekSelect.innerHTML = allWeeks.length === 0
-				? '<option value="">No weeks</option>'
-				: '<option value="__all__" ' + (currentSalaryWeek === '__all__' ? 'selected' : '') + '>All Weeks (Choose Week)</option>'
-					+ allWeeks.map(w => `<option value="${w}" ${w === currentSalaryWeek ? 'selected' : ''}>${weekLabel(w)}</option>`).join('');
+			weekSelect.innerHTML = allMonths.length === 0
+				? '<option value="">No records</option>'
+				: '<option value="__all__" ' + (currentSalaryMonth === '__all__' ? 'selected' : '') + '>All</option>'
+					+ allMonths.map(m => `<option value="${m}" ${m === currentSalaryMonth ? 'selected' : ''}>${groupLabel(m)}</option>`).join('');
 			if (!weekSelect.dataset.bound) {
 				weekSelect.dataset.bound = '1';
 				weekSelect.addEventListener('change', () => {
-					currentSalaryWeek = weekSelect.value;
+					currentSalaryMonth = weekSelect.value;
 					currentSalaryEmployee = '__all_workers__';
 					renderAccountingPage();
 				});
 			}
 		}
-		if (weekRange && currentSalaryWeek && currentSalaryWeek !== '__all__') {
-			weekRange.textContent = `Mon ${currentSalaryWeek} → Sun ${getWeekEnd(currentSalaryWeek)}`;
-		} else if (weekRange && currentSalaryWeek === '__all__') {
-			weekRange.textContent = 'Showing available salary weeks. Select one to view entries.';
+		if (weekRange && currentSalaryMonth && currentSalaryMonth !== '__all__') {
+			weekRange.textContent = groupLabel(currentSalaryMonth);
+		} else if (weekRange && currentSalaryMonth === '__all__') {
+			weekRange.textContent = 'Showing all. Select one to view entries.';
 		} else if (weekRange) {
 			weekRange.textContent = '';
 		}
 
-		// Filter salaries by selected week
-		const filtered = currentSalaryWeek === '__all__'
+		// Filter salaries by selected group
+		const filtered = currentSalaryMonth === '__all__'
 			? salaries.map((s, idx) => ({ ...s, _idx: idx }))
-			: salaries.map((s, idx) => ({ ...s, _idx: idx })).filter(s => (s.week || getWeekStart(s.date)) === currentSalaryWeek);
+			: salaries.map((s, idx) => ({ ...s, _idx: idx })).filter(s => getSalaryGroup(s) === currentSalaryMonth);
 
 		if (printEmployeeSelect) {
-			if (currentSalaryWeek === '__all__') {
-				printEmployeeSelect.innerHTML = '<option value="__all_workers__">Select week first</option>';
+			if (currentSalaryMonth === '__all__') {
+				printEmployeeSelect.innerHTML = '<option value="__all_workers__">Select period first</option>';
 				printEmployeeSelect.value = '__all_workers__';
 				printEmployeeSelect.disabled = true;
 				currentSalaryEmployee = '__all_workers__';
 			} else {
 				const workers = [...new Set(filtered.map((s) => s.employee).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 				printEmployeeSelect.innerHTML = workers.length === 0
-					? '<option value="__all_workers__">No workers in this week</option>'
+					? '<option value="__all_workers__">No workers in this period</option>'
 					: '<option value="__all_workers__">All workers</option>' + workers.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
 				if (currentSalaryEmployee !== '__all_workers__' && !workers.includes(currentSalaryEmployee)) {
 					currentSalaryEmployee = '__all_workers__';
@@ -4623,49 +5297,50 @@ function initAccountingPage() {
 		}
 
 		if (salariesBody) {
-			if (currentSalaryWeek === '__all__') {
-				if (allWeeks.length === 0) {
-					salariesBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No salary records yet.</td></tr>';
+			const salaryDraftRow = salaryDraft ? `<tr class="draft-row"><td>${escapeHtml(salaryDraft.date || '')}</td><td style="font-weight:600;">${escapeHtml(salaryDraft.employee || 'Unsaved salary')}</td><td style="color:#64748b;font-size:0.85rem;">${escapeHtml(salaryDraft.month || '')}</td><td>${escapeHtml(salaryDraft.amount || '')}</td><td style="color:#64748b;font-size:0.85rem;">${escapeHtml(salaryDraft.note || '')}</td><td><div class="row-actions"><button class="btn-edit acc-resume-draft-btn" data-draft-entity="salary" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete acc-clear-draft-btn" data-draft-entity="salary" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
+			if (currentSalaryMonth === '__all__') {
+				if (allMonths.length === 0) {
+					salariesBody.innerHTML = salaryDraftRow || '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No salary records yet.</td></tr>';
 				} else {
-					const weekRows = allWeeks.map((wk) => {
-						const weekItems = salaries.filter((s) => (s.week || getWeekStart(s.date)) === wk);
-						const weekTotal = weekItems.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
-						const paidStaff = new Set(weekItems.map((s) => s.employee)).size;
-						const paidDate = weekItems
+					const monthRows = allMonths.map((mo) => {
+						const monthItems = salaries.filter((s) => getSalaryGroup(s) === mo);
+						const monthTotal = monthItems.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+						const paidStaff = new Set(monthItems.map((s) => s.employee)).size;
+						const paidDate = monthItems
 							.map((s) => s.date)
 							.filter(Boolean)
 							.sort()
 							.slice(-1)[0] || '—';
-						return `<tr><td>${paidDate}</td><td style="font-weight:600;">${paidStaff} staff</td><td style="color:#64748b;font-size:0.85rem;">${weekLabel(wk)}</td><td>${formatCurrency(weekTotal)}</td><td style="color:#64748b;font-size:0.85rem;">${weekItems.length} salary entries</td><td><button type="button" class="btn-secondary acc-week-pick-btn" data-week="${wk}">Select Week</button></td></tr>`;
+						return `<tr><td>${paidDate}</td><td style="font-weight:600;">${paidStaff} staff</td><td style="color:#64748b;font-size:0.85rem;">${groupLabel(mo)}</td><td>${formatCurrency(monthTotal)}</td><td style="color:#64748b;font-size:0.85rem;">${monthItems.length} entries</td><td><button type="button" class="btn-secondary acc-week-pick-btn" data-month="${mo}">Select</button></td></tr>`;
 					}).join('');
-					salariesBody.innerHTML = weekRows;
+					salariesBody.innerHTML = salaryDraftRow + monthRows;
 				}
 			} else if (filtered.length === 0) {
-				salariesBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No salary records for this week.</td></tr>';
+				salariesBody.innerHTML = salaryDraftRow || '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No salary records for this period.</td></tr>';
 			} else {
 				let html = '';
 				let total = 0;
 				for (const s of filtered) {
 					total += s.amount || 0;
-					const wk = s.week || getWeekStart(s.date);
-					html += `<tr><td>${s.date}</td><td style="font-weight:600;">${s.employee}</td><td style="color:#64748b;font-size:0.85rem;">${weekLabel(wk)}</td><td>${formatCurrency(s.amount)}</td><td style="color:#64748b;font-size:0.85rem;">${s.note || '—'}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="salary" data-edit-idx="${s._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="salary" data-delete-idx="${s._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
+					const grp = getSalaryGroup(s);
+					html += `<tr><td>${s.date}</td><td style="font-weight:600;">${s.employee}</td><td style="color:#64748b;font-size:0.85rem;">${groupLabel(grp)}</td><td>${formatCurrency(s.amount)}</td><td style="color:#64748b;font-size:0.85rem;">${s.note || '—'}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="salary" data-edit-idx="${s._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="salary" data-delete-idx="${s._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
 				}
-				html += `<tr><td colspan="3" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">WEEK TOTAL</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(total)}</td><td style="background:#1e40af;" colspan="2"></td></tr>`;
-				salariesBody.innerHTML = html;
+				html += `<tr><td colspan="3" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">TOTAL</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(total)}</td><td style="background:#1e40af;" colspan="2"></td></tr>`;
+				salariesBody.innerHTML = salaryDraftRow + html;
 			}
 
 			const salSummary = document.getElementById('salaries-summary-cards');
 			if (salSummary) {
-				const weekPaid = filtered.reduce((s, e) => s + (e.amount || 0), 0);
+				const monthPaid = filtered.reduce((s, e) => s + (e.amount || 0), 0);
 				const allPaid = salaries.reduce((s, e) => s + (e.amount || 0), 0);
-				const uniqueStaff = currentSalaryWeek === '__all__'
+				const uniqueStaff = currentSalaryMonth === '__all__'
 					? new Set(salaries.map(s => s.employee)).size
 					: new Set(filtered.map(s => s.employee)).size;
-				const weekCardLabel = currentSalaryWeek === '__all__' ? 'Selected Week' : 'This Week';
-				const weekCardValue = currentSalaryWeek === '__all__' ? 'Choose Week' : formatCurrency(weekPaid);
+				const monthCardLabel = currentSalaryMonth === '__all__' ? 'Selected Period' : 'This Period';
+				const monthCardValue = currentSalaryMonth === '__all__' ? 'Choose Period' : formatCurrency(monthPaid);
 				salSummary.innerHTML = `
 					<div style="display:flex;gap:16px;flex-wrap:wrap;">
-						<div class="cashbook-card"><p class="cb-label">${weekCardLabel}</p><p class="cb-val">${weekCardValue}</p></div>
+						<div class="cashbook-card"><p class="cb-label">${monthCardLabel}</p><p class="cb-val">${monthCardValue}</p></div>
 						<div class="cashbook-card"><p class="cb-label">Staff Paid</p><p class="cb-val">${uniqueStaff}</p></div>
 						<div class="cashbook-card"><p class="cb-label">All-time Total</p><p class="cb-val">${formatCurrency(allPaid)}</p></div>
 					</div>
@@ -4675,15 +5350,15 @@ function initAccountingPage() {
 	}
 
 	function printCurrentSalarySelection() {
-		if (currentSalaryWeek === '__all__') {
-			alert('Select a specific week first, then print salaries.');
+		if (currentSalaryMonth === '__all__') {
+			alert('Select a specific month first, then print salaries.');
 			return;
 		}
 
 		const salaries = accountingData.salaries;
 		const rows = salaries
-			.map((s) => ({ ...s, _week: s.week || getWeekStart(s.date) }))
-			.filter((s) => s._week === currentSalaryWeek);
+			.map((s) => ({ ...s, _grp: getSalaryGroup(s) }))
+			.filter((s) => s._grp === currentSalaryMonth);
 		const weekWorkers = [...new Set(rows.map((r) => r.employee).filter(Boolean))];
 		const selectedWorkers = (currentSalaryEmployee && currentSalaryEmployee !== '__all_workers__')
 			? weekWorkers.filter((name) => name === currentSalaryEmployee)
@@ -4703,26 +5378,26 @@ function initAccountingPage() {
 
 		const title = 'White Water Wells - Salary Payments';
 		const generatedAt = new Date().toLocaleString('en-GB');
-		const weekText = `${weekLabel(currentSalaryWeek)} (Mon ${currentSalaryWeek} to Sun ${getWeekEnd(currentSalaryWeek)})`;
-		const printCss = `${window.location.origin}/src/script.css?v=20260331`;
+		const monthText = groupLabel(currentSalaryMonth);
+		const printCss = `${window.location.origin}/src/script.css?v=20260504`;
 
 		const sectionsHtml = selectedWorkers.sort((a, b) => a.localeCompare(b)).map((worker, workerIndex) => {
 			const workerRows = selectedRows.filter((r) => r.employee === worker);
 			const workerTotal = workerRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 			const bodyRows = workerRows.map((r) => {
-				return `<tr><td>${escapeHtml(r.date || '')}</td><td>${escapeHtml(weekLabel(r._week))}</td><td style="text-align:right;">${formatCurrency(r.amount || 0)}</td><td>${escapeHtml(r.note || '—')}</td></tr>`;
+				return `<tr><td>${escapeHtml(r.date || '')}</td><td>${escapeHtml(groupLabel(r._grp))}</td><td style="text-align:right;">${formatCurrency(r.amount || 0)}</td><td>${escapeHtml(r.note || '—')}</td></tr>`;
 			}).join('');
 			return `
 				<section class="worker-section${workerIndex > 0 ? ' page-break' : ''}">
 					<div class="worker-head">
 						<div>
 							<h2>${escapeHtml(worker)}</h2>
-							<p class="worker-week">${escapeHtml(weekText)}</p>
+							<p class="worker-week">${escapeHtml(monthText)}</p>
 						</div>
 						<div class="worker-total">Total: ${formatCurrency(workerTotal)}</div>
 					</div>
 					<table>
-						<thead><tr><th>Date Paid</th><th>Week</th><th>Amount (GH)</th><th>Notes</th></tr></thead>
+						<thead><tr><th>Date Paid</th><th>Month</th><th>Amount (GH)</th><th>Notes</th></tr></thead>
 						<tbody>${bodyRows}<tr><td colspan="2" style="text-align:right;font-weight:700;">Total</td><td style="text-align:right;font-weight:700;">${formatCurrency(workerTotal)}</td><td></td></tr></tbody>
 					</table>
 				</section>
@@ -4903,12 +5578,14 @@ function initProductionPage() {
 		/* Batch table */
 		const batchBody = document.getElementById('batches-tbody');
 		if (batchBody) {
-			batchBody.innerHTML = prodBatches.length === 0
+			const batchDraft = getBatchDraft();
+			const batchDraftRow = batchDraft ? `<tr class="draft-row"><td>—</td><td>${escapeHtml(batchDraft.product || 'Unsaved batch')}</td><td>${escapeHtml(batchDraft.qty || '')}</td><td>${escapeHtml(batchDraft.date || '')}</td><td>${escapeHtml(batchDraft.shift || '')}</td><td>${escapeHtml(batchDraft.time || '')}</td><td>${escapeHtml(batchDraft.cost || '')}</td><td><span class="badge badge-orange">Draft</span></td><td><div class="row-actions"><button class="btn-edit prod-resume-draft-btn" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete prod-clear-draft-btn" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
+			batchBody.innerHTML = batchDraftRow + (prodBatches.length === 0
 				? '<tr><td colspan="9" style="text-align:center;color:#94a3b8;">No batches yet. Click "Add Batch" to start.</td></tr>'
 				: prodBatches.map((b, idx) => {
 					const pillClass = b.status === 'completed' ? 'status-green' : b.status === 'in-progress' ? 'status-blue' : 'status-orange';
 					return `<tr><td>${b.id}</td><td>${b.product}</td><td>${formatNumber(b.qty)}</td><td>${b.date}</td><td>${b.shift}</td><td>${b.time}</td><td>${formatCurrency(b.cost)}</td><td><span class="status-pill ${pillClass}">${b.status}</span></td><td><div class="row-actions"><button class="btn-edit prod-edit-batch" data-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete prod-delete-batch" data-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
-				}).join('');
+				}).join(''));
 		}
 
 		/* Daily summary cards */
@@ -4943,7 +5620,36 @@ function initProductionPage() {
 
 	let editBatchIdx = -1;
 
-	function openBatchModal(editIdx) {
+	/* ── Production batch draft helpers ── */
+	const BATCH_DRAFT_KEY = 'ww_prod_batch_draft';
+	const getBatchDraft = () => { try { return JSON.parse(localStorage.getItem(BATCH_DRAFT_KEY)); } catch (_e) { return null; } };
+	const clearBatchDraft = () => { localStorage.removeItem(BATCH_DRAFT_KEY); };
+	const saveBatchDraft = () => {
+		if (!batchFields || editBatchIdx >= 0) return;
+		const fd = new FormData(batchForm);
+		const data = {};
+		['product', 'qty', 'date', 'shift', 'time', 'cost', 'sales', 'status'].forEach((k) => { const v = fd.get(k); if (v !== null) data[k] = v; });
+		localStorage.setItem(BATCH_DRAFT_KEY, JSON.stringify(data));
+	};
+	const restoreBatchDraft = (draft) => {
+		if (!draft || !batchFields) return;
+		['product', 'qty', 'date', 'time', 'cost', 'sales'].forEach((k) => {
+			const el = batchFields.querySelector(`[name="${k}"]`);
+			if (el && draft[k] !== undefined) el.value = draft[k];
+		});
+		['shift', 'status'].forEach((k) => {
+			const el = batchFields.querySelector(`[name="${k}"]`);
+			if (el && draft[k] !== undefined) el.value = draft[k];
+		});
+	};
+	const bindBatchDraftListeners = () => {
+		if (!batchFields) return;
+		batchFields.querySelectorAll('input, select').forEach((el) => {
+			el.addEventListener('input', saveBatchDraft, { passive: true });
+		});
+	};
+
+	function openBatchModal(editIdx, resumeDraft = false) {
 		if (!batchModal || !batchFields) return;
 		editBatchIdx = typeof editIdx === 'number' ? editIdx : -1;
 		const b = editBatchIdx >= 0 ? prodBatches[editBatchIdx] : null;
@@ -4957,12 +5663,21 @@ function initProductionPage() {
 			<div class="inv-modal-field"><label>Sales Value (GH₵)</label><input type="number" name="sales" min="0" step="0.01" value="${b ? (b.sales || '') : ''}" placeholder="Revenue from this batch" required></div>
 			<div class="inv-modal-field"><label>Status</label><select name="status"><option value="completed"${b && b.status === 'completed' ? ' selected' : ''}>Completed</option><option value="in-progress"${b && b.status === 'in-progress' ? ' selected' : ''}>In Progress</option><option value="planned"${b && b.status === 'planned' ? ' selected' : ''}>Planned</option></select></div>
 		`;
+		if (resumeDraft) restoreBatchDraft(getBatchDraft());
 		batchModal.style.display = 'flex';
+		bindBatchDraftListeners();
 	}
 
-	if (batchAddBtn) batchAddBtn.addEventListener('click', () => openBatchModal());
-	if (batchModalClose) batchModalClose.addEventListener('click', () => { batchModal.style.display = 'none'; });
-	if (batchModal) batchModal.addEventListener('click', (e) => { if (e.target === batchModal) batchModal.style.display = 'none'; });
+	if (batchAddBtn) batchAddBtn.addEventListener('click', () => openBatchModal(undefined, false));
+	const closeBatchModal = () => {
+		const wasAdding = editBatchIdx < 0;
+		if (wasAdding) saveBatchDraft();
+		if (batchModal) batchModal.style.display = 'none';
+		if (wasAdding) { renderProductionPage(); renderProfitabilityChart(); }
+	};
+	if (batchModalClose) batchModalClose.addEventListener('click', closeBatchModal);
+	if (batchModal) batchModal.addEventListener('click', (e) => { if (e.target === batchModal) closeBatchModal(); });
+	window.addEventListener('beforeunload', () => { if (editBatchIdx < 0 && batchModal && batchModal.style.display === 'flex') saveBatchDraft(); });
 
 	if (batchForm) {
 		batchForm.addEventListener('submit', (e) => {
@@ -4987,6 +5702,7 @@ function initProductionPage() {
 				prodBatches.push(data);
 			}
 			saveBatches();
+			clearBatchDraft();
 			batchModal.style.display = 'none';
 			editBatchIdx = -1;
 			renderProductionPage();
@@ -4996,11 +5712,21 @@ function initProductionPage() {
 
 	/* Production edit/delete click handlers */
 	document.addEventListener('click', (event) => {
+		const resumeBtn = event.target.closest('.prod-resume-draft-btn');
+		if (resumeBtn) { event.stopPropagation(); openBatchModal(undefined, true); return; }
+		const clearBtn = event.target.closest('.prod-clear-draft-btn');
+		if (clearBtn) {
+			event.stopPropagation();
+			clearBatchDraft();
+			renderProductionPage();
+			renderProfitabilityChart();
+			return;
+		}
 		const editBtn = event.target.closest('.prod-edit-batch');
 		if (editBtn) { openBatchModal(Number(editBtn.dataset.idx)); return; }
 		const deleteBtn = event.target.closest('.prod-delete-batch');
 		if (deleteBtn) {
-			if (!confirm('Delete this batch? This cannot be undone.')) return;
+			if (!window.confirm('Delete this batch? This cannot be undone.')) return;
 			const batchIdx = Number(deleteBtn.dataset.idx);
 			const removedBatch = prodBatches[batchIdx];
 			if (removedBatch) moveAppDataDeleteToTrash('production', removedBatch, { kind: 'appDataArray', key: 'ww_production_batches' });
@@ -5008,6 +5734,7 @@ function initProductionPage() {
 			saveBatches();
 			renderProductionPage();
 			renderProfitabilityChart();
+			showDeleteToast(`Production batch ${removedBatch ? removedBatch.batchId || ('#' + (batchIdx + 1)) : ''} deleted.`);
 			return;
 		}
 		const editComp = event.target.closest('.bom-edit-comp');
@@ -5020,7 +5747,7 @@ function initProductionPage() {
 		}
 		const deleteComp = event.target.closest('.bom-delete-comp');
 		if (deleteComp && selectedProduct && billOfMaterials[selectedProduct]) {
-			if (!confirm('Delete this component?')) return;
+			if (!window.confirm('Delete this component?')) return;
 			const compIdx = Number(deleteComp.dataset.idx);
 			const removedComp = billOfMaterials[selectedProduct].components[compIdx];
 			if (removedComp) {
@@ -5029,6 +5756,7 @@ function initProductionPage() {
 			billOfMaterials[selectedProduct].components.splice(compIdx, 1);
 			saveBom();
 			renderBom(selectedProduct);
+			showDeleteToast(`BOM component "${removedComp ? removedComp.material || removedComp.name || 'item' : 'item'}" removed.`);
 			renderCostAnalysis();
 		}
 	});
@@ -5389,14 +6117,12 @@ window.exportReports = function () {
 
 	const title = 'White Water Wells - Reports';
 	const stamp = new Date().toLocaleString('en-GB');
-	const printCss = `${window.location.origin}/src/script.css?v=20260331`;
 	const exportHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
-  <link rel="stylesheet" href="${printCss}">
   <style>
     body { font-family: Arial, sans-serif; margin: 0; background: #fff; color: #0f172a; }
     .export-wrap { padding: 20px; }
@@ -5419,41 +6145,27 @@ window.exportReports = function () {
 </body>
 </html>`;
 
+	/* Always trigger a download — works regardless of popup blocker */
+	const blob = new Blob([exportHtml], { type: 'text/html;charset=utf-8' });
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = `reports-export-${new Date().toISOString().slice(0, 10)}.html`;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+	setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+	/* Also open a print preview if the browser allows it */
 	try {
 		const printWin = window.open('', '_blank', 'width=1100,height=900');
 		if (printWin && printWin.document) {
 			printWin.document.open();
 			printWin.document.write(exportHtml);
 			printWin.document.close();
-			setTimeout(() => {
-				try {
-					printWin.focus();
-					printWin.print();
-				} catch (_e) {
-					// ignored; fallback below handles hard failures.
-				}
-			}, 350);
-			return;
+			setTimeout(() => { try { printWin.focus(); printWin.print(); } catch (_e) { /* ignored */ } }, 350);
 		}
-	} catch (_e) {
-		// ignored; fallback below
-	}
-
-	// Fallback: download an HTML export if print pop-up is blocked.
-	try {
-		const blob = new Blob([exportHtml], { type: 'text/html;charset=utf-8' });
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = `reports-export-${new Date().toISOString().slice(0, 10)}.html`;
-		document.body.appendChild(a);
-		a.click();
-		document.body.removeChild(a);
-		setTimeout(() => URL.revokeObjectURL(url), 1000);
-		alert('Print preview was blocked. A downloadable HTML export was generated instead.');
-	} catch (_e) {
-		try { window.print(); } catch (_err) { /* final fallback */ }
-	}
+	} catch (_e) { /* popup blocked — download already triggered above */ }
 };
 
 window.applyReportsFilter = function () {
@@ -6152,7 +6864,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 				if (localStamp && new Date(remoteStamp).getTime() <= new Date(localStamp).getTime()) return;
 				setLastDataUpdateStamp(remoteStamp);
 				window.__wwLastSeenDataUpdate = remoteStamp;
-				console.info('[Sync] Remote data changed; keeping current page state without forced reload.');
+				// Stamp updated — fresh data will be loaded next time the user navigates to / opens the page.
+				console.info('[Sync] Remote stamp updated; data will load on next page open.');
 			} catch (_e) { /* keep polling */ }
 		}, 10000);
 	}

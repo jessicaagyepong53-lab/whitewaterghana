@@ -1703,6 +1703,25 @@ body {
 	border-color: #0077b6;
 	background: #fff;
 }
+.inv-modal-field textarea {
+	padding: 8px 11px;
+	border: 1px solid #cbd5e1;
+	border-radius: 7px;
+	font: inherit;
+	font-size: 0.88rem;
+	color: #0f2a47;
+	background: #f8fafc;
+	transition: border-color 0.15s;
+	width: 100%;
+	resize: vertical;
+	min-height: calc(5 * 1.5em + 16px);
+	box-sizing: border-box;
+}
+.inv-modal-field textarea:focus {
+	outline: none;
+	border-color: #0077b6;
+	background: #fff;
+}
 .inv-modal-field select {
 	padding: 8px 11px;
 	border: 1px solid #cbd5e1;
