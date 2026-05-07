@@ -2797,6 +2797,16 @@ function loadMonthData(month) {
 		}
 	} catch (_e) { /* ignore */ }
 
+	// Legacy cleanup: status "confirmed" in this module represents pending work.
+	if (salesModuleData.invoices.length || salesModuleData.salesOrders.length) {
+		salesModuleData.invoices.forEach((inv) => {
+			if (inv && inv.status === 'confirmed') { inv.status = 'pending'; dirty = true; }
+		});
+		salesModuleData.salesOrders.forEach((ord) => {
+			if (ord && ord.status === 'confirmed') { ord.status = 'pending'; dirty = true; }
+		});
+	}
+
 	/* Keep invoice list arranged by date, but do NOT renumber existing IDs. */
 	if (salesModuleData.invoices.length > 1) {
 		salesModuleData.invoices.sort((a, b) => {
