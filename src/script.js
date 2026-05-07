@@ -36,6 +36,37 @@ function normalizeIdArray(values) {
 	return Array.from(new Set(values.map((v) => String(v || '').trim()).filter(Boolean)));
 }
 
+function invoiceSignature(inv) {
+	if (!inv || typeof inv !== 'object') return '';
+	const firstItem = Array.isArray(inv.items) && inv.items[0] ? inv.items[0] : null;
+	const itemName = String((firstItem && firstItem.name) || inv.product || '').trim().toLowerCase();
+	const qty = Number((firstItem && firstItem.qty) || 0);
+	const unitPrice = Number((firstItem && firstItem.unitPrice) || inv.rate || 0);
+	return [
+		String(inv.customer || '').trim().toLowerCase(),
+		String(inv.date || '').trim(),
+		Number(inv.amount || 0),
+		itemName,
+		qty,
+		unitPrice,
+		String(inv.paymentMode || '').trim().toLowerCase(),
+		String(inv.carNumber || '').trim().toLowerCase(),
+	].join('|');
+}
+
+function orderSignature(ord) {
+	if (!ord || typeof ord !== 'object') return '';
+	return [
+		String(ord.customer || '').trim().toLowerCase(),
+		String(ord.orderDate || ord.date || '').trim(),
+		Number(ord.amount || 0),
+		Number(ord.rate || 0),
+		String(ord.paymentMode || '').trim().toLowerCase(),
+		String(ord.carNumber || '').trim().toLowerCase(),
+		String(ord.sourceInvoiceId || '').trim(),
+	].join('|');
+}
+
 function getSalesMonthPayload(month) {
 	try {
 		const raw = localStorage.getItem(monthStorageKey(month));
@@ -113,18 +144,28 @@ async function mergeSyncSalesMonth(month, localData) {
 				const localOrdIds = new Set((toSync.salesOrders || []).map((o) => String(o.id)));
 				const mergedInvoices = [...(toSync.invoices || [])].filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
 				const mergedOrders = [...(toSync.salesOrders || [])].filter((ord) => ord && ord.id && !delOrd.has(String(ord.id)) && !(ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))));
+				const localInvSignatures = new Set(mergedInvoices.map((inv) => invoiceSignature(inv)).filter(Boolean));
+				const localOrdSignatures = new Set(mergedOrders.map((ord) => orderSignature(ord)).filter(Boolean));
 				serverInvs.forEach((inv) => {
 					if (!inv || !inv.id) return;
 					const invId = String(inv.id);
 					if (delInv.has(invId)) return;
-					if (!localInvIds.has(invId)) mergedInvoices.push(inv);
+					const sig = invoiceSignature(inv);
+					if (!localInvIds.has(invId) && !(sig && localInvSignatures.has(sig))) {
+						mergedInvoices.push(inv);
+						if (sig) localInvSignatures.add(sig);
+					}
 				});
 				serverOrds.forEach((ord) => {
 					if (!ord || !ord.id) return;
 					const ordId = String(ord.id);
 					if (delOrd.has(ordId)) return;
 					if (ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))) return;
-					if (!localOrdIds.has(ordId)) mergedOrders.push(ord);
+					const sig = orderSignature(ord);
+					if (!localOrdIds.has(ordId) && !(sig && localOrdSignatures.has(sig))) {
+						mergedOrders.push(ord);
+						if (sig) localOrdSignatures.add(sig);
+					}
 				});
 				toSync = { invoices: mergedInvoices, salesOrders: mergedOrders, deletedInvoiceIds: mergedDeletedInv, deletedOrderIds: mergedDeletedOrd };
 				localStorage.setItem(key, JSON.stringify(toSync));
@@ -300,18 +341,24 @@ function mergeServerSalesIntoMemory(serverData) {
 	const deletedOrd = new Set(normalizeIdArray([...(monthPayload.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]));
 	const localInvIds = new Set(salesModuleData.invoices.map((inv) => String(inv.id)));
 	const localOrdIds = new Set(salesModuleData.salesOrders.map((ord) => String(ord.id)));
+	const localInvSignatures = new Set(salesModuleData.invoices.map((inv) => invoiceSignature(inv)).filter(Boolean));
+	const localOrdSignatures = new Set(salesModuleData.salesOrders.map((ord) => orderSignature(ord)).filter(Boolean));
 	let changed = false;
 	serverInvoices.forEach((inv) => {
-		if (inv && inv.id && !deletedInv.has(String(inv.id)) && !localInvIds.has(String(inv.id))) {
+		const sig = invoiceSignature(inv);
+		if (inv && inv.id && !deletedInv.has(String(inv.id)) && !localInvIds.has(String(inv.id)) && !(sig && localInvSignatures.has(sig))) {
 			salesModuleData.invoices.push(inv);
 			localInvIds.add(String(inv.id));
+			if (sig) localInvSignatures.add(sig);
 			changed = true;
 		}
 	});
 	serverOrders.forEach((ord) => {
-		if (ord && ord.id && !deletedOrd.has(String(ord.id)) && !(ord.sourceInvoiceId && deletedInv.has(String(ord.sourceInvoiceId))) && !localOrdIds.has(String(ord.id))) {
+		const sig = orderSignature(ord);
+		if (ord && ord.id && !deletedOrd.has(String(ord.id)) && !(ord.sourceInvoiceId && deletedInv.has(String(ord.sourceInvoiceId))) && !localOrdIds.has(String(ord.id)) && !(sig && localOrdSignatures.has(sig))) {
 			salesModuleData.salesOrders.push(ord);
 			localOrdIds.add(String(ord.id));
+			if (sig) localOrdSignatures.add(sig);
 			changed = true;
 		}
 	});
