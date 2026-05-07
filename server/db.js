@@ -418,7 +418,11 @@ async function connectDB() {
     family: 4,
   });
   console.log('MongoDB connected');
-  await seedDatabase();
+  const shouldSeedOnConnect = process.env.SEED_ON_CONNECT === 'true'
+    || (!process.env.VERCEL && process.env.NODE_ENV !== 'production');
+  if (shouldSeedOnConnect) {
+    await seedDatabase();
+  }
 }
 
 module.exports = {
