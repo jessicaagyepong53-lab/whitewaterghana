@@ -2638,51 +2638,41 @@ function loadMonthData(month) {
 		}
 	} catch (_e) { /* ignore */ }
 
-	/* ── normalize outlier invoice IDs within month (e.g., 088/089 when month has only ~20 entries) ── */
+	/* ── re-sequence monthly invoice IDs by date order (chronological) ── */
 	const monthYear = /^\d{4}-\d{2}$/.test(month) ? month.slice(0, 4) : String(new Date().getFullYear());
-	const invoiceCount = salesModuleData.invoices.length;
-	if (invoiceCount > 0) {
-		const parsed = salesModuleData.invoices.map((inv, idx) => {
-			const id = String(inv.id || '');
-			const m = /^INV-(\d{4})-(\d+)$/.exec(id);
-			return { idx, oldId: id, year: m ? m[1] : '', num: m ? Number(m[2]) : 0 };
+	if (salesModuleData.invoices.length > 0) {
+		const withSortMeta = salesModuleData.invoices.map((inv, idx) => {
+			const d = new Date(inv.date || inv.orderDate || inv.createdAt || 0);
+			return {
+				idx,
+				inv,
+				ts: Number.isNaN(d.getTime()) ? Number.MAX_SAFE_INTEGER : d.getTime(),
+			};
 		});
-		const usedNums = new Set(parsed.map((p) => p.num).filter((n) => Number.isFinite(n) && n > 0));
-		const missing = [];
-		for (let n = 1; n <= invoiceCount; n += 1) {
-			if (!usedNums.has(n)) missing.push(n);
-		}
-		const outliers = parsed
-			.filter((p) => Number.isFinite(p.num) && p.num > invoiceCount)
-			.sort((a, b) => a.num - b.num);
+		withSortMeta.sort((a, b) => (a.ts - b.ts) || (a.idx - b.idx));
 
-		if (missing.length && outliers.length) {
-			const invIdMap = new Map();
-			const soIdMap = new Map();
-			const applyCount = Math.min(missing.length, outliers.length);
-			for (let i = 0; i < applyCount; i += 1) {
-				const oldId = outliers[i].oldId;
-				const nextNum = String(missing[i]).padStart(3, '0');
-				const newId = `INV-${monthYear}-${nextNum}`;
-				if (oldId !== newId) {
-					invIdMap.set(oldId, newId);
-					soIdMap.set(`SO${oldId.slice(3)}`, `SO${newId.slice(3)}`);
+		const invIdMap = new Map();
+		withSortMeta.forEach((entry, i) => {
+			const oldId = String(entry.inv.id || '');
+			const newId = `INV-${monthYear}-${String(i + 1).padStart(3, '0')}`;
+			if (oldId !== newId) invIdMap.set(oldId, newId);
+			entry.inv.id = newId;
+		});
+
+		// Keep invoice array in date order so the numbering and table order match.
+		salesModuleData.invoices = withSortMeta.map((entry) => entry.inv);
+		if (invIdMap.size > 0) dirty = true;
+
+		if (invIdMap.size > 0) {
+			salesModuleData.salesOrders.forEach((so) => {
+				const oldSrcId = String(so.sourceInvoiceId || '');
+				if (invIdMap.has(oldSrcId)) {
+					const newSrcId = invIdMap.get(oldSrcId);
+					so.sourceInvoiceId = newSrcId;
+					so.id = `SO${String(newSrcId).slice(3)}`;
+					dirty = true;
 				}
-			}
-
-			if (invIdMap.size) {
-				salesModuleData.invoices.forEach((inv) => {
-					const oldId = String(inv.id || '');
-					if (invIdMap.has(oldId)) inv.id = invIdMap.get(oldId);
-				});
-				salesModuleData.salesOrders.forEach((so) => {
-					const oldOrderId = String(so.id || '');
-					const oldSrcId = String(so.sourceInvoiceId || '');
-					if (soIdMap.has(oldOrderId)) so.id = soIdMap.get(oldOrderId);
-					if (invIdMap.has(oldSrcId)) so.sourceInvoiceId = invIdMap.get(oldSrcId);
-				});
-				dirty = true;
-			}
+			});
 		}
 	}
 
