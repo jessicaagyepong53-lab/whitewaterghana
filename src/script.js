@@ -900,6 +900,12 @@ function enforceRoleAccess() {
 
 		// Add a class so JS can check permission before showing edit/delete in dynamic content
 		document.body.classList.add('role-restricted');
+	} else {
+		// Important: reverse any previous restriction so buttons don't stay disabled/hidden.
+		document.body.classList.remove('role-restricted');
+		document.querySelectorAll('.btn-edit, .btn-delete, [data-action="edit"], [data-action="delete"]').forEach((btn) => {
+			if (btn.style.display === 'none') btn.style.display = '';
+		});
 	}
 
 	// Show role badge in topbar
