@@ -2856,23 +2856,17 @@ function saveSalesDataToStorage() {
 }
 
 function nextInvoiceId() {
-	// Scan across ALL months so IDs are globally unique and never restart from 001 in a new month
-	const { invoices: allInvoices } = getAllSalesData();
-	const allIds = new Set(allInvoices.map((inv) => String(inv.id)));
-	// Also include current in-memory invoices (may not be saved yet)
-	salesModuleData.invoices.forEach((inv) => allIds.add(String(inv.id)));
-	const nums = Array.from(allIds).map((id) => { const m = id.match(/(\d+)$/); return m ? Number(m[1]) : 0; });
+	// Numbering resets each month — scan only current month's invoices
+	const ids = new Set(salesModuleData.invoices.map((inv) => String(inv.id)));
+	const nums = Array.from(ids).map((id) => { const m = id.match(/(\d+)$/); return m ? Number(m[1]) : 0; });
 	const next = (Math.max(0, ...nums) + 1);
 	return `INV-${new Date().getFullYear()}-${String(next).padStart(3, '0')}`;
 }
 
 function nextOrderId() {
-	// Scan across ALL months so IDs are globally unique and never restart from 001 in a new month
-	const { salesOrders: allOrders } = getAllSalesData();
-	const allIds = new Set(allOrders.map((o) => String(o.id)));
-	// Also include current in-memory orders (may not be saved yet)
-	salesModuleData.salesOrders.forEach((o) => allIds.add(String(o.id)));
-	const nums = Array.from(allIds).map((id) => { const m = id.match(/(\d+)$/); return m ? Number(m[1]) : 0; });
+	// Numbering resets each month — scan only current month's orders
+	const ids = new Set(salesModuleData.salesOrders.map((o) => String(o.id)));
+	const nums = Array.from(ids).map((id) => { const m = id.match(/(\d+)$/); return m ? Number(m[1]) : 0; });
 	const next = (Math.max(0, ...nums) + 1);
 	return `SO-${new Date().getFullYear()}-${String(next).padStart(3, '0')}`;
 }
@@ -6499,11 +6493,14 @@ function renderReportsData() {
 	const operationalEquip = equipment.filter((e) => e.status === 'operational').length;
 	const opsHealth = totalEquip > 0 ? Math.round((operationalEquip / totalEquip) * 100) : 100;
 
+	const totalInvoicesAllTime = getAllSalesData().invoices.length;
+
 	const kpis = [
 		{ icon: '<i class="fa-solid fa-chart-bar"></i>', label: 'Sales (' + filterLabel + ')', value: formatCurrency(allSalesTotal), meta: filterType === 'all' ? 'All tracked sales' : 'Filtered period', color: '' },
 		{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Forecast', value: formatCurrency(projected), meta: salesTrends.length >= 2 ? 'Trend-based projection' : 'Need more months', color: 'green' },
 		{ icon: '<i class="fa-solid fa-coins"></i>', label: 'Net Profit', value: formatCurrency(netProfit), meta: 'Revenue − COGS − Expenses', color: 'yellow' },
-		{ icon: '<i class="fa-solid fa-industry"></i>', label: 'Ops Health', value: `${opsHealth}%`, meta: totalEquip > 0 ? `${operationalEquip}/${totalEquip} equipment up` : 'No equipment tracked', color: 'purple' },
+		{ icon: '<i class="fa-solid fa-file-invoice"></i>', label: 'Total Invoices', value: totalInvoicesAllTime.toLocaleString(), meta: `${invoices.length} in ${filterLabel}`, color: 'purple' },
+		{ icon: '<i class="fa-solid fa-industry"></i>', label: 'Ops Health', value: `${opsHealth}%`, meta: totalEquip > 0 ? `${operationalEquip}/${totalEquip} equipment up` : 'No equipment tracked', color: '' },
 	];
 
 	const kpiGrid = document.getElementById('rep-kpi-grid');
