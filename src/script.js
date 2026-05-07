@@ -2975,6 +2975,57 @@ function saveSalesDataToStorage() {
 	} catch (_e) { /* fallback to storage event */ }
 }
 
+function resequenceSalesIdsForCurrentMonth() {
+	const year = String(currentSalesMonth || `${new Date().getFullYear()}-01`).slice(0, 4);
+	const getIdNum = (id) => {
+		const m = String(id || '').match(/(\d+)$/);
+		return m ? Number(m[1]) : 0;
+	};
+	const byDateThenId = (a, b, dateFieldA, dateFieldB) => {
+		const aDate = String(a?.[dateFieldA] || a?.date || '');
+		const bDate = String(b?.[dateFieldB] || b?.date || '');
+		const dateDiff = aDate.localeCompare(bDate);
+		return dateDiff !== 0 ? dateDiff : getIdNum(a?.id) - getIdNum(b?.id);
+	};
+
+	const invoices = Array.isArray(salesModuleData.invoices) ? salesModuleData.invoices : [];
+	const orders = Array.isArray(salesModuleData.salesOrders) ? salesModuleData.salesOrders : [];
+	const orderedInvoices = [...invoices].sort((a, b) => byDateThenId(a, b, 'date', 'date'));
+	const invoiceIdMap = new Map();
+
+	orderedInvoices.forEach((inv, index) => {
+		if (!inv) return;
+		const oldId = String(inv.id || '');
+		const newId = `INV-${year}-${String(index + 1).padStart(3, '0')}`;
+		invoiceIdMap.set(oldId, newId);
+		inv.id = newId;
+	});
+
+	const usedOrderNums = new Set();
+	orders.forEach((ord) => {
+		if (!ord) return;
+		const mappedInvId = invoiceIdMap.get(String(ord.sourceInvoiceId || ''));
+		if (!mappedInvId) return;
+		ord.sourceInvoiceId = mappedInvId;
+		const desiredNum = getIdNum(mappedInvId);
+		if (!usedOrderNums.has(desiredNum) && desiredNum > 0) {
+			ord.id = `SO-${year}-${String(desiredNum).padStart(3, '0')}`;
+			usedOrderNums.add(desiredNum);
+		}
+	});
+
+	let nextOrderNum = 1;
+	const orderedOrders = [...orders].sort((a, b) => byDateThenId(a, b, 'orderDate', 'orderDate'));
+	orderedOrders.forEach((ord) => {
+		if (!ord) return;
+		if (ord.sourceInvoiceId && /^SO-\d{4}-\d{3}$/.test(String(ord.id || '')) && usedOrderNums.has(getIdNum(ord.id))) return;
+		while (usedOrderNums.has(nextOrderNum)) nextOrderNum += 1;
+		ord.id = `SO-${year}-${String(nextOrderNum).padStart(3, '0')}`;
+		usedOrderNums.add(nextOrderNum);
+		nextOrderNum += 1;
+	});
+}
+
 function nextInvoiceId() {
 	// Numbering resets each month — choose the next missing number in this month
 	const used = new Set(
@@ -3719,6 +3770,7 @@ async function initSalesInvoicesPage() {
 						salesModuleData.salesOrders.splice(soIdx, 1);
 					}
 				}
+				resequenceSalesIdsForCurrentMonth();
 				showDeleteToast(`Invoice ${inv ? inv.id : ''} deleted.`);
 			} else if (entity === 'order') {
 				const idx = salesModuleData.salesOrders.findIndex((ord) => String(ord.id) === String(deleteId));
@@ -3726,6 +3778,7 @@ async function initSalesInvoicesPage() {
 				if (ord) moveAppDataDeleteToTrash('sales', ord, { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'salesOrders' });
 				if (ord && ord.id) markSalesDeletion(currentSalesMonth, 'order', ord.id);
 				if (idx >= 0) salesModuleData.salesOrders.splice(idx, 1);
+				resequenceSalesIdsForCurrentMonth();
 				showDeleteToast(`Sales order ${ord ? ord.id : ''} deleted.`);
 			}
 			saveSalesDataToStorage();
