@@ -2629,6 +2629,7 @@ function loadMonthData(month) {
 	currentSalesMonth = month;
 	salesModuleData.invoices = [];
 	salesModuleData.salesOrders = [];
+	let dirty = false;
 	try {
 		const stored = JSON.parse(localStorage.getItem(monthStorageKey(month)) || 'null');
 		if (stored && typeof stored === 'object') {
@@ -2637,8 +2638,55 @@ function loadMonthData(month) {
 		}
 	} catch (_e) { /* ignore */ }
 
+	/* ── normalize outlier invoice IDs within month (e.g., 088/089 when month has only ~20 entries) ── */
+	const monthYear = /^\d{4}-\d{2}$/.test(month) ? month.slice(0, 4) : String(new Date().getFullYear());
+	const invoiceCount = salesModuleData.invoices.length;
+	if (invoiceCount > 0) {
+		const parsed = salesModuleData.invoices.map((inv, idx) => {
+			const id = String(inv.id || '');
+			const m = /^INV-(\d{4})-(\d+)$/.exec(id);
+			return { idx, oldId: id, year: m ? m[1] : '', num: m ? Number(m[2]) : 0 };
+		});
+		const usedNums = new Set(parsed.map((p) => p.num).filter((n) => Number.isFinite(n) && n > 0));
+		const missing = [];
+		for (let n = 1; n <= invoiceCount; n += 1) {
+			if (!usedNums.has(n)) missing.push(n);
+		}
+		const outliers = parsed
+			.filter((p) => Number.isFinite(p.num) && p.num > invoiceCount)
+			.sort((a, b) => a.num - b.num);
+
+		if (missing.length && outliers.length) {
+			const invIdMap = new Map();
+			const soIdMap = new Map();
+			const applyCount = Math.min(missing.length, outliers.length);
+			for (let i = 0; i < applyCount; i += 1) {
+				const oldId = outliers[i].oldId;
+				const nextNum = String(missing[i]).padStart(3, '0');
+				const newId = `INV-${monthYear}-${nextNum}`;
+				if (oldId !== newId) {
+					invIdMap.set(oldId, newId);
+					soIdMap.set(`SO${oldId.slice(3)}`, `SO${newId.slice(3)}`);
+				}
+			}
+
+			if (invIdMap.size) {
+				salesModuleData.invoices.forEach((inv) => {
+					const oldId = String(inv.id || '');
+					if (invIdMap.has(oldId)) inv.id = invIdMap.get(oldId);
+				});
+				salesModuleData.salesOrders.forEach((so) => {
+					const oldOrderId = String(so.id || '');
+					const oldSrcId = String(so.sourceInvoiceId || '');
+					if (soIdMap.has(oldOrderId)) so.id = soIdMap.get(oldOrderId);
+					if (invIdMap.has(oldSrcId)) so.sourceInvoiceId = invIdMap.get(oldSrcId);
+				});
+				dirty = true;
+			}
+		}
+	}
+
 	/* ── one-time sync: ensure invoices ↔ salesOrders are mirrored ── */
-	let dirty = false;
 	const soMap = {};
 	salesModuleData.salesOrders.forEach(o => { soMap[o.id] = o; });
 	const invMap = {};
