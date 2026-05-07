@@ -2252,10 +2252,10 @@ async function initInventoryPage() {
 	};
 
 
-	const closeModal = () => {
+	const closeModal = (skipDraft = false) => {
 		const savedEntity = currentEntity;
 		const wasAdding = editingIdx < 0;
-		if (wasAdding && savedEntity) saveInvDraft(savedEntity);
+		if (!skipDraft && wasAdding && savedEntity) saveInvDraft(savedEntity);
 		if (addModal) addModal.style.display = 'none';
 		if (modalForm) modalForm.reset();
 		currentEntity = null;
@@ -2427,8 +2427,9 @@ async function initInventoryPage() {
 				}
 			}
 
-			closeModal();
-			clearInvDraft(currentEntity);
+			const submittedEntity = currentEntity;
+			clearInvDraft(submittedEntity);
+			closeModal(true); // skipDraft=true — data already saved, don't re-save draft
 			rerenderInventory();
 		});
 	}
