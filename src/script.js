@@ -3783,7 +3783,10 @@ async function initSalesInvoicesPage() {
 		const getIdNum = (id) => { const m = String(id || '').match(/(\d+)$/); return m ? Number(m[1]) : 0; };
 		const invoiceRows = salesModuleData.invoices.map((invoice, origIdx) => {
 			return { ...invoice, _origIdx: origIdx };
-		}).sort((a, b) => getIdNum(a.id) - getIdNum(b.id));
+		}).sort((a, b) => {
+			const dateDiff = String(a.date || '').localeCompare(String(b.date || ''));
+			return dateDiff !== 0 ? dateDiff : getIdNum(a.id) - getIdNum(b.id);
+		});
 		let hadPendingSalesStatus = false;
 		salesModuleData.salesOrders.forEach((order) => {
 			if (order.status === 'pending') {
@@ -3792,7 +3795,10 @@ async function initSalesInvoicesPage() {
 			}
 		});
 		if (hadPendingSalesStatus) saveSalesDataToStorage();
-		const orders = salesModuleData.salesOrders.map((order, origIdx) => ({ ...order, _origIdx: origIdx })).sort((a, b) => getIdNum(a.id) - getIdNum(b.id));
+		const orders = salesModuleData.salesOrders.map((order, origIdx) => ({ ...order, _origIdx: origIdx })).sort((a, b) => {
+			const dateDiff = String(a.orderDate || a.date || '').localeCompare(String(b.orderDate || b.date || ''));
+			return dateDiff !== 0 ? dateDiff : getIdNum(a.id) - getIdNum(b.id);
+		});
 
 		const totalInvoices = invoiceRows.length;
 		const invoiceRevenue = invoiceRows.filter((inv) => inv.status === 'paid').reduce((sum, inv) => sum + inv.amount, 0);
