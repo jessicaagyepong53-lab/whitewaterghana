@@ -2808,80 +2808,34 @@ function loadMonthData(month) {
 		});
 	}
 
-	/* ── one-time sync: ensure invoices ↔ salesOrders are mirrored ── */
-	const soMap = {};
-	salesModuleData.salesOrders.forEach(o => { soMap[o.id] = o; });
-	const invMap = {};
-	salesModuleData.invoices.forEach(v => { invMap[v.id] = v; });
-
-	// For every invoice, create or update matching SO
-	salesModuleData.invoices.forEach(inv => {
-		const soId = 'SO' + inv.id.slice(3); // INV-2026-040 → SO-2026-040
-		if (!soMap[soId]) {
-			// create missing SO
-			const so = {
-				id: soId,
-				sourceInvoiceId: inv.id,
-				customer: inv.customer,
-				orderDate: inv.date || inv.orderDate,
-				deliveryDate: inv.date || inv.orderDate,
-				amount: inv.amount,
-				status: inv.status,
-				bags: inv.bags,
-				rate: inv.rate,
-				promo: inv.promo,
-				promoNote: inv.promoNote || '',
-				paymentMode: inv.paymentMode || '',
-				paidDate: inv.paidDate || '',
-				items: JSON.parse(JSON.stringify(inv.items || []))
-			};
-			salesModuleData.salesOrders.push(so);
-			soMap[soId] = so;
-			dirty = true;
-		} else {
-			// update existing SO to match invoice (no dirty flag unless something is missing)
-			const so = soMap[soId];
-			so.sourceInvoiceId = inv.id;
-			so.customer = inv.customer;
-			so.orderDate = inv.date || inv.orderDate;
-			so.deliveryDate = inv.date || inv.orderDate;
-			so.amount = inv.amount;
-			so.status = inv.status;
-			so.bags = inv.bags;
-			so.rate = inv.rate;
-			so.promo = inv.promo;
-			so.promoNote = inv.promoNote || '';
-			so.paymentMode = inv.paymentMode || '';
-			so.paidDate = inv.paidDate || '';
-			so.items = JSON.parse(JSON.stringify(inv.items || []));
-		}
+	/* Keep Sales Orders strictly 1:1 with invoices (linked by sourceInvoiceId). */
+	const existingOrders = Array.isArray(salesModuleData.salesOrders) ? salesModuleData.salesOrders : [];
+	const normalizedOrders = salesModuleData.invoices.map((inv) => {
+		const soId = 'SO' + String(inv.id || '').slice(3);
+		const existing = existingOrders.find((o) => String(o?.sourceInvoiceId || '') === String(inv.id) || String(o?.id || '') === soId) || {};
+		const firstItem = Array.isArray(inv.items) && inv.items[0] ? inv.items[0] : null;
+		const qty = Number((firstItem && firstItem.qty) || inv.bags || 0);
+		const rate = Number((firstItem && firstItem.unitPrice) || inv.rate || 0);
+		return {
+			...existing,
+			id: soId,
+			sourceInvoiceId: inv.id,
+			customer: inv.customer,
+			orderDate: inv.date || inv.orderDate,
+			deliveryDate: inv.date || inv.orderDate,
+			amount: Number(inv.amount || qty * rate || 0),
+			status: inv.status || existing.status || 'pending',
+			bags: qty,
+			rate,
+			promo: Number(inv.promo || 0),
+			promoNote: inv.promoNote || '',
+			paymentMode: inv.paymentMode || '',
+			paidDate: inv.paidDate || '',
+			items: Array.isArray(inv.items) ? JSON.parse(JSON.stringify(inv.items)) : [],
+		};
 	});
-
-	// Only mirror SO -> invoice when the SO is explicitly linked.
-	// This prevents duplicate invoice explosions when standalone SO IDs diverge.
-	salesModuleData.salesOrders.forEach(so => {
-		const invId = so.sourceInvoiceId ? String(so.sourceInvoiceId) : '';
-		if (!invId) return;
-		if (!invMap[invId]) {
-			const inv = {
-				id: invId,
-				customer: so.customer,
-				date: so.orderDate || so.deliveryDate,
-				amount: so.amount,
-				status: so.status,
-				bags: so.bags,
-				rate: so.rate,
-				promo: so.promo,
-				promoNote: so.promoNote || '',
-				paymentMode: so.paymentMode || '',
-				paidDate: so.paidDate || '',
-				items: JSON.parse(JSON.stringify(so.items || []))
-			};
-			salesModuleData.invoices.push(inv);
-			invMap[invId] = inv;
-			dirty = true;
-		}
-	});
+	if (salesModuleData.salesOrders.length !== normalizedOrders.length) dirty = true;
+	salesModuleData.salesOrders = normalizedOrders;
 
 	if (dirty) saveSalesDataToStorage();
 
@@ -3127,7 +3081,7 @@ function upsertSalesOrderFromInvoice(invoice) {
 		paymentMode: invoice.paymentMode || '',
 		promo: Number(invoice.promo || 0),
 		promoNote: invoice.promoNote || '',
-		status: invoice.status === 'paid' ? 'delivered' : (invoice.status === 'overdue' ? 'overdue' : 'confirmed'),
+		status: invoice.status || 'pending',
 		sourceInvoiceId: invoice.id,
 	};
 	if (targetIdx >= 0) {
@@ -3895,14 +3849,6 @@ async function initSalesInvoicesPage() {
 			const dateDiff = String(a.date || '').localeCompare(String(b.date || ''));
 			return dateDiff !== 0 ? dateDiff : getIdNum(a.id) - getIdNum(b.id);
 		});
-		let hadPendingSalesStatus = false;
-		salesModuleData.salesOrders.forEach((order) => {
-			if (order.status === 'pending') {
-				order.status = 'confirmed';
-				hadPendingSalesStatus = true;
-			}
-		});
-		if (hadPendingSalesStatus) saveSalesDataToStorage();
 		const orders = salesModuleData.salesOrders.map((order, origIdx) => ({ ...order, _origIdx: origIdx })).sort((a, b) => {
 			const dateDiff = String(a.orderDate || a.date || '').localeCompare(String(b.orderDate || b.date || ''));
 			return dateDiff !== 0 ? dateDiff : getIdNum(a.id) - getIdNum(b.id);
