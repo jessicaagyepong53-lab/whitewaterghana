@@ -298,9 +298,6 @@ function mergeServerSalesIntoMemory(serverData) {
 	const monthPayload = getSalesMonthPayload(currentSalesMonth);
 	const deletedInv = new Set(normalizeIdArray([...(monthPayload.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]));
 	const deletedOrd = new Set(normalizeIdArray([...(monthPayload.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]));
-	// If server currently has the record, treat it as active (clear stale local tombstones).
-	serverInvoices.forEach((inv) => { if (inv && inv.id) deletedInv.delete(String(inv.id)); });
-	serverOrders.forEach((ord) => { if (ord && ord.id) deletedOrd.delete(String(ord.id)); });
 	const localInvIds = new Set(salesModuleData.invoices.map((inv) => String(inv.id)));
 	const localOrdIds = new Set(salesModuleData.salesOrders.map((ord) => String(ord.id)));
 	let changed = false;
@@ -330,6 +327,29 @@ async function loadBulkFromServer(keys) {
 				for (const [k, v] of Object.entries(json.items)) {
 					if (v === null || v === undefined) continue;
 					if (hasPendingSalesSyncForKey(k)) continue;
+					// For sales month keys, apply local tombstones before overwriting localStorage
+					const salesMonth = getSalesMonthFromStorageKey(k);
+					if (salesMonth) {
+						const existing = getSalesMonthPayload(salesMonth);
+						const delInv = new Set(normalizeIdArray(existing.deletedInvoiceIds));
+						const delOrd = new Set(normalizeIdArray(existing.deletedOrderIds));
+						if (delInv.size > 0 || delOrd.size > 0) {
+							const filtered = {
+								...v,
+								invoices: (Array.isArray(v.invoices) ? v.invoices : []).filter((inv) => inv && inv.id && !delInv.has(String(inv.id))),
+								salesOrders: (Array.isArray(v.salesOrders) ? v.salesOrders : []).filter((ord) => {
+									if (!ord || !ord.id) return false;
+									if (delOrd.has(String(ord.id))) return false;
+									if (ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))) return false;
+									return true;
+								}),
+								deletedInvoiceIds: normalizeIdArray([...Array.from(delInv), ...normalizeIdArray(v.deletedInvoiceIds)]),
+								deletedOrderIds: normalizeIdArray([...Array.from(delOrd), ...normalizeIdArray(v.deletedOrderIds)]),
+							};
+							localStorage.setItem(k, JSON.stringify(filtered));
+							continue;
+						}
+					}
 					localStorage.setItem(k, JSON.stringify(v));
 				}
 				return json.items;
@@ -7169,7 +7189,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 						// Pull latest server state and merge additions into memory.
 						const serverData = await loadFromServerForceFresh(syncKey);
 						const hadNew = mergeServerSalesIntoMemory(serverData);
-						localStorage.setItem(syncKey, JSON.stringify(salesModuleData));
+						// Preserve tombstones when writing back to localStorage
+						const updatedPayload = buildSalesSyncPayload(month, salesModuleData);
+						localStorage.setItem(syncKey, JSON.stringify(updatedPayload));
 
 						// Only push back when this month has local pending changes.
 						// Avoid unconditional write-back here; it can create a 5s sync loop
