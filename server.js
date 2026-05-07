@@ -1442,14 +1442,33 @@ app.use((error, _req, res, _next) => {
 });
 
 if (!process.env.VERCEL) {
-  connectDB().then(() => {
+  const start = async () => {
+    let connected = false;
+    const maxAttempts = 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await connectDB();
+        connected = true;
+        break;
+      } catch (err) {
+        console.error(`[DB] Connection attempt ${attempt}/${maxAttempts} failed:`, err.message);
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+      }
+    }
+
+    if (!connected) {
+      console.error('[DB] Could not establish MongoDB connection after retries.');
+      process.exit(1);
+    }
+
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
-  }).catch((err) => {
-    console.error('Failed to connect to MongoDB:', err.message);
-    process.exit(1);
-  });
+  };
+
+  start();
 }
 
 module.exports = app;

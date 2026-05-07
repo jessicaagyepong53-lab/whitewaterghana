@@ -414,6 +414,8 @@ async function connectDB() {
     maxPoolSize: 5,
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
+    tls: true,
+    family: 4,
   });
   console.log('MongoDB connected');
   await seedDatabase();
