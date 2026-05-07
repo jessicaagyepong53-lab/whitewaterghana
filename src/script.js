@@ -3461,6 +3461,12 @@ async function initSalesInvoicesPage() {
 				const product = getValue('product');
 				if (!customer || !product) return;
 				const invDate = getValue('date') || todayStr;
+				const targetMonth = /^\d{4}-\d{2}-\d{2}$/.test(invDate) ? invDate.slice(0, 7) : '';
+				if (editingSiIdx < 0 && targetMonth && targetMonth !== currentSalesMonth) {
+					// Auto-route new entries to the month selected in the date field.
+					ensureMonthExists(targetMonth);
+					loadMonthData(targetMonth);
+				}
 				const existingInvoice = editingSiIdx >= 0 ? salesModuleData.invoices[editingSiIdx] : null;
 				const chosenStatus = getValue('status') || existingInvoice?.requestedStatus || existingInvoice?.status || 'paid';
 				const invData = {
@@ -3498,12 +3504,19 @@ async function initSalesInvoicesPage() {
 			if (currentEntity === 'order') {
 				const customer = getValue('customer');
 				if (!customer) return;
+				const orderDate = getValue('orderDate') || todayStr;
+				const targetMonth = /^\d{4}-\d{2}-\d{2}$/.test(orderDate) ? orderDate.slice(0, 7) : '';
+				if (editingSiIdx < 0 && targetMonth && targetMonth !== currentSalesMonth) {
+					// Auto-route new entries to the month selected in the date field.
+					ensureMonthExists(targetMonth);
+					loadMonthData(targetMonth);
+				}
 				const existingOrder = editingSiIdx >= 0 ? salesModuleData.salesOrders[editingSiIdx] : null;
 				const chosenStatus = existingOrder?.requestedStatus || existingOrder?.status || 'delivered';
 				const ordData = {
 					customer,
-					orderDate: getValue('orderDate') || todayStr,
-					deliveryDate: existingOrder?.deliveryDate || getValue('orderDate') || todayStr,
+					orderDate,
+					deliveryDate: existingOrder?.deliveryDate || orderDate,
 					rate: getNum('unitPrice'),
 					amount: getNum('amount'),
 					promo: getNum('promo'),
