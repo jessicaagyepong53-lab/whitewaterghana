@@ -1,5 +1,54 @@
 const API_BASE = '';
 const LAST_DATA_UPDATE_KEY = 'ww_last_data_update';
+const SALES_PENDING_SYNC_PREFIX = 'ww_pending_sales_sync_';
+
+function getPendingSalesSyncKey(month) {
+	return `${SALES_PENDING_SYNC_PREFIX}${month}`;
+}
+
+function getSalesMonthFromStorageKey(key) {
+	if (typeof key !== 'string' || !key.startsWith('ww_sales_')) return '';
+	return key.slice('ww_sales_'.length);
+}
+
+function hasPendingSalesSyncForKey(key) {
+	const month = getSalesMonthFromStorageKey(key);
+	if (!month) return false;
+	return !!localStorage.getItem(getPendingSalesSyncKey(month));
+}
+
+function queuePendingSalesSync(month, data) {
+	if (!month) return;
+	try {
+		localStorage.setItem(getPendingSalesSyncKey(month), JSON.stringify(data));
+	} catch (_e) { /* ignore */ }
+}
+
+function clearPendingSalesSync(month) {
+	if (!month) return;
+	try {
+		localStorage.removeItem(getPendingSalesSyncKey(month));
+	} catch (_e) { /* ignore */ }
+}
+
+async function flushPendingSalesSyncToServer() {
+	const pendingKeys = [];
+	for (let i = 0; i < localStorage.length; i += 1) {
+		const key = localStorage.key(i);
+		if (key && key.startsWith(SALES_PENDING_SYNC_PREFIX)) pendingKeys.push(key);
+	}
+	for (const pendingKey of pendingKeys) {
+		const month = pendingKey.slice(SALES_PENDING_SYNC_PREFIX.length);
+		if (!month) continue;
+		try {
+			const raw = localStorage.getItem(pendingKey);
+			if (!raw) continue;
+			const data = JSON.parse(raw);
+			const ok = await syncToServer(monthStorageKey(month), data);
+			if (ok) clearPendingSalesSync(month);
+		} catch (_e) { /* keep pending for next attempt */ }
+	}
+}
 
 function getLastDataUpdateStamp() {
 	try {
@@ -99,12 +148,64 @@ async function loadFromServer(key) {
 		if (res.ok) {
 			const json = await res.json();
 			if (json.data !== null && json.data !== undefined) {
+				if (hasPendingSalesSyncForKey(key)) {
+					try {
+						return JSON.parse(localStorage.getItem(key) || 'null');
+					} catch (_e) {
+						return json.data;
+					}
+				}
 				localStorage.setItem(key, JSON.stringify(json.data));
 				return json.data;
 			}
 		}
 	} catch (_e) { /* fall back to localStorage */ }
 	return null;
+}
+
+// Force-loads from server, bypassing the pending-sync guard. Used during
+// cross-device poll so a device that has pending local changes still picks
+// up additions made by other devices.
+async function loadFromServerForceFresh(key) {
+	try {
+		const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), { credentials: 'include', cache: 'no-store' });
+		if (res.ok) {
+			const json = await res.json();
+			if (json.data !== null && json.data !== undefined) {
+				localStorage.setItem(key, JSON.stringify(json.data));
+				return json.data;
+			}
+		}
+	} catch (_e) { /* fall back to localStorage */ }
+	return null;
+}
+
+// Merges server invoice/order records into the current in-memory salesModuleData.
+// Only ADDS records that are absent locally (other device's new entries).
+// Does NOT resurrect locally-deleted records.
+// Returns true if anything was added.
+function mergeServerSalesIntoMemory(serverData) {
+	if (!serverData || typeof serverData !== 'object') return false;
+	const serverInvoices = Array.isArray(serverData.invoices) ? serverData.invoices : [];
+	const serverOrders = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
+	const localInvIds = new Set(salesModuleData.invoices.map((inv) => String(inv.id)));
+	const localOrdIds = new Set(salesModuleData.salesOrders.map((ord) => String(ord.id)));
+	let changed = false;
+	serverInvoices.forEach((inv) => {
+		if (inv && inv.id && !localInvIds.has(String(inv.id))) {
+			salesModuleData.invoices.push(inv);
+			localInvIds.add(String(inv.id));
+			changed = true;
+		}
+	});
+	serverOrders.forEach((ord) => {
+		if (ord && ord.id && !localOrdIds.has(String(ord.id))) {
+			salesModuleData.salesOrders.push(ord);
+			localOrdIds.add(String(ord.id));
+			changed = true;
+		}
+	});
+	return changed;
 }
 
 async function loadBulkFromServer(keys) {
@@ -114,7 +215,9 @@ async function loadBulkFromServer(keys) {
 			const json = await res.json();
 			if (json.items) {
 				for (const [k, v] of Object.entries(json.items)) {
-					if (v !== null && v !== undefined) localStorage.setItem(k, JSON.stringify(v));
+					if (v === null || v === undefined) continue;
+					if (hasPendingSalesSyncForKey(k)) continue;
+					localStorage.setItem(k, JSON.stringify(v));
 				}
 				return json.items;
 			}
@@ -2531,7 +2634,7 @@ function loadMonthData(month) {
 			soMap[soId] = so;
 			dirty = true;
 		} else {
-			// update existing SO to match invoice
+			// update existing SO to match invoice (no dirty flag unless something is missing)
 			const so = soMap[soId];
 			so.customer = inv.customer;
 			so.orderDate = inv.date || inv.orderDate;
@@ -2545,7 +2648,6 @@ function loadMonthData(month) {
 			so.paymentMode = inv.paymentMode || '';
 			so.paidDate = inv.paidDate || '';
 			so.items = JSON.parse(JSON.stringify(inv.items || []));
-			dirty = true;
 		}
 	});
 
@@ -2702,13 +2804,17 @@ function seedMarchSalesData() {
 }
 
 function saveSalesDataToStorage() {
-	const key = monthStorageKey(currentSalesMonth);
+	const month = currentSalesMonth;
+	const key = monthStorageKey(month);
 	localStorage.setItem(key, JSON.stringify(salesModuleData));
-	syncToServer(key, salesModuleData);
+	queuePendingSalesSync(month, salesModuleData);
+	syncToServer(key, salesModuleData).then((ok) => {
+		if (ok) clearPendingSalesSync(month);
+	});
 	// Notify other tabs instantly
 	try {
 		if (!window.__wwSalesChannel) window.__wwSalesChannel = new BroadcastChannel('ww_sales_sync');
-		window.__wwSalesChannel.postMessage({ type: 'sales_updated', month: currentSalesMonth });
+		window.__wwSalesChannel.postMessage({ type: 'sales_updated', month });
 	} catch (_e) { /* fallback to storage event */ }
 }
 
@@ -3181,25 +3287,37 @@ async function initSalesInvoicesPage() {
 		});
 	};
 
-	const closeModal = () => {
+	const closeModal = (skipDraft = false) => {
 		const savedEntity = currentEntity;
 		const wasAdding = editingSiIdx < 0;
-		if (wasAdding && savedEntity) saveModalDraft(savedEntity);
+		if (!skipDraft && wasAdding && savedEntity) saveModalDraft(savedEntity);
+		// Clear state before form reset so any reset-triggered handlers cannot re-save draft.
+		currentEntity = null;
+		editingSiIdx = -1;
 		if (addModal) addModal.style.display = 'none';
 		if (modalForm) modalForm.reset();
 		clearModalValidation();
-		currentEntity = null;
-		editingSiIdx = -1;
-		if (wasAdding && savedEntity) renderSalesPage();
+		if (!skipDraft && wasAdding && savedEntity) renderSalesPage();
 	};
 
 	window.addEventListener('beforeunload', () => { if (editingSiIdx < 0 && currentEntity) saveModalDraft(currentEntity); });
 
-	const openModal = (entity, editIdx, resumeDraft = false) => {
+	const openModal = (entity, editId, resumeDraft = false) => {
 		const config = SI_MODAL_CONFIGS[entity];
 		if (!config || !addModal) return;
 		currentEntity = entity;
-		editingSiIdx = typeof editIdx === 'number' ? editIdx : -1;
+		// Resolve editing index from ID so we always get the right record regardless of array order
+		if (editId != null) {
+			if (entity === 'invoice') {
+				editingSiIdx = salesModuleData.invoices.findIndex((inv) => String(inv.id) === String(editId));
+			} else if (entity === 'order') {
+				editingSiIdx = salesModuleData.salesOrders.findIndex((ord) => String(ord.id) === String(editId));
+			} else {
+				editingSiIdx = -1;
+			}
+		} else {
+			editingSiIdx = -1;
+		}
 		if (modalTitle) modalTitle.textContent = editingSiIdx >= 0 ? config.title.replace('Add', 'Edit') : config.title;
 		if (modalFieldsEl) {
 			modalFieldsEl.innerHTML = `<p class="inv-modal-summary-error" id="si-modal-error-summary" aria-live="polite"></p>` + config.fields.map((f) => {
@@ -3369,8 +3487,10 @@ async function initSalesInvoicesPage() {
 			}
 
 			saveSalesDataToStorage();
-			clearModalDraft(currentEntity);
-			closeModal();
+			const savedEntity = currentEntity;
+			clearModalDraft(savedEntity);
+			closeModal(true); // skip draft re-save — we just submitted successfully
+			clearModalDraft(savedEntity);
 			renderSalesPage();
 		});
 	}
@@ -3390,20 +3510,21 @@ async function initSalesInvoicesPage() {
 		const editBtn = event.target.closest('.si-edit-btn');
 		if (editBtn) {
 			event.stopPropagation();
-			openModal(editBtn.getAttribute('data-edit-entity'), Number(editBtn.getAttribute('data-edit-idx')));
+			openModal(editBtn.getAttribute('data-edit-entity'), editBtn.getAttribute('data-edit-id'));
 			return;
 		}
 		const deleteBtn = event.target.closest('.si-delete-btn');
 		if (deleteBtn) {
 			event.stopPropagation();
 			const entity = deleteBtn.getAttribute('data-delete-entity');
-			const idx = Number(deleteBtn.getAttribute('data-delete-idx'));
+			const deleteId = deleteBtn.getAttribute('data-delete-id');
 			const label = entity === 'invoice' ? 'invoice' : 'sales order';
 			if (!window.confirm('Delete this ' + label + '? This cannot be undone.')) return;
 			if (entity === 'invoice') {
-				const inv = salesModuleData.invoices[idx];
+				const idx = salesModuleData.invoices.findIndex((inv) => String(inv.id) === String(deleteId));
+				const inv = idx >= 0 ? salesModuleData.invoices[idx] : null;
 				if (inv) moveAppDataDeleteToTrash('invoices', inv, { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'invoices' });
-				salesModuleData.invoices.splice(idx, 1);
+				if (idx >= 0) salesModuleData.invoices.splice(idx, 1);
 				if (inv && inv.id) {
 					const soIdx = salesModuleData.salesOrders.findIndex((o) => o.sourceInvoiceId === inv.id || o.id === `SO${String(inv.id).slice(3)}`);
 					if (soIdx >= 0) {
@@ -3413,9 +3534,10 @@ async function initSalesInvoicesPage() {
 				}
 				showDeleteToast(`Invoice ${inv ? inv.id : ''} deleted.`);
 			} else if (entity === 'order') {
-				const ord = salesModuleData.salesOrders[idx];
+				const idx = salesModuleData.salesOrders.findIndex((ord) => String(ord.id) === String(deleteId));
+				const ord = idx >= 0 ? salesModuleData.salesOrders[idx] : null;
 				if (ord) moveAppDataDeleteToTrash('sales', ord, { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'salesOrders' });
-				salesModuleData.salesOrders.splice(idx, 1);
+				if (idx >= 0) salesModuleData.salesOrders.splice(idx, 1);
 				showDeleteToast(`Sales order ${ord ? ord.id : ''} deleted.`);
 			}
 			saveSalesDataToStorage();
@@ -3425,15 +3547,13 @@ async function initSalesInvoicesPage() {
 		if (approveBtn) {
 			event.stopPropagation();
 			const entity = approveBtn.getAttribute('data-approve-entity');
-			const idx = Number(approveBtn.getAttribute('data-approve-idx'));
-			if (entity === 'invoice' && salesModuleData.invoices[idx]) {
-				const inv = salesModuleData.invoices[idx];
-				inv.status = inv.requestedStatus || 'pending';
-				delete inv.requestedStatus;
-			} else if (entity === 'order' && salesModuleData.salesOrders[idx]) {
-				const ord = salesModuleData.salesOrders[idx];
-				ord.status = ord.requestedStatus || 'confirmed';
-				delete ord.requestedStatus;
+			const approveId = approveBtn.getAttribute('data-approve-id');
+			if (entity === 'invoice') {
+				const inv = salesModuleData.invoices.find((i) => String(i.id) === String(approveId));
+				if (inv) { inv.status = inv.requestedStatus || 'pending'; delete inv.requestedStatus; }
+			} else if (entity === 'order') {
+				const ord = salesModuleData.salesOrders.find((o) => String(o.id) === String(approveId));
+				if (ord) { ord.status = ord.requestedStatus || 'confirmed'; delete ord.requestedStatus; }
 			}
 			saveSalesDataToStorage();
 			renderSalesPage();
@@ -3442,17 +3562,20 @@ async function initSalesInvoicesPage() {
 
 	function autoDetectOverdue() {
 		const today = new Date(todayStr);
+		let changed = false;
 		salesModuleData.invoices.forEach((inv) => {
 			if (inv.status === 'pending' && inv.paidDate && new Date(inv.paidDate) < today) {
 				inv.status = 'overdue';
+				changed = true;
 			}
 		});
 		salesModuleData.salesOrders.forEach((order) => {
 			if (['confirmed', 'processing', 'shipped'].includes(order.status) && order.deliveryDate && new Date(order.deliveryDate) < today) {
 				order.status = 'overdue';
+				changed = true;
 			}
 		});
-		saveSalesDataToStorage();
+		if (changed) saveSalesDataToStorage();
 	}
 
 	function handleFollowUp(orderId) {
@@ -3469,9 +3592,10 @@ async function initSalesInvoicesPage() {
 	function renderSalesPage() {
 		autoDetectOverdue();
 
-		const invoiceRows = salesModuleData.invoices.map((invoice) => {
-			return { ...invoice };
-		}).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+		const getIdNum = (id) => { const m = String(id || '').match(/(\d+)$/); return m ? Number(m[1]) : 0; };
+		const invoiceRows = salesModuleData.invoices.map((invoice, origIdx) => {
+			return { ...invoice, _origIdx: origIdx };
+		}).sort((a, b) => getIdNum(a.id) - getIdNum(b.id));
 		let hadPendingSalesStatus = false;
 		salesModuleData.salesOrders.forEach((order) => {
 			if (order.status === 'pending') {
@@ -3480,15 +3604,14 @@ async function initSalesInvoicesPage() {
 			}
 		});
 		if (hadPendingSalesStatus) saveSalesDataToStorage();
-		const orders = [...salesModuleData.salesOrders].sort((a, b) => (a.orderDate || a.date || '').localeCompare(b.orderDate || b.date || ''));
+		const orders = salesModuleData.salesOrders.map((order, origIdx) => ({ ...order, _origIdx: origIdx })).sort((a, b) => getIdNum(a.id) - getIdNum(b.id));
 
 		const totalInvoices = invoiceRows.length;
 		const invoiceRevenue = invoiceRows.filter((inv) => inv.status === 'paid').reduce((sum, inv) => sum + inv.amount, 0);
 		const pendingInvoices = invoiceRows.filter((inv) => inv.status === 'pending').reduce((sum, inv) => sum + inv.amount, 0);
 		const pendingSales = orders.filter((o) => ['confirmed', 'processing', 'shipped'].includes(o.status)).reduce((sum, o) => sum + Number(o.amount || 0), 0);
 		const overdueInvAmt = invoiceRows.filter((inv) => inv.status === 'overdue').reduce((sum, inv) => sum + inv.amount, 0);
-		const overdueOrdAmt = orders.filter((o) => o.status === 'overdue').reduce((sum, o) => sum + Number(o.amount || 0), 0);
-		const overdueTotal = overdueInvAmt + overdueOrdAmt;
+		const overdueTotal = overdueInvAmt;
 
 		const stats = document.getElementById('si-stats-row');
 		if (stats) {
@@ -3500,8 +3623,8 @@ async function initSalesInvoicesPage() {
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice"></i></div><p class="s-label">Total Invoices</p><p class="s-value">${totalInvoices}</p><p class="s-meta">${orders.length} sales order${orders.length !== 1 ? 's' : ''}</p></div>
 				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue)}</p><p class="s-meta">From paid invoices</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-gift"></i></div><p class="s-label">Total Promo Bags</p><p class="s-value">${formatNumber(invoicePromo)}</p><p class="s-meta split-meta"><span>Total bags: ${formatNumber(totalBagsSold)}</span><span>Non-promo: ${formatNumber(nonPromoBags)}</span><span>Promo: ${formatNumber(invoicePromo)}</span></p></div>
-				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices + pendingSales)}</p><p class="s-meta split-meta"><span>Invoices: ${formatCurrency(pendingInvoices)}</span><span>Sales: ${formatCurrency(pendingSales)}</span></p></div>
-				<div class="stat-card ${overdueTotal > 0 ? 'stat-card-alert' : ''}" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-circle-exclamation"></i></div><p class="s-label">Overdue</p><p class="s-value">${formatCurrency(overdueTotal)}</p><p class="s-meta">${overdueInvAmt > 0 ? 'Inv: ' + formatCurrency(overdueInvAmt) + ' ' : ''}${overdueOrdAmt > 0 ? 'Orders: ' + formatCurrency(overdueOrdAmt) : ''}${overdueTotal === 0 ? 'All clear' : ''}</p></div>
+				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices)}</p><p class="s-meta">From pending invoices</p></div>
+				<div class="stat-card ${overdueTotal > 0 ? 'stat-card-alert' : ''}" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-circle-exclamation"></i></div><p class="s-label">Overdue</p><p class="s-value">${formatCurrency(overdueTotal)}</p><p class="s-meta">${overdueTotal > 0 ? 'From overdue invoices' : 'All clear'}</p></div>
 			`;
 		}
 
@@ -3525,10 +3648,10 @@ async function initSalesInvoicesPage() {
 					<td><div class="row-actions"><button class="btn-edit si-resume-draft-btn" data-draft-entity="invoice" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete si-clear-draft-btn" data-draft-entity="invoice" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td>
 				</tr>
 			` : '';
-			invoiceBody.innerHTML = draftRow + invoiceRows.map((invoice, idx) => {
+			invoiceBody.innerHTML = draftRow + invoiceRows.map((invoice) => {
 				const statusLabel = invoice.status === 'pending_approval' ? 'Pending Approval' : invoice.status;
 				const approveBtn = isApprover && invoice.status === 'pending_approval'
-					? `<button class="btn-approve si-approve-btn" data-approve-entity="invoice" data-approve-idx="${idx}" title="Approve"><i class="fa-solid fa-check"></i></button>`
+					? `<button class="btn-approve si-approve-btn" data-approve-entity="invoice" data-approve-id="${invoice.id}" title="Approve"><i class="fa-solid fa-check"></i></button>`
 					: '';
 				return `
 					<tr class="selectable" data-invoice-id="${invoice.id}">
@@ -3542,7 +3665,7 @@ async function initSalesInvoicesPage() {
 						<td>${invoice.paymentMode || ''}</td>
 						<td>${invoice.carNumber || ''}</td>
 						<td><span class="status-pill ${statusPillClass(invoice.status)}">${statusLabel}</span></td>
-						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="invoice" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="invoice" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td>
+						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="invoice" data-edit-id="${invoice.id}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="invoice" data-delete-id="${invoice.id}"><i class="fa-solid fa-trash"></i></button></div></td>
 					</tr>
 				`;
 			}).join('');
@@ -3604,7 +3727,7 @@ async function initSalesInvoicesPage() {
 					<td><div class="row-actions"><button class="btn-edit si-resume-draft-btn" data-draft-entity="order" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete si-clear-draft-btn" data-draft-entity="order" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td>
 				</tr>
 			` : '';
-			ordersBody.innerHTML = draftOrderRow + orders.map((order, idx) => {
+			ordersBody.innerHTML = draftOrderRow + orders.map((order) => {
 				const showFollowUp = ['overdue', 'confirmed', 'processing', 'shipped'].includes(order.status);
 				const followUpCount = (order.followUps && order.followUps.length) || 0;
 				const statusLabel = order.status === 'pending_approval' ? 'Pending Approval' : order.status;
@@ -3613,7 +3736,7 @@ async function initSalesInvoicesPage() {
 					? `<small style="display:block;color:#6b7280">Delivery: ${formatDateDisplay(order.deliveryDate)}</small>`
 					: '';
 				const approveBtn = isApprover && order.status === 'pending_approval'
-					? `<button class="btn-approve si-approve-btn" data-approve-entity="order" data-approve-idx="${idx}" title="Approve"><i class="fa-solid fa-check"></i></button>`
+					? `<button class="btn-approve si-approve-btn" data-approve-entity="order" data-approve-id="${order.id}" title="Approve"><i class="fa-solid fa-check"></i></button>`
 					: '';
 				return `
 					<tr>
@@ -3627,7 +3750,7 @@ async function initSalesInvoicesPage() {
 						<td>${order.paymentMode || ''}</td>
 						<td>${order.carNumber || ''}</td>
 						<td><span class="status-pill ${statusPillClass(order.status)}">${statusLabel}</span></td>
-						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="order" data-edit-idx="${idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="order" data-delete-idx="${idx}"><i class="fa-solid fa-trash"></i></button></div></td>
+						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="order" data-edit-id="${order.id}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="order" data-delete-id="${order.id}"><i class="fa-solid fa-trash"></i></button></div></td>
 					</tr>
 				`;
 			}).join('');
@@ -6830,6 +6953,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 	}
 
 	if (authenticated) try {
+		await flushPendingSalesSyncToServer();
 		await loadFromServer('ww_seed_flags');
 		await loadFromServer('ww_sales_months');
 		const salesMonths = getSalesMonths();
@@ -6864,10 +6988,32 @@ document.addEventListener('DOMContentLoaded', async () => {
 				if (localStamp && new Date(remoteStamp).getTime() <= new Date(localStamp).getTime()) return;
 				setLastDataUpdateStamp(remoteStamp);
 				window.__wwLastSeenDataUpdate = remoteStamp;
-				// Stamp updated — fresh data will be loaded next time the user navigates to / opens the page.
-				console.info('[Sync] Remote stamp updated; data will load on next page open.');
+				console.info('[Sync] Remote data changed — pulling latest data...');
+				// Flush any local unsynced changes first, then force-load server data,
+				// merge other devices' new entries into local memory, and re-render.
+				try {
+					if (currentSalesMonth) {
+						const syncKey = monthStorageKey(currentSalesMonth);
+						// 1. Push our pending local changes to server before loading
+						await flushPendingSalesSyncToServer();
+						// 2. Force-load server state (bypasses pending guard)
+						const serverData = await loadFromServerForceFresh(syncKey);
+						// 3. Merge any additions from other devices into in-memory state
+						const hadNew = mergeServerSalesIntoMemory(serverData);
+						if (hadNew) {
+							// Save merged state so server has the union of all devices' data
+							const month = currentSalesMonth;
+							localStorage.setItem(syncKey, JSON.stringify(salesModuleData));
+							syncToServer(syncKey, salesModuleData).then((ok) => {
+								if (ok) clearPendingSalesSync(month);
+							});
+						}
+						// 4. Re-render the sales page with merged data
+						document.dispatchEvent(new Event('ww-refresh-sales'));
+					}
+				} catch (_pullErr) { /* ignore */ }
 			} catch (_e) { /* keep polling */ }
-		}, 10000);
+		}, 5000);
 	}
 
 	initDashboardPage();

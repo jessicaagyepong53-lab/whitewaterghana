@@ -1,26 +1,28 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Push Local Data to Server</title>
+<title>Sync Data</title>
 <style>
 body{font-family:system-ui;padding:16px;background:#111;color:#eee;font-size:14px}
 pre{background:#222;padding:12px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
-.ok{color:#22c55e}.fail{color:#ef4444}.warn{color:#f59e0b}
+.ok{color:#22c55e}.fail{color:#ef4444}.warn{color:#f59e0b}.info{color:#60a5fa}
 button{background:#3b82f6;color:#fff;border:none;padding:12px 24px;border-radius:6px;font-size:16px;margin:4px;cursor:pointer}
 button:hover{background:#2563eb}
 h1{color:#60a5fa}
 </style>
 </head><body>
-<h1>Sync Local Data → Server</h1>
-<p>This page pushes ALL your localStorage data to MongoDB so other devices can see it.</p>
-<p><strong>Open this on the device that HAS the data.</strong></p>
-<button onclick="pushAll()">Push All Data to Server</button>
-<button onclick="pullAll()">Pull All Data from Server</button>
+<h1>Sync Data</h1>
+<p>Use <strong>Merge &amp; Push</strong> when multiple devices have made entries — it combines both sets of data so nothing is lost.</p>
+<p>Use <strong>Pull from Server</strong> to download the latest server data to this device.</p>
+<button onclick="mergeAndPush()">Merge &amp; Push (Recommended)</button>
+<button onclick="pullAll()">Pull from Server</button>
 <div id="out" style="margin-top:16px"></div>
 <script>
 const out = document.getElementById('out');
 function log(html) { out.innerHTML += html + '<br>'; }
 function ok(msg) { log('<span class="ok">✓ ' + msg + '</span>'); }
 function fail(msg) { log('<span class="fail">✗ ' + msg + '</span>'); }
+function info(msg) { log('<span class="info">ℹ ' + msg + '</span>'); }
+function warn(msg) { log('<span class="warn">⚠ ' + msg + '</span>'); }
 
 const KEYS = [
   'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
@@ -29,9 +31,48 @@ const KEYS = [
   'ww_sales_months', 'ww_equipment', 'ww_seed_flags',
 ];
 
-async function pushAll() {
+// Merge server data and local data so no entries from either side are lost.
+// Arrays: union by 'id' field — local record wins on conflict (same id).
+// Arrays of primitives (e.g. months): simple union.
+// Plain objects: spread server first, then local on top.
+function mergeData(serverData, localData) {
+  if (Array.isArray(localData) && Array.isArray(serverData)) {
+    // Check if items are objects with an 'id' field
+    const hasIds = localData.some(r => r && typeof r === 'object' && r.id != null) ||
+                   serverData.some(r => r && typeof r === 'object' && r.id != null);
+    if (hasIds) {
+      const map = new Map();
+      // Load server records first, then local overwrites (local wins on same id)
+      for (const r of serverData) { if (r && r.id != null) map.set(String(r.id), r); }
+      for (const r of localData)  { if (r && r.id != null) map.set(String(r.id), r); }
+      // Preserve original insertion order: server entries first, then new local-only entries
+      const serverIds = new Set(serverData.filter(r => r && r.id != null).map(r => String(r.id)));
+      const localIds  = new Set(localData.filter(r => r && r.id != null).map(r => String(r.id)));
+      const order = [
+        ...serverData.filter(r => r && r.id != null).map(r => String(r.id)),
+        ...localData.filter(r => r && r.id != null && !serverIds.has(String(r.id))).map(r => String(r.id)),
+      ];
+      const seen = new Set();
+      const merged = [];
+      for (const id of order) {
+        if (!seen.has(id)) { seen.add(id); merged.push(map.get(id)); }
+      }
+      return merged;
+    } else {
+      // Array of primitives — union
+      return [...new Set([...serverData, ...localData])];
+    }
+  }
+  if (localData && typeof localData === 'object' && !Array.isArray(localData) &&
+      serverData && typeof serverData === 'object' && !Array.isArray(serverData)) {
+    return { ...serverData, ...localData };
+  }
+  // Fallback: local wins
+  return localData;
+}
+
+async function mergeAndPush() {
   out.innerHTML = '';
-  // Check auth first
   log('Checking authentication...');
   try {
     const me = await fetch('/api/auth/me', {credentials:'include'});
@@ -39,9 +80,8 @@ async function pushAll() {
     ok('Authenticated');
   } catch(e) { fail('Cannot reach server: ' + e.message); return; }
 
-  // Find all ww_ keys in localStorage
+  // Collect all local keys
   const allKeys = [...KEYS];
-  // Also find any ww_sales_YYYY-MM keys
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
     if (k && k.startsWith('ww_sales_') && k !== 'ww_sales_months' && !allKeys.includes(k)) {
@@ -49,26 +89,60 @@ async function pushAll() {
     }
   }
 
-  let pushed = 0;
-  let skipped = 0;
+  // Fetch all server data in one bulk request
+  info('Fetching current server data for merge…');
+  let serverItems = {};
+  try {
+    const r = await fetch('/api/app-data-bulk?keys=' + allKeys.map(encodeURIComponent).join(','), {credentials:'include', cache:'no-store'});
+    if (r.ok) { const j = await r.json(); serverItems = j.items || {}; }
+  } catch(e) { warn('Could not fetch server data — will push local only. (' + e.message + ')'); }
+
+  // Also collect any sales month keys that exist on server but not locally
+  const serverSalesMonths = Array.isArray(serverItems['ww_sales_months']) ? serverItems['ww_sales_months'] : [];
+  for (const m of serverSalesMonths) {
+    const k = 'ww_sales_' + m;
+    if (!allKeys.includes(k)) allKeys.push(k);
+  }
+
+  let pushed = 0, merged = 0, skipped = 0;
   for (const key of allKeys) {
     const raw = localStorage.getItem(key);
-    if (!raw) { log('<span class="warn">⚠ ' + key + ': empty in localStorage, skipping</span>'); skipped++; continue; }
-    let data;
-    try { data = JSON.parse(raw); } catch(e) { fail(key + ': invalid JSON'); continue; }
-    
-    // Skip empty arrays/objects
-    if (Array.isArray(data) && data.length === 0) { log('<span class="warn">⚠ ' + key + ': empty array, skipping</span>'); skipped++; continue; }
-    if (typeof data === 'object' && data !== null && !Array.isArray(data) && Object.keys(data).length === 0) { log('<span class="warn">⚠ ' + key + ': empty object, skipping</span>'); skipped++; continue; }
+    let localData = null;
+    if (raw) {
+      try { localData = JSON.parse(raw); } catch(e) { fail(key + ': invalid JSON in localStorage'); continue; }
+    }
+
+    const serverData = serverItems[key] !== undefined ? serverItems[key] : null;
+
+    let finalData;
+    if (localData === null && serverData === null) { skipped++; continue; }
+    if (localData === null) { finalData = serverData; }
+    else if (serverData === null) { finalData = localData; }
+    else {
+      finalData = mergeData(serverData, localData);
+      const localCount = Array.isArray(localData) ? localData.length : Object.keys(localData).length;
+      const serverCount = Array.isArray(serverData) ? serverData.length : Object.keys(serverData).length;
+      const mergedCount = Array.isArray(finalData) ? finalData.length : Object.keys(finalData).length;
+      if (mergedCount > Math.max(localCount, serverCount)) {
+        info(key + ': merged (local ' + localCount + ' + server ' + serverCount + ' → ' + mergedCount + ' records)');
+        merged++;
+      }
+    }
+
+    // Skip empty
+    if (Array.isArray(finalData) && finalData.length === 0) { skipped++; continue; }
+    if (finalData && typeof finalData === 'object' && !Array.isArray(finalData) && Object.keys(finalData).length === 0) { skipped++; continue; }
 
     try {
       const res = await fetch('/api/app-data/' + encodeURIComponent(key), {
         method: 'PUT', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data }),
+        body: JSON.stringify({ data: finalData }),
       });
       if (res.ok) {
-        ok(key + ': pushed (' + raw.length + ' bytes)');
+        // Also update localStorage with the merged result so this device is in sync
+        localStorage.setItem(key, JSON.stringify(finalData));
+        ok(key + ': pushed');
         pushed++;
       } else {
         fail(key + ': server returned HTTP ' + res.status);
@@ -77,8 +151,8 @@ async function pushAll() {
       fail(key + ': network error - ' + e.message);
     }
   }
-  log('<br><strong>Done! Pushed ' + pushed + ' keys, skipped ' + skipped + '.</strong>');
-  if (pushed > 0) ok('Other devices should now see this data after logging in and refreshing.');
+  log('<br><strong>Done! Pushed ' + pushed + ' keys (' + merged + ' merged), skipped ' + skipped + '.</strong>');
+  if (pushed > 0) ok('All devices should now see the combined data after refreshing.');
 }
 
 async function pullAll() {
