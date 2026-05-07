@@ -2638,42 +2638,15 @@ function loadMonthData(month) {
 		}
 	} catch (_e) { /* ignore */ }
 
-	/* ── re-sequence monthly invoice IDs by date order (chronological) ── */
-	const monthYear = /^\d{4}-\d{2}$/.test(month) ? month.slice(0, 4) : String(new Date().getFullYear());
-	if (salesModuleData.invoices.length > 0) {
-		const withSortMeta = salesModuleData.invoices.map((inv, idx) => {
-			const d = new Date(inv.date || inv.orderDate || inv.createdAt || 0);
-			return {
-				idx,
-				inv,
-				ts: Number.isNaN(d.getTime()) ? Number.MAX_SAFE_INTEGER : d.getTime(),
-			};
+	/* Keep invoice list arranged by date, but do NOT renumber existing IDs. */
+	if (salesModuleData.invoices.length > 1) {
+		salesModuleData.invoices.sort((a, b) => {
+			const da = new Date(a.date || a.orderDate || a.createdAt || 0).getTime();
+			const db = new Date(b.date || b.orderDate || b.createdAt || 0).getTime();
+			const ta = Number.isNaN(da) ? Number.MAX_SAFE_INTEGER : da;
+			const tb = Number.isNaN(db) ? Number.MAX_SAFE_INTEGER : db;
+			return ta - tb;
 		});
-		withSortMeta.sort((a, b) => (a.ts - b.ts) || (a.idx - b.idx));
-
-		const invIdMap = new Map();
-		withSortMeta.forEach((entry, i) => {
-			const oldId = String(entry.inv.id || '');
-			const newId = `INV-${monthYear}-${String(i + 1).padStart(3, '0')}`;
-			if (oldId !== newId) invIdMap.set(oldId, newId);
-			entry.inv.id = newId;
-		});
-
-		// Keep invoice array in date order so the numbering and table order match.
-		salesModuleData.invoices = withSortMeta.map((entry) => entry.inv);
-		if (invIdMap.size > 0) dirty = true;
-
-		if (invIdMap.size > 0) {
-			salesModuleData.salesOrders.forEach((so) => {
-				const oldSrcId = String(so.sourceInvoiceId || '');
-				if (invIdMap.has(oldSrcId)) {
-					const newSrcId = invIdMap.get(oldSrcId);
-					so.sourceInvoiceId = newSrcId;
-					so.id = `SO${String(newSrcId).slice(3)}`;
-					dirty = true;
-				}
-			});
-		}
 	}
 
 	/* ── one-time sync: ensure invoices ↔ salesOrders are mirrored ── */
