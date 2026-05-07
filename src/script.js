@@ -48,10 +48,15 @@ function getSalesMonthPayload(month) {
 
 function buildSalesSyncPayload(month, data) {
 	const existing = getSalesMonthPayload(month);
-	const deletedInvoiceIds = normalizeIdArray(existing.deletedInvoiceIds);
-	const deletedOrderIds = normalizeIdArray(existing.deletedOrderIds);
+	const activeInvIds = new Set((Array.isArray(data?.invoices) ? data.invoices : []).map((inv) => String(inv?.id || '')).filter(Boolean));
+	const activeOrdIds = new Set((Array.isArray(data?.salesOrders) ? data.salesOrders : []).map((ord) => String(ord?.id || '')).filter(Boolean));
+	const activeSourceInvIds = new Set((Array.isArray(data?.salesOrders) ? data.salesOrders : []).map((ord) => String(ord?.sourceInvoiceId || '')).filter(Boolean));
+	const deletedInvoiceIds = normalizeIdArray(existing.deletedInvoiceIds).filter((id) => !activeInvIds.has(String(id)));
+	const deletedOrderIds = normalizeIdArray(existing.deletedOrderIds).filter((id) => !activeOrdIds.has(String(id)));
 	const delInv = new Set(deletedInvoiceIds);
 	const delOrd = new Set(deletedOrderIds);
+	// If an order actively references an invoice, that invoice must not remain tombstoned.
+	activeSourceInvIds.forEach((id) => delInv.delete(String(id)));
 	const invoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
 	const salesOrders = (Array.isArray(data?.salesOrders) ? data.salesOrders : []).filter((ord) => {
 		if (!ord || !ord.id) return false;
@@ -59,7 +64,8 @@ function buildSalesSyncPayload(month, data) {
 		if (ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))) return false;
 		return true;
 	});
-	return { invoices, salesOrders, deletedInvoiceIds, deletedOrderIds };
+	const reconciledDeletedInv = normalizeIdArray(Array.from(delInv));
+	return { invoices, salesOrders, deletedInvoiceIds: reconciledDeletedInv, deletedOrderIds };
 }
 
 function markSalesDeletion(month, entity, id) {
@@ -95,14 +101,16 @@ async function mergeSyncSalesMonth(month, localData) {
 			const json = await res.json();
 			const serverData = json && json.data;
 			if (serverData && typeof serverData === 'object') {
-				const mergedDeletedInv = normalizeIdArray([...(toSync.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]);
-				const mergedDeletedOrd = normalizeIdArray([...(toSync.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]);
+				const serverInvs = Array.isArray(serverData.invoices) ? serverData.invoices : [];
+				const serverOrds = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
+				const activeInvIds = new Set([...(toSync.invoices || []).map((i) => String(i.id)), ...serverInvs.map((i) => String(i?.id || '')).filter(Boolean)]);
+				const activeOrdIds = new Set([...(toSync.salesOrders || []).map((o) => String(o.id)), ...serverOrds.map((o) => String(o?.id || '')).filter(Boolean)]);
+				const mergedDeletedInv = normalizeIdArray([...(toSync.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]).filter((id) => !activeInvIds.has(String(id)));
+				const mergedDeletedOrd = normalizeIdArray([...(toSync.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]).filter((id) => !activeOrdIds.has(String(id)));
 				const delInv = new Set(mergedDeletedInv);
 				const delOrd = new Set(mergedDeletedOrd);
 				const localInvIds = new Set((toSync.invoices || []).map((i) => String(i.id)));
 				const localOrdIds = new Set((toSync.salesOrders || []).map((o) => String(o.id)));
-				const serverInvs = Array.isArray(serverData.invoices) ? serverData.invoices : [];
-				const serverOrds = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
 				const mergedInvoices = [...(toSync.invoices || [])].filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
 				const mergedOrders = [...(toSync.salesOrders || [])].filter((ord) => ord && ord.id && !delOrd.has(String(ord.id)) && !(ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))));
 				serverInvs.forEach((inv) => {
@@ -290,6 +298,9 @@ function mergeServerSalesIntoMemory(serverData) {
 	const monthPayload = getSalesMonthPayload(currentSalesMonth);
 	const deletedInv = new Set(normalizeIdArray([...(monthPayload.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]));
 	const deletedOrd = new Set(normalizeIdArray([...(monthPayload.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]));
+	// If server currently has the record, treat it as active (clear stale local tombstones).
+	serverInvoices.forEach((inv) => { if (inv && inv.id) deletedInv.delete(String(inv.id)); });
+	serverOrders.forEach((ord) => { if (ord && ord.id) deletedOrd.delete(String(ord.id)); });
 	const localInvIds = new Set(salesModuleData.invoices.map((inv) => String(inv.id)));
 	const localOrdIds = new Set(salesModuleData.salesOrders.map((ord) => String(ord.id)));
 	let changed = false;
