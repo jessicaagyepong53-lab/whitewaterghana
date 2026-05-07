@@ -407,8 +407,8 @@ async function seedDatabase() {
    ═══════════════════════════════════════════════ */
 
 async function connectDB() {
-  const uri = process.env.MONGO_URI;
-  if (!uri) throw new Error('MONGO_URI is not set in .env');
+  const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
+  if (!uri) throw new Error('Mongo URI is missing. Set MONGO_URI (or MONGODB_URI).');
   await mongoose.connect(uri, {
     dbName: 'whitewater',
     maxPoolSize: 5,

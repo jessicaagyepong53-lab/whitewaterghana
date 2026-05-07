@@ -10,6 +10,13 @@ function ensureDB() {
 const app = require('../server');
 
 module.exports = async (req, res) => {
-  await ensureDB();
-  return app(req, res);
+  try {
+    await ensureDB();
+    return app(req, res);
+  } catch (error) {
+    const message = error && error.message ? error.message : 'Database connection failed';
+    return res.status(500).json({
+      message: `Server initialization error: ${message}`,
+    });
+  }
 };
