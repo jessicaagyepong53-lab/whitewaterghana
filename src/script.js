@@ -31,6 +31,37 @@ function clearPendingSalesSync(month) {
 	} catch (_e) { /* ignore */ }
 }
 
+// Fetch server state for a sales month, merge with localData (local wins on same ID),
+// update localStorage + in-memory salesModuleData if it's the current month, then push.
+async function mergeSyncSalesMonth(month, localData) {
+	const key = monthStorageKey(month);
+	let toSync = localData;
+	try {
+		const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), { credentials: 'include', cache: 'no-store' });
+		if (res.ok) {
+			const json = await res.json();
+			const serverData = json && json.data;
+			if (serverData && typeof serverData === 'object') {
+				const localInvIds = new Set((localData.invoices || []).map((i) => String(i.id)));
+				const localOrdIds = new Set((localData.salesOrders || []).map((o) => String(o.id)));
+				const serverInvs = Array.isArray(serverData.invoices) ? serverData.invoices : [];
+				const serverOrds = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
+				const mergedInvoices = [...(localData.invoices || [])];
+				const mergedOrders = [...(localData.salesOrders || [])];
+				serverInvs.forEach((inv) => { if (inv && inv.id && !localInvIds.has(String(inv.id))) mergedInvoices.push(inv); });
+				serverOrds.forEach((ord) => { if (ord && ord.id && !localOrdIds.has(String(ord.id))) mergedOrders.push(ord); });
+				toSync = { invoices: mergedInvoices, salesOrders: mergedOrders };
+				localStorage.setItem(key, JSON.stringify(toSync));
+				if (month === currentSalesMonth) {
+					salesModuleData.invoices = mergedInvoices;
+					salesModuleData.salesOrders = mergedOrders;
+				}
+			}
+		}
+	} catch (_e) { /* fall back to local-only push */ }
+	return syncToServer(key, toSync);
+}
+
 async function flushPendingSalesSyncToServer() {
 	const pendingKeys = [];
 	for (let i = 0; i < localStorage.length; i += 1) {
@@ -44,7 +75,7 @@ async function flushPendingSalesSyncToServer() {
 			const raw = localStorage.getItem(pendingKey);
 			if (!raw) continue;
 			const data = JSON.parse(raw);
-			const ok = await syncToServer(monthStorageKey(month), data);
+			const ok = await mergeSyncSalesMonth(month, data);
 			if (ok) clearPendingSalesSync(month);
 		} catch (_e) { /* keep pending for next attempt */ }
 	}
@@ -2810,7 +2841,10 @@ function saveSalesDataToStorage() {
 	const key = monthStorageKey(month);
 	localStorage.setItem(key, JSON.stringify(salesModuleData));
 	queuePendingSalesSync(month, salesModuleData);
-	syncToServer(key, salesModuleData).then((ok) => {
+	// Merge-push: fetch current server state first, union with local entries,
+	// then push combined result so other devices' entries are never overwritten.
+	const snapshot = { invoices: [...salesModuleData.invoices], salesOrders: [...salesModuleData.salesOrders] };
+	mergeSyncSalesMonth(month, snapshot).then((ok) => {
 		if (ok) clearPendingSalesSync(month);
 	});
 	// Notify other tabs instantly
@@ -6999,22 +7033,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 				// merge other devices' new entries into local memory, and re-render.
 				try {
 					if (currentSalesMonth) {
-						const syncKey = monthStorageKey(currentSalesMonth);
-						// 1. Push our pending local changes to server before loading
-						await flushPendingSalesSyncToServer();
-						// 2. Force-load server state (bypasses pending guard)
-						const serverData = await loadFromServerForceFresh(syncKey);
-						// 3. Merge any additions from other devices into in-memory state
-						mergeServerSalesIntoMemory(serverData);
-						// 4. Always write the merged in-memory state back to localStorage so any
-						//    in-memory edits made on this device are not lost if the server push
-						//    above (flushPendingSalesSyncToServer) failed or is still pending.
 						const month = currentSalesMonth;
-						localStorage.setItem(syncKey, JSON.stringify(salesModuleData));
-						syncToServer(syncKey, salesModuleData).then((ok) => {
-							if (ok) clearPendingSalesSync(month);
-						});
-						// 5. Re-render the sales page with merged data
+						// Merge local in-memory state with server state and push combined result.
+						// This handles: picking up other devices' new entries AND preserving
+						// any local edits that haven't reached the server yet.
+						const snapshot = { invoices: [...salesModuleData.invoices], salesOrders: [...salesModuleData.salesOrders] };
+						const ok = await mergeSyncSalesMonth(month, snapshot);
+						if (ok) clearPendingSalesSync(month);
+						// Re-render the sales page with merged data
 						document.dispatchEvent(new Event('ww-refresh-sales'));
 					}
 				} catch (_pullErr) { /* ignore */ }
