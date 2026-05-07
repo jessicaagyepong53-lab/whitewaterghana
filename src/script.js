@@ -7076,14 +7076,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 				try {
 					if (currentSalesMonth) {
 						const month = currentSalesMonth;
-						// Merge local in-memory state with server state and push combined result.
-						// This handles: picking up other devices' new entries AND preserving
-						// any local edits that haven't reached the server yet.
-						const snapshot = { invoices: [...salesModuleData.invoices], salesOrders: [...salesModuleData.salesOrders] };
-						const ok = await mergeSyncSalesMonth(month, snapshot);
-						if (ok) clearPendingSalesSync(month);
-						// Re-render the sales page with merged data
-						document.dispatchEvent(new Event('ww-refresh-sales'));
+						const syncKey = monthStorageKey(month);
+						// Pull latest server state and merge additions into memory.
+						const serverData = await loadFromServerForceFresh(syncKey);
+						const hadNew = mergeServerSalesIntoMemory(serverData);
+						localStorage.setItem(syncKey, JSON.stringify(salesModuleData));
+
+						// Only push back when this month has local pending changes.
+						// Avoid unconditional write-back here; it can create a 5s sync loop
+						// (remote stamp keeps changing) and causes UI blinking/re-renders.
+						if (hasPendingSalesSyncForKey(syncKey)) {
+							const snapshot = { invoices: [...salesModuleData.invoices], salesOrders: [...salesModuleData.salesOrders] };
+							const ok = await mergeSyncSalesMonth(month, snapshot);
+							if (ok) clearPendingSalesSync(month);
+						}
+
+						if (hadNew) {
+							// Re-render only when something actually changed locally.
+							document.dispatchEvent(new Event('ww-refresh-sales'));
+						}
 					}
 				} catch (_pullErr) { /* ignore */ }
 			} catch (_e) { /* keep polling */ }
