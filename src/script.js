@@ -4140,10 +4140,10 @@ function initPurchasePage() {
 		});
 	};
 
-	const closeModal = () => {
+	const closeModal = (skipDraft = false) => {
 		const savedEntity = currentEntity;
 		const wasAdding = !editingId;
-		if (wasAdding && savedEntity) saveModalDraft(savedEntity);
+		if (!skipDraft && wasAdding && savedEntity) saveModalDraft(savedEntity);
 		if (addModal) addModal.style.display = 'none';
 		if (modalForm) modalForm.reset();
 		clearModalValidation();
@@ -4276,7 +4276,7 @@ function initPurchasePage() {
 
 			savePurchaseDataToStorage();
 			clearModalDraft(currentEntity);
-			closeModal();
+			closeModal(true); // skipDraft=true — data saved, don't re-save draft
 			renderPurchasePage();
 		});
 	}
