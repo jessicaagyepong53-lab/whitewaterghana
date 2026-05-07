@@ -680,9 +680,26 @@ body {
 .iq-amount { font-weight: 600; color: #0a3858; }
 .btn-follow-up { background: none; border: 1px solid #0077b6; color: #0077b6; padding: 3px 10px; border-radius: 6px; cursor: pointer; font-size: 0.78rem; white-space: nowrap; transition: background 0.15s, color 0.15s; }
 .btn-follow-up:hover { background: #0077b6; color: #fff; }
-.btn-edit { background: none; border: 1px solid #94a3b8; color: #475569; padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 0.78rem; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+.btn-edit,
+.btn-delete {
+	min-width: 32px;
+	height: 28px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	background: none;
+	padding: 3px 8px;
+	border-radius: 6px;
+	cursor: pointer;
+	font-size: 0.78rem;
+	line-height: 1;
+	-webkit-font-smoothing: antialiased;
+	backface-visibility: hidden;
+	transition: none;
+}
+.btn-edit { border: 1px solid #94a3b8; color: #475569; }
 .btn-edit:hover { background: #0077b6; color: #fff; border-color: #0077b6; }
-.btn-delete { background: none; border: 1px solid #f87171; color: #dc2626; padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 0.78rem; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+.btn-delete { border: 1px solid #f87171; color: #dc2626; }
 .btn-delete:hover { background: #dc2626; color: #fff; border-color: #dc2626; }
 .btn-approve { background: none; border: 1px solid #22c55e; color: #15803d; padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 0.78rem; transition: background 0.15s, color 0.15s, border-color 0.15s; }
 .btn-approve:hover { background: #22c55e; color: #fff; border-color: #22c55e; }
