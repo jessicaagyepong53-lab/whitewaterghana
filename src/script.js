@@ -6526,7 +6526,7 @@ function renderReportsData() {
 		{ icon: '<i class="fa-solid fa-chart-bar"></i>', label: 'Sales (' + filterLabel + ')', value: formatCurrency(allSalesTotal), meta: filterType === 'all' ? 'All tracked sales' : 'Filtered period', color: '' },
 		{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Forecast', value: formatCurrency(projected), meta: salesTrends.length >= 2 ? 'Trend-based projection' : 'Need more months', color: 'green' },
 		{ icon: '<i class="fa-solid fa-coins"></i>', label: 'Net Profit', value: formatCurrency(netProfit), meta: 'Revenue − COGS − Expenses', color: 'yellow' },
-		{ icon: '<i class="fa-solid fa-file-invoice"></i>', label: 'Total Invoices', value: totalInvoicesAllTime.toLocaleString(), meta: `${invoices.length} in ${filterLabel}`, color: 'purple' },
+		{ icon: '<i class="fa-solid fa-file-invoice"></i>', label: 'Total Invoices (All Time)', value: totalInvoicesAllTime.toLocaleString(), meta: `Overall total • ${invoices.length} in ${filterLabel}`, color: 'purple' },
 		{ icon: '<i class="fa-solid fa-industry"></i>', label: 'Ops Health', value: `${opsHealth}%`, meta: totalEquip > 0 ? `${operationalEquip}/${totalEquip} equipment up` : 'No equipment tracked', color: '' },
 	];
 
