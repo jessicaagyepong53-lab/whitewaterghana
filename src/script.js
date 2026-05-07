@@ -2817,6 +2817,7 @@ function loadMonthData(month) {
 			// create missing SO
 			const so = {
 				id: soId,
+				sourceInvoiceId: inv.id,
 				customer: inv.customer,
 				orderDate: inv.date || inv.orderDate,
 				deliveryDate: inv.date || inv.orderDate,
@@ -2836,6 +2837,7 @@ function loadMonthData(month) {
 		} else {
 			// update existing SO to match invoice (no dirty flag unless something is missing)
 			const so = soMap[soId];
+			so.sourceInvoiceId = inv.id;
 			so.customer = inv.customer;
 			so.orderDate = inv.date || inv.orderDate;
 			so.deliveryDate = inv.date || inv.orderDate;
@@ -2851,9 +2853,11 @@ function loadMonthData(month) {
 		}
 	});
 
-	// For every SO without a matching invoice, create one
+	// Only mirror SO -> invoice when the SO is explicitly linked.
+	// This prevents duplicate invoice explosions when standalone SO IDs diverge.
 	salesModuleData.salesOrders.forEach(so => {
-		const invId = 'INV' + so.id.slice(2); // SO-2026-040 → INV-2026-040
+		const invId = so.sourceInvoiceId ? String(so.sourceInvoiceId) : '';
+		if (!invId) return;
 		if (!invMap[invId]) {
 			const inv = {
 				id: invId,
