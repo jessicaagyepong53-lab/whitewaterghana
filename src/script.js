@@ -2856,18 +2856,32 @@ function saveSalesDataToStorage() {
 }
 
 function nextInvoiceId() {
-	// Numbering resets each month — scan only current month's invoices
-	const ids = new Set(salesModuleData.invoices.map((inv) => String(inv.id)));
-	const nums = Array.from(ids).map((id) => { const m = id.match(/(\d+)$/); return m ? Number(m[1]) : 0; });
-	const next = (Math.max(0, ...nums) + 1);
+	// Numbering resets each month — choose the next missing number in this month
+	const used = new Set(
+		salesModuleData.invoices
+			.map((inv) => {
+				const m = String(inv.id || '').match(/(\d+)$/);
+				return m ? Number(m[1]) : 0;
+			})
+			.filter((n) => Number.isFinite(n) && n > 0)
+	);
+	let next = 1;
+	while (used.has(next)) next += 1;
 	return `INV-${new Date().getFullYear()}-${String(next).padStart(3, '0')}`;
 }
 
 function nextOrderId() {
-	// Numbering resets each month — scan only current month's orders
-	const ids = new Set(salesModuleData.salesOrders.map((o) => String(o.id)));
-	const nums = Array.from(ids).map((id) => { const m = id.match(/(\d+)$/); return m ? Number(m[1]) : 0; });
-	const next = (Math.max(0, ...nums) + 1);
+	// Numbering resets each month — choose the next missing number in this month
+	const used = new Set(
+		salesModuleData.salesOrders
+			.map((o) => {
+				const m = String(o.id || '').match(/(\d+)$/);
+				return m ? Number(m[1]) : 0;
+			})
+			.filter((n) => Number.isFinite(n) && n > 0)
+	);
+	let next = 1;
+	while (used.has(next)) next += 1;
 	return `SO-${new Date().getFullYear()}-${String(next).padStart(3, '0')}`;
 }
 
