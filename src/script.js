@@ -1923,6 +1923,10 @@ async function initInventoryPage() {
 		});
 	};
 
+	/* ── Inventory draft helpers — must be declared before the render functions below ── */
+	const invDraftKey = (entity) => `ww_inv_modal_draft_${entity}`;
+	const getInvDraft = (entity) => { try { return JSON.parse(localStorage.getItem(invDraftKey(entity))); } catch (_e) { return null; } };
+
 	const renderMaterials = () => {
 		const materialsBody = document.getElementById('inv-materials-tbody');
 		if (!materialsBody) {
@@ -2187,9 +2191,7 @@ async function initInventoryPage() {
 	let currentEntity = null;
 	let editingIdx = -1;
 
-	/* ── Inventory draft helpers ── */
-	const invDraftKey = (entity) => `ww_inv_modal_draft_${entity}`;
-	const getInvDraft = (entity) => { try { return JSON.parse(localStorage.getItem(invDraftKey(entity))); } catch (_e) { return null; } };
+	/* clearInvDraft / saveInvDraft / restoreInvDraft — invDraftKey and getInvDraft already declared above */
 	const clearInvDraft = (entity) => { localStorage.removeItem(invDraftKey(entity)); };
 	const saveInvDraft = (entity) => {
 		const config = MODAL_CONFIGS[entity];
@@ -2819,19 +2821,23 @@ function saveSalesDataToStorage() {
 }
 
 function nextInvoiceId() {
-	const nums = salesModuleData.invoices.map((inv) => {
-		const match = String(inv.id).match(/(\d+)$/);
-		return match ? Number(match[1]) : 0;
-	});
+	// Scan across ALL months so IDs are globally unique and never restart from 001 in a new month
+	const { invoices: allInvoices } = getAllSalesData();
+	const allIds = new Set(allInvoices.map((inv) => String(inv.id)));
+	// Also include current in-memory invoices (may not be saved yet)
+	salesModuleData.invoices.forEach((inv) => allIds.add(String(inv.id)));
+	const nums = Array.from(allIds).map((id) => { const m = id.match(/(\d+)$/); return m ? Number(m[1]) : 0; });
 	const next = (Math.max(0, ...nums) + 1);
 	return `INV-${new Date().getFullYear()}-${String(next).padStart(3, '0')}`;
 }
 
 function nextOrderId() {
-	const nums = salesModuleData.salesOrders.map((o) => {
-		const match = String(o.id).match(/(\d+)$/);
-		return match ? Number(match[1]) : 0;
-	});
+	// Scan across ALL months so IDs are globally unique and never restart from 001 in a new month
+	const { salesOrders: allOrders } = getAllSalesData();
+	const allIds = new Set(allOrders.map((o) => String(o.id)));
+	// Also include current in-memory orders (may not be saved yet)
+	salesModuleData.salesOrders.forEach((o) => allIds.add(String(o.id)));
+	const nums = Array.from(allIds).map((id) => { const m = id.match(/(\d+)$/); return m ? Number(m[1]) : 0; });
 	const next = (Math.max(0, ...nums) + 1);
 	return `SO-${new Date().getFullYear()}-${String(next).padStart(3, '0')}`;
 }
@@ -6999,16 +7005,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 						// 2. Force-load server state (bypasses pending guard)
 						const serverData = await loadFromServerForceFresh(syncKey);
 						// 3. Merge any additions from other devices into in-memory state
-						const hadNew = mergeServerSalesIntoMemory(serverData);
-						if (hadNew) {
-							// Save merged state so server has the union of all devices' data
-							const month = currentSalesMonth;
-							localStorage.setItem(syncKey, JSON.stringify(salesModuleData));
-							syncToServer(syncKey, salesModuleData).then((ok) => {
-								if (ok) clearPendingSalesSync(month);
-							});
-						}
-						// 4. Re-render the sales page with merged data
+						mergeServerSalesIntoMemory(serverData);
+						// 4. Always write the merged in-memory state back to localStorage so any
+						//    in-memory edits made on this device are not lost if the server push
+						//    above (flushPendingSalesSyncToServer) failed or is still pending.
+						const month = currentSalesMonth;
+						localStorage.setItem(syncKey, JSON.stringify(salesModuleData));
+						syncToServer(syncKey, salesModuleData).then((ok) => {
+							if (ok) clearPendingSalesSync(month);
+						});
+						// 5. Re-render the sales page with merged data
 						document.dispatchEvent(new Event('ww-refresh-sales'));
 					}
 				} catch (_pullErr) { /* ignore */ }
