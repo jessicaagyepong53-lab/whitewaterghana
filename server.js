@@ -1444,7 +1444,7 @@ app.use((error, _req, res, _next) => {
 if (!process.env.VERCEL) {
   connectDB().then(() => {
     app.listen(PORT, () => {
-      console.log(`White Water Ghana app running on http://localhost:${PORT}`);
+      console.log(`Server running on port ${PORT}`);
     });
   }).catch((err) => {
     console.error('Failed to connect to MongoDB:', err.message);
