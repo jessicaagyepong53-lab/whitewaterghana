@@ -31,26 +31,94 @@ function clearPendingSalesSync(month) {
 	} catch (_e) { /* ignore */ }
 }
 
+function normalizeIdArray(values) {
+	if (!Array.isArray(values)) return [];
+	return Array.from(new Set(values.map((v) => String(v || '').trim()).filter(Boolean)));
+}
+
+function getSalesMonthPayload(month) {
+	try {
+		const raw = localStorage.getItem(monthStorageKey(month));
+		const parsed = raw ? JSON.parse(raw) : null;
+		return parsed && typeof parsed === 'object' ? parsed : {};
+	} catch (_e) {
+		return {};
+	}
+}
+
+function buildSalesSyncPayload(month, data) {
+	const existing = getSalesMonthPayload(month);
+	const deletedInvoiceIds = normalizeIdArray(existing.deletedInvoiceIds);
+	const deletedOrderIds = normalizeIdArray(existing.deletedOrderIds);
+	const delInv = new Set(deletedInvoiceIds);
+	const delOrd = new Set(deletedOrderIds);
+	const invoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
+	const salesOrders = (Array.isArray(data?.salesOrders) ? data.salesOrders : []).filter((ord) => {
+		if (!ord || !ord.id) return false;
+		if (delOrd.has(String(ord.id))) return false;
+		if (ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))) return false;
+		return true;
+	});
+	return { invoices, salesOrders, deletedInvoiceIds, deletedOrderIds };
+}
+
+function markSalesDeletion(month, entity, id) {
+	if (!month || !id) return;
+	const payload = buildSalesSyncPayload(month, {
+		invoices: salesModuleData.invoices,
+		salesOrders: salesModuleData.salesOrders,
+	});
+	if (entity === 'invoice') payload.deletedInvoiceIds = normalizeIdArray([...(payload.deletedInvoiceIds || []), String(id)]);
+	if (entity === 'order') payload.deletedOrderIds = normalizeIdArray([...(payload.deletedOrderIds || []), String(id)]);
+	localStorage.setItem(monthStorageKey(month), JSON.stringify(payload));
+}
+
+function unmarkSalesDeletion(month, entity, id) {
+	if (!month || !id) return;
+	const payload = buildSalesSyncPayload(month, {
+		invoices: salesModuleData.invoices,
+		salesOrders: salesModuleData.salesOrders,
+	});
+	if (entity === 'invoice') payload.deletedInvoiceIds = (payload.deletedInvoiceIds || []).filter((v) => String(v) !== String(id));
+	if (entity === 'order') payload.deletedOrderIds = (payload.deletedOrderIds || []).filter((v) => String(v) !== String(id));
+	localStorage.setItem(monthStorageKey(month), JSON.stringify(payload));
+}
+
 // Fetch server state for a sales month, merge with localData (local wins on same ID),
 // update localStorage + in-memory salesModuleData if it's the current month, then push.
 async function mergeSyncSalesMonth(month, localData) {
 	const key = monthStorageKey(month);
-	let toSync = localData;
+	let toSync = buildSalesSyncPayload(month, localData);
 	try {
 		const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), { credentials: 'include', cache: 'no-store' });
 		if (res.ok) {
 			const json = await res.json();
 			const serverData = json && json.data;
 			if (serverData && typeof serverData === 'object') {
-				const localInvIds = new Set((localData.invoices || []).map((i) => String(i.id)));
-				const localOrdIds = new Set((localData.salesOrders || []).map((o) => String(o.id)));
+				const mergedDeletedInv = normalizeIdArray([...(toSync.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]);
+				const mergedDeletedOrd = normalizeIdArray([...(toSync.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]);
+				const delInv = new Set(mergedDeletedInv);
+				const delOrd = new Set(mergedDeletedOrd);
+				const localInvIds = new Set((toSync.invoices || []).map((i) => String(i.id)));
+				const localOrdIds = new Set((toSync.salesOrders || []).map((o) => String(o.id)));
 				const serverInvs = Array.isArray(serverData.invoices) ? serverData.invoices : [];
 				const serverOrds = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
-				const mergedInvoices = [...(localData.invoices || [])];
-				const mergedOrders = [...(localData.salesOrders || [])];
-				serverInvs.forEach((inv) => { if (inv && inv.id && !localInvIds.has(String(inv.id))) mergedInvoices.push(inv); });
-				serverOrds.forEach((ord) => { if (ord && ord.id && !localOrdIds.has(String(ord.id))) mergedOrders.push(ord); });
-				toSync = { invoices: mergedInvoices, salesOrders: mergedOrders };
+				const mergedInvoices = [...(toSync.invoices || [])].filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
+				const mergedOrders = [...(toSync.salesOrders || [])].filter((ord) => ord && ord.id && !delOrd.has(String(ord.id)) && !(ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))));
+				serverInvs.forEach((inv) => {
+					if (!inv || !inv.id) return;
+					const invId = String(inv.id);
+					if (delInv.has(invId)) return;
+					if (!localInvIds.has(invId)) mergedInvoices.push(inv);
+				});
+				serverOrds.forEach((ord) => {
+					if (!ord || !ord.id) return;
+					const ordId = String(ord.id);
+					if (delOrd.has(ordId)) return;
+					if (ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))) return;
+					if (!localOrdIds.has(ordId)) mergedOrders.push(ord);
+				});
+				toSync = { invoices: mergedInvoices, salesOrders: mergedOrders, deletedInvoiceIds: mergedDeletedInv, deletedOrderIds: mergedDeletedOrd };
 				localStorage.setItem(key, JSON.stringify(toSync));
 				if (month === currentSalesMonth) {
 					salesModuleData.invoices = mergedInvoices;
@@ -219,18 +287,21 @@ function mergeServerSalesIntoMemory(serverData) {
 	if (!serverData || typeof serverData !== 'object') return false;
 	const serverInvoices = Array.isArray(serverData.invoices) ? serverData.invoices : [];
 	const serverOrders = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
+	const monthPayload = getSalesMonthPayload(currentSalesMonth);
+	const deletedInv = new Set(normalizeIdArray([...(monthPayload.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]));
+	const deletedOrd = new Set(normalizeIdArray([...(monthPayload.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]));
 	const localInvIds = new Set(salesModuleData.invoices.map((inv) => String(inv.id)));
 	const localOrdIds = new Set(salesModuleData.salesOrders.map((ord) => String(ord.id)));
 	let changed = false;
 	serverInvoices.forEach((inv) => {
-		if (inv && inv.id && !localInvIds.has(String(inv.id))) {
+		if (inv && inv.id && !deletedInv.has(String(inv.id)) && !localInvIds.has(String(inv.id))) {
 			salesModuleData.invoices.push(inv);
 			localInvIds.add(String(inv.id));
 			changed = true;
 		}
 	});
 	serverOrders.forEach((ord) => {
-		if (ord && ord.id && !localOrdIds.has(String(ord.id))) {
+		if (ord && ord.id && !deletedOrd.has(String(ord.id)) && !(ord.sourceInvoiceId && deletedInv.has(String(ord.sourceInvoiceId))) && !localOrdIds.has(String(ord.id))) {
 			salesModuleData.salesOrders.push(ord);
 			localOrdIds.add(String(ord.id));
 			changed = true;
@@ -2857,11 +2928,12 @@ function seedMarchSalesData() {
 function saveSalesDataToStorage() {
 	const month = currentSalesMonth;
 	const key = monthStorageKey(month);
-	localStorage.setItem(key, JSON.stringify(salesModuleData));
-	queuePendingSalesSync(month, salesModuleData);
+	const payload = buildSalesSyncPayload(month, salesModuleData);
+	localStorage.setItem(key, JSON.stringify(payload));
+	queuePendingSalesSync(month, payload);
 	// Merge-push: fetch current server state first, union with local entries,
 	// then push combined result so other devices' entries are never overwritten.
-	const snapshot = { invoices: [...salesModuleData.invoices], salesOrders: [...salesModuleData.salesOrders] };
+	const snapshot = { invoices: [...payload.invoices], salesOrders: [...payload.salesOrders], deletedInvoiceIds: [...(payload.deletedInvoiceIds || [])], deletedOrderIds: [...(payload.deletedOrderIds || [])] };
 	mergeSyncSalesMonth(month, snapshot).then((ok) => {
 		if (ok) clearPendingSalesSync(month);
 	});
@@ -3525,6 +3597,8 @@ async function initSalesInvoicesPage() {
 					savedInvoice = salesModuleData.invoices[editingSiIdx];
 				} else {
 					invData.id = nextInvoiceId();
+					unmarkSalesDeletion(currentSalesMonth, 'invoice', invData.id);
+					unmarkSalesDeletion(currentSalesMonth, 'order', `SO${String(invData.id).slice(3)}`);
 					if (!invData.createdAt) invData.createdAt = new Date().toISOString();
 					salesModuleData.invoices.push(invData);
 					savedInvoice = invData;
@@ -3561,6 +3635,7 @@ async function initSalesInvoicesPage() {
 					Object.assign(salesModuleData.salesOrders[editingSiIdx], ordData);
 				} else {
 					ordData.id = nextOrderId();
+					unmarkSalesDeletion(currentSalesMonth, 'order', ordData.id);
 					salesModuleData.salesOrders.push(ordData);
 				}
 			}
@@ -3603,10 +3678,12 @@ async function initSalesInvoicesPage() {
 				const idx = salesModuleData.invoices.findIndex((inv) => String(inv.id) === String(deleteId));
 				const inv = idx >= 0 ? salesModuleData.invoices[idx] : null;
 				if (inv) moveAppDataDeleteToTrash('invoices', inv, { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'invoices' });
+				if (inv && inv.id) markSalesDeletion(currentSalesMonth, 'invoice', inv.id);
 				if (idx >= 0) salesModuleData.invoices.splice(idx, 1);
 				if (inv && inv.id) {
 					const soIdx = salesModuleData.salesOrders.findIndex((o) => o.sourceInvoiceId === inv.id || o.id === `SO${String(inv.id).slice(3)}`);
 					if (soIdx >= 0) {
+						markSalesDeletion(currentSalesMonth, 'order', salesModuleData.salesOrders[soIdx].id);
 						moveAppDataDeleteToTrash('sales', salesModuleData.salesOrders[soIdx], { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'salesOrders' });
 						salesModuleData.salesOrders.splice(soIdx, 1);
 					}
@@ -3616,6 +3693,7 @@ async function initSalesInvoicesPage() {
 				const idx = salesModuleData.salesOrders.findIndex((ord) => String(ord.id) === String(deleteId));
 				const ord = idx >= 0 ? salesModuleData.salesOrders[idx] : null;
 				if (ord) moveAppDataDeleteToTrash('sales', ord, { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'salesOrders' });
+				if (ord && ord.id) markSalesDeletion(currentSalesMonth, 'order', ord.id);
 				if (idx >= 0) salesModuleData.salesOrders.splice(idx, 1);
 				showDeleteToast(`Sales order ${ord ? ord.id : ''} deleted.`);
 			}
