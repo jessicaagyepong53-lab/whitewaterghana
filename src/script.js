@@ -45,6 +45,10 @@ function invoiceSignature(inv) {
 	return [
 		String(inv.customer || '').trim().toLowerCase(),
 		String(inv.date || '').trim(),
+		String(inv.createdAt || '').trim(),
+		String(inv.phone || '').trim(),
+		String(inv.address || '').trim(),
+		String(inv.paidDate || '').trim(),
 		Number(inv.amount || 0),
 		itemName,
 		qty,
