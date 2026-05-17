@@ -2060,10 +2060,314 @@ async function initInventoryPage() {
 	const userRole = await resolveCurrentUserRole();
 	const canAdd = ['ceo', 'manager', 'supervisor'].includes(userRole);
 
-	let rawMaterials = loadRawMaterialsFromStorage();
-	let finishedProducts = loadFinishedProductsFromStorage();
-	let equipment = await fetchEquipmentFromServer();
+	const INVENTORY_MONTHS_KEY = 'ww_inventory_months';
+	const INVENTORY_MONTHLY_MIGRATED_KEY = 'ww_inventory_monthly_migrated_v1';
+	const INVENTORY_FINISHED_REBUCKET_KEY = 'ww_inventory_finished_rebucket_v1';
+	const inventoryMonthStorageKey = (month) => `ww_inventory_${month}`;
+	const loadSyncedFinishedProducts = () => {
+		try {
+			const rows = JSON.parse(localStorage.getItem('ww_finished_products') || '[]');
+			return Array.isArray(rows) ? rows : [];
+		} catch (_e) {
+			return [];
+		}
+	};
+	const getInventoryMonths = () => {
+		let fromIndex = [];
+		try { fromIndex = JSON.parse(localStorage.getItem(INVENTORY_MONTHS_KEY) || '[]'); } catch (_e) { fromIndex = []; }
+		const recovered = new Set(Array.isArray(fromIndex) ? fromIndex : []);
+		for (let i = 0; i < localStorage.length; i += 1) {
+			const key = localStorage.key(i);
+			if (!key) continue;
+			const match = /^ww_inventory_(\d{4}-\d{2})$/.exec(key);
+			if (match && match[1]) recovered.add(match[1]);
+		}
+		const inferMonthFromRaw = (row) => {
+			const raw = String((row && (row.date || row.addedDate || row.month)) || '').trim();
+			const iso = raw.match(/^(\d{4}-\d{2})/);
+			if (iso) return iso[1];
+			const dmy = raw.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+			if (dmy) {
+				const m = Number(dmy[2]);
+				let y = Number(dmy[3]);
+				if (y < 100) y += 2000;
+				if (m >= 1 && m <= 12 && y >= 2000) return `${y}-${String(m).padStart(2, '0')}`;
+			}
+			const d = raw ? new Date(raw) : null;
+			if (d && !isNaN(d)) return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+			return '';
+		};
+		for (const product of loadSyncedFinishedProducts()) {
+			const month = inferMonthFromRaw(product);
+			if (/^\d{4}-\d{2}$/.test(month)) recovered.add(month);
+		}
+		return Array.from(recovered).sort();
+	};
+	const saveInventoryMonths = (months) => {
+		localStorage.setItem(INVENTORY_MONTHS_KEY, JSON.stringify(months));
+	};
+	const ensureInventoryMonthExists = (month) => {
+		const months = getInventoryMonths();
+		if (!months.includes(month)) {
+			months.push(month);
+			months.sort();
+			saveInventoryMonths(months);
+		}
+	};
+	const hasAnyInventoryMonthPayload = () => {
+		const months = getInventoryMonths();
+		return months.some((m) => {
+			try {
+				const loaded = JSON.parse(localStorage.getItem(inventoryMonthStorageKey(m)) || 'null');
+				return loaded && typeof loaded === 'object';
+			} catch (_e) {
+				return false;
+			}
+		});
+	};
+	const now = new Date();
+	const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+	const initialMonths = getInventoryMonths();
+	if (!initialMonths.length) saveInventoryMonths([thisMonth]);
+	let currentInventoryMonth = initialMonths.includes(thisMonth)
+		? thisMonth
+		: (initialMonths[initialMonths.length - 1] || thisMonth);
+	ensureInventoryMonthExists(currentInventoryMonth);
+
+	let rawMaterials = [];
+	let finishedProducts = [];
+	let equipment = [];
 	let customers = [];
+
+	const inferProductMonth = (row) => {
+		const raw = String((row && (row.date || row.addedDate)) || '').trim();
+		if (/^\d{4}-\d{2}/.test(raw)) return raw.slice(0, 7);
+		const dmy = raw.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+		if (dmy) {
+			const day = Number(dmy[1]);
+			const month = Number(dmy[2]);
+			let year = Number(dmy[3]);
+			if (year < 100) year += 2000;
+			if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 2000) {
+				return `${year}-${String(month).padStart(2, '0')}`;
+			}
+		}
+		if (raw) {
+			const d = new Date(raw);
+			if (!isNaN(d)) return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+		}
+		return thisMonth;
+	};
+
+	const collectAllFinishedProductsAcrossMonths = () => {
+		const byMonth = {};
+		for (const product of loadSyncedFinishedProducts()) {
+			if (!product || typeof product !== 'object') continue;
+			const month = inferProductMonth(product);
+			if (!byMonth[month]) byMonth[month] = [];
+			byMonth[month].push({ ...product, month });
+		}
+		for (const month of getInventoryMonths()) {
+			let loaded = null;
+			try {
+				loaded = JSON.parse(localStorage.getItem(inventoryMonthStorageKey(month)) || 'null');
+			} catch (_e) {
+				loaded = null;
+			}
+			if (loaded && typeof loaded === 'object' && Array.isArray(loaded.finishedProducts)) {
+				byMonth[month] = loaded.finishedProducts
+					.filter((product) => product && typeof product === 'object')
+					.map((product) => ({ ...product, month: inferProductMonth(product) || month }));
+			}
+		}
+		const rows = [];
+		for (const month of Object.keys(byMonth).sort()) {
+			rows.push(...byMonth[month]);
+		}
+		return rows;
+	};
+
+	const migrateLegacyInventoryMonthlyIfNeeded = () => {
+		if (localStorage.getItem(INVENTORY_MONTHLY_MIGRATED_KEY) === '1') return;
+		if (hasAnyInventoryMonthPayload()) {
+			const legacyFinished = loadFinishedProductsFromStorage();
+			const months = new Set(getInventoryMonths());
+			for (const product of legacyFinished) {
+				months.add(inferProductMonth(product));
+			}
+			saveInventoryMonths(Array.from(months).sort());
+			localStorage.setItem(INVENTORY_MONTHLY_MIGRATED_KEY, '1');
+			return;
+		}
+
+		const legacyRaw = loadRawMaterialsFromStorage();
+		const legacyFinished = loadFinishedProductsFromStorage();
+		const legacyEquipment = loadEquipmentFromStorage();
+		const existingMonths = new Set(getInventoryMonths());
+		const finishedByMonth = {};
+
+		for (const product of legacyFinished) {
+			const month = inferProductMonth(product);
+			existingMonths.add(month);
+			if (!finishedByMonth[month]) finishedByMonth[month] = [];
+			finishedByMonth[month].push({ ...product });
+		}
+
+		if (!existingMonths.size) existingMonths.add(thisMonth);
+		const months = Array.from(existingMonths).sort();
+		saveInventoryMonths(months);
+
+		for (const month of months) {
+			const payload = {
+				rawMaterials: month === thisMonth ? legacyRaw : [],
+				finishedProducts: finishedByMonth[month] || [],
+				equipment: month === thisMonth ? legacyEquipment : [],
+				customers: [],
+			};
+			localStorage.setItem(inventoryMonthStorageKey(month), JSON.stringify(payload));
+		}
+
+		localStorage.setItem(INVENTORY_MONTHLY_MIGRATED_KEY, '1');
+	};
+
+	const rebucketFinishedProductsByDateIfNeeded = () => {
+		if (localStorage.getItem(INVENTORY_FINISHED_REBUCKET_KEY) === '1') return;
+
+		let legacyAll = [];
+		try {
+			legacyAll = JSON.parse(localStorage.getItem('ww_finished_products') || '[]');
+		} catch (_e) {
+			legacyAll = [];
+		}
+		if (!Array.isArray(legacyAll) || !legacyAll.length) {
+			localStorage.setItem(INVENTORY_FINISHED_REBUCKET_KEY, '1');
+			return;
+		}
+
+		const byMonth = {};
+		const months = new Set(getInventoryMonths());
+		for (const product of legacyAll) {
+			const month = inferProductMonth(product);
+			months.add(month);
+			if (!byMonth[month]) byMonth[month] = [];
+			byMonth[month].push({ ...product, month });
+		}
+
+		const monthList = Array.from(months).sort();
+		if (!monthList.length) {
+			localStorage.setItem(INVENTORY_FINISHED_REBUCKET_KEY, '1');
+			return;
+		}
+
+		saveInventoryMonths(monthList);
+		for (const month of monthList) {
+			let payload = null;
+			try {
+				payload = JSON.parse(localStorage.getItem(inventoryMonthStorageKey(month)) || 'null');
+			} catch (_e) {
+				payload = null;
+			}
+			const nextPayload = {
+				rawMaterials: Array.isArray(payload?.rawMaterials) ? payload.rawMaterials : [],
+				finishedProducts: byMonth[month] || [],
+				equipment: Array.isArray(payload?.equipment) ? payload.equipment : [],
+				customers: Array.isArray(payload?.customers) ? payload.customers : [],
+			};
+			localStorage.setItem(inventoryMonthStorageKey(month), JSON.stringify(nextPayload));
+		}
+
+		localStorage.setItem(INVENTORY_FINISHED_REBUCKET_KEY, '1');
+
+		if (!monthList.includes(currentInventoryMonth)) {
+			currentInventoryMonth = monthList[monthList.length - 1] || thisMonth;
+		}
+	};
+
+	const persistInventoryMonthState = () => {
+		const payload = {
+			rawMaterials: Array.isArray(rawMaterials) ? rawMaterials : [],
+			finishedProducts: Array.isArray(finishedProducts) ? finishedProducts : [],
+			equipment: Array.isArray(equipment) ? equipment : [],
+			customers: Array.isArray(customers) ? customers : [],
+		};
+		const monthKey = inventoryMonthStorageKey(currentInventoryMonth);
+		localStorage.setItem(monthKey, JSON.stringify(payload));
+
+		// Keep legacy snapshot keys in sync for other modules.
+		localStorage.setItem('ww_raw_materials', JSON.stringify(payload.rawMaterials));
+		syncToServer('ww_raw_materials', payload.rawMaterials);
+		const allFinishedProducts = collectAllFinishedProductsAcrossMonths();
+		localStorage.setItem('ww_finished_products', JSON.stringify(allFinishedProducts));
+		syncToServer('ww_finished_products', allFinishedProducts);
+		rebuildDailyProductionLog(allFinishedProducts);
+		localStorage.setItem('ww_equipment', JSON.stringify(payload.equipment));
+
+		try {
+			const rawChannel = new BroadcastChannel('ww_raw_materials_sync');
+			rawChannel.postMessage({ type: 'raw_materials_updated', month: currentInventoryMonth });
+			rawChannel.close();
+		} catch (_e) { /* noop */ }
+		try {
+			const finishedChannel = new BroadcastChannel('ww_finished_products_sync');
+			finishedChannel.postMessage({ type: 'finished_products_updated', month: currentInventoryMonth });
+			finishedChannel.close();
+		} catch (_e) { /* noop */ }
+		try {
+			const equipmentChannel = new BroadcastChannel('ww_equipment_sync');
+			equipmentChannel.postMessage({ type: 'equipment_updated', month: currentInventoryMonth });
+			equipmentChannel.close();
+		} catch (_e) { /* noop */ }
+	};
+
+	const loadInventoryMonthState = async (month) => {
+		currentInventoryMonth = month;
+		const syncedForMonth = loadSyncedFinishedProducts().filter((product) => inferProductMonth(product) === currentInventoryMonth);
+		let loaded = null;
+		try {
+			loaded = JSON.parse(localStorage.getItem(inventoryMonthStorageKey(month)) || 'null');
+		} catch (_e) {
+			loaded = null;
+		}
+
+		if (loaded && typeof loaded === 'object') {
+			rawMaterials = Array.isArray(loaded.rawMaterials) ? loaded.rawMaterials : [];
+			if (Array.isArray(loaded.finishedProducts) && loaded.finishedProducts.length > 0) {
+				finishedProducts = loaded.finishedProducts;
+			} else {
+				finishedProducts = syncedForMonth;
+			}
+			equipment = Array.isArray(loaded.equipment) ? loaded.equipment : [];
+			customers = Array.isArray(loaded.customers) ? loaded.customers : [];
+		} else {
+			if (hasAnyInventoryMonthPayload()) {
+				rawMaterials = [];
+				finishedProducts = syncedForMonth;
+				equipment = [];
+				customers = [];
+				persistInventoryMonthState();
+			} else {
+				rawMaterials = loadRawMaterialsFromStorage();
+				finishedProducts = loadFinishedProductsFromStorage();
+				equipment = await fetchEquipmentFromServer();
+				customers = [];
+				persistInventoryMonthState();
+			}
+		}
+	};
+
+	const monthSelect = document.getElementById('inv-month-select');
+	const newMonthBtn = document.getElementById('inv-new-month-btn');
+	const renderInventoryMonthOptions = () => {
+		if (!monthSelect) return;
+		const months = getInventoryMonths();
+		monthSelect.innerHTML = months.map((m) => `<option value="${m}">${monthLabel(m)}</option>`).join('');
+		monthSelect.value = currentInventoryMonth;
+	};
+
+	migrateLegacyInventoryMonthlyIfNeeded();
+	rebucketFinishedProductsByDateIfNeeded();
+	await loadInventoryMonthState(currentInventoryMonth);
+	renderInventoryMonthOptions();
 
 	const nextNumericId = (rows) => rows.reduce((maxId, row) => Math.max(maxId, Number(row.id || 0)), 0) + 1;
 
@@ -2094,12 +2398,12 @@ async function initInventoryPage() {
 		const lowCount = rawMaterials.filter((m) => m.quantity < m.minLevel).length;
 		const criticalCount = rawMaterials.filter((m) => m.quantity < m.minLevel * 0.5).length;
 		const rawMaterialUnits = rawMaterials.reduce((sum, m) => sum + Number(m.quantity || 0), 0);
-		const readyQty = finishedProducts.filter((p) => p.status === 'ready for sale').reduce((sum, p) => sum + p.qty, 0);
+		const finishedQty = finishedProducts.reduce((sum, p) => sum + Number(p.qty || 0), 0);
 		const statsContainer = document.getElementById('inv-stats-row');
 		if (statsContainer) {
 			statsContainer.innerHTML = `
 				<div class="stat-card stat-card-link" id="inv-raw-materials-card" role="button" tabindex="0" aria-label="Open raw materials table"><div class="s-icon"><i class="fa-solid fa-layer-group"></i></div><p class="s-label">Raw Materials</p><p class="s-value" id="inv-raw-materials-value">${rawMaterials.length}</p><p class="s-meta" id="inv-raw-materials-meta">${formatNumber(rawMaterialUnits)} total units in stock.</p></div>
-				<div class="stat-card stat-card-link" id="inv-finished-products-card" role="button" tabindex="0" aria-label="Open finished products table"><div class="s-icon"><i class="fa-solid fa-box-open"></i></div><p class="s-label">Finished Products</p><p class="s-value">${formatNumber(readyQty)}</p><p class="s-meta">Units available for distribution</p></div>
+				<div class="stat-card stat-card-link" id="inv-finished-products-card" role="button" tabindex="0" aria-label="Open finished products table"><div class="s-icon"><i class="fa-solid fa-box-open"></i></div><p class="s-label">Finished Products</p><p class="s-value">${formatNumber(finishedQty)}</p><p class="s-meta">Total quantity in ${monthLabel(currentInventoryMonth)}</p></div>
 				<a class="stat-card stat-card-link" id="inv-low-stock-card" href="dashboard.html#dash-stock-alerts-panel" aria-label="Open stock alerts on dashboard" style="text-decoration:none;color:inherit;display:block;"><div class="s-icon"><i class="fa-solid fa-triangle-exclamation"></i></div><p class="s-label">Low Stock</p><p class="s-value">${lowCount}</p><p class="s-meta">${criticalCount} critically low \u2014 needs reorder</p></a>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-users"></i></div><p class="s-label">Active Customers</p><p class="s-value">${customers.filter((c) => c.status === 'active').length}</p><p class="s-meta">Distribution partners</p></div>
 			`;
@@ -2154,7 +2458,7 @@ async function initInventoryPage() {
 			if (!rawMaterials[idx] || !field) return;
 			const nextVal = Math.max(0, Number(input.value || 0));
 			rawMaterials[idx][field] = Number.isFinite(nextVal) ? nextVal : 0;
-			saveRawMaterialsToStorage(rawMaterials);
+			persistInventoryMonthState();
 			rerenderInventory();
 		};
 
@@ -2230,7 +2534,7 @@ async function initInventoryPage() {
 			if (!equipment[idx]) return;
 			equipment[idx].status = sel.value;
 			saveOneEquipmentToServer(equipment[idx]);
-			saveEquipmentToStorage(equipment);
+			persistInventoryMonthState();
 			rerenderInventory();
 		};
 	};
@@ -2326,6 +2630,34 @@ async function initInventoryPage() {
 
 	rerenderInventory();
 
+	if (monthSelect && !monthSelect.dataset.bound) {
+		monthSelect.dataset.bound = '1';
+		monthSelect.addEventListener('change', async () => {
+			const nextMonth = String(monthSelect.value || '').trim();
+			if (!/^\d{4}-\d{2}$/.test(nextMonth)) return;
+			ensureInventoryMonthExists(nextMonth);
+			await loadInventoryMonthState(nextMonth);
+			renderInventoryMonthOptions();
+			rerenderInventory();
+		});
+	}
+	if (newMonthBtn && !newMonthBtn.dataset.bound) {
+		newMonthBtn.dataset.bound = '1';
+		newMonthBtn.addEventListener('click', async () => {
+			const value = window.prompt('Enter month as YYYY-MM', currentInventoryMonth);
+			if (!value) return;
+			const month = value.trim();
+			if (!/^\d{4}-\d{2}$/.test(month)) {
+				window.alert('Invalid month format. Use YYYY-MM.');
+				return;
+			}
+			ensureInventoryMonthExists(month);
+			await loadInventoryMonthState(month);
+			renderInventoryMonthOptions();
+			rerenderInventory();
+		});
+	}
+
 	// Auto-switch to tab from URL ?tab= param (e.g. dashboard Stock Alerts link)
 	const tabParam = new URLSearchParams(window.location.search).get('tab');
 	if (tabParam && document.getElementById(`inv-tab-${tabParam}`)) {
@@ -2349,7 +2681,7 @@ async function initInventoryPage() {
 		product: {
 			title: 'Add Finished Product',
 			fields: [
-				{ id: 'product', label: 'Product Name', type: 'text', required: true },
+				{ id: 'product', label: 'Product Name', type: 'select', required: true, options: ['Mobile water (500ML)'] },
 				{ id: 'qty', label: 'Quantity', type: 'number', min: '0', required: true },
 				{ id: 'location', label: 'Location', type: 'text', placeholder: 'Warehouse A' },
 				{ id: 'date', label: 'Date', type: 'date', defaultValue: todayForInput, required: true },
@@ -2431,20 +2763,32 @@ async function initInventoryPage() {
 		editingIdx = typeof editIndex === 'number' ? editIndex : -1;
 		if (modalTitle) modalTitle.textContent = editingIdx >= 0 ? config.title.replace('Add', 'Edit') : config.title;
 		if (modalFieldsEl) {
-			modalFieldsEl.innerHTML = config.fields.map((f) => `
-				<div class="inv-modal-field">
-					<label for="inv-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label>
-					<input
-						id="inv-field-${f.id}"
-						type="${f.type}"
-						name="${f.id}"
-						${f.required ? 'required' : ''}
-						${f.min !== undefined ? `min="${f.min}"` : ''}
-						${f.placeholder ? `placeholder="${f.placeholder}"` : ''}
-						${f.defaultValue ? `value="${f.defaultValue}"` : ''}
-					>
-				</div>
-			`).join('');
+			modalFieldsEl.innerHTML = config.fields.map((f) => {
+				if (f.type === 'select') {
+					return `
+						<div class="inv-modal-field">
+							<label for="inv-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label>
+							<select id="inv-field-${f.id}" name="${f.id}" ${f.required ? 'required' : ''}>
+								${(Array.isArray(f.options) ? f.options : []).map((o) => `<option value="${o}"${f.defaultValue !== undefined && String(f.defaultValue) === String(o) ? ' selected' : ''}>${o}</option>`).join('')}
+							</select>
+						</div>
+					`;
+				}
+				return `
+					<div class="inv-modal-field">
+						<label for="inv-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label>
+						<input
+							id="inv-field-${f.id}"
+							type="${f.type}"
+							name="${f.id}"
+							${f.required ? 'required' : ''}
+							${f.min !== undefined ? `min="${f.min}"` : ''}
+							${f.placeholder ? `placeholder="${f.placeholder}"` : ''}
+							${f.defaultValue ? `value="${f.defaultValue}"` : ''}
+						>
+					</div>
+				`;
+			}).join('');
 		}
 		/* Pre-fill when editing */
 		if (editingIdx >= 0) {
@@ -2464,7 +2808,7 @@ async function initInventoryPage() {
 		}
 		if (resumeDraft) restoreInvDraft(entity);
 		addModal.style.display = 'flex';
-		const firstInput = modalFieldsEl && modalFieldsEl.querySelector('input');
+		const firstInput = modalFieldsEl && modalFieldsEl.querySelector('input, select');
 		if (firstInput) firstInput.focus();
 		bindInvModalLiveHandlers();
 	};
@@ -2507,7 +2851,7 @@ async function initInventoryPage() {
 						restocked: getValue('restocked') || todayForInput,
 					});
 				}
-				saveRawMaterialsToStorage(rawMaterials);
+				persistInventoryMonthState();
 			}
 
 			if (currentEntity === 'product') {
@@ -2529,7 +2873,7 @@ async function initInventoryPage() {
 						addedDate: getTodayDateStr(),
 					});
 				}
-				saveFinishedProductsToStorage(finishedProducts);
+				persistInventoryMonthState();
 			}
 
 			if (currentEntity === 'equipment') {
@@ -2559,12 +2903,12 @@ async function initInventoryPage() {
 					}).then((r) => r.ok ? r.json() : null).then((result) => {
 						if (result && result.id) {
 							newEq.id = result.id;
-							saveEquipmentToStorage(equipment);
+							persistInventoryMonthState();
 						}
 					}).catch(() => {});
 					equipment.push(newEq);
 				}
-				saveEquipmentToStorage(equipment);
+				persistInventoryMonthState();
 			}
 
 			if (currentEntity === 'customer') {
@@ -2586,6 +2930,7 @@ async function initInventoryPage() {
 				}
 			}
 
+			persistInventoryMonthState();
 			const submittedEntity = currentEntity;
 			clearInvDraft(submittedEntity);
 			closeModal(true); // skipDraft=true — data already saved, don't re-save draft
@@ -2630,13 +2975,13 @@ async function initInventoryPage() {
 					const removed = rawMaterials[idx];
 					if (removed) moveAppDataDeleteToTrash('inventory', removed, { kind: 'appDataArray', key: 'ww_raw_materials' });
 					rawMaterials.splice(idx, 1);
-					saveRawMaterialsToStorage(rawMaterials);
+					persistInventoryMonthState();
 				}
 				else if (entity === 'product') {
 					const removed = finishedProducts[idx];
 					if (removed) moveAppDataDeleteToTrash('inventory', removed, { kind: 'appDataArray', key: 'ww_finished_products' });
 					finishedProducts.splice(idx, 1);
-					saveFinishedProductsToStorage(finishedProducts);
+					persistInventoryMonthState();
 				}
 				else if (entity === 'equipment') {
 					const removed = equipment[idx];
@@ -2647,9 +2992,9 @@ async function initInventoryPage() {
 					if (removed && removed.id) {
 						fetch(API_BASE + '/api/factory-equipment/' + removed.id, { method: 'DELETE', credentials: 'include' }).catch(() => {});
 					}
-					saveEquipmentToStorage(equipment);
+					persistInventoryMonthState();
 				}
-				else if (entity === 'customer') { customers.splice(idx, 1); }
+				else if (entity === 'customer') { customers.splice(idx, 1); persistInventoryMonthState(); }
 				rerenderInventory();
 				const toastMsgs = { material: 'Raw material removed from inventory.', product: 'Finished product removed from inventory.', equipment: 'Equipment record deleted.', customer: 'Customer removed.' };
 				if (toastMsgs[entity]) setTimeout(() => showDeleteToast(toastMsgs[entity]), 50);
@@ -2658,21 +3003,26 @@ async function initInventoryPage() {
 	}
 
 	/* ── Cross-tab sync: refresh inventory when another tab changes data ── */
-	const reloadAndRerender = () => {
-		rawMaterials = loadRawMaterialsFromStorage();
-		finishedProducts = loadFinishedProductsFromStorage();
-		equipment = loadEquipmentFromStorage();
+	const reloadAndRerender = async () => {
+		await loadInventoryMonthState(currentInventoryMonth);
+		renderInventoryMonthOptions();
 		rerenderInventory();
 	};
 	window.addEventListener('storage', (e) => {
-		if (['ww_raw_materials', 'ww_finished_products', 'ww_equipment'].includes(e.key)) {
-			reloadAndRerender();
+		if ([
+			'ww_raw_materials',
+			'ww_finished_products',
+			'ww_equipment',
+			INVENTORY_MONTHS_KEY,
+			inventoryMonthStorageKey(currentInventoryMonth),
+		].includes(e.key)) {
+			reloadAndRerender().catch(() => {});
 		}
 	});
 	try {
-		new BroadcastChannel('ww_raw_materials_sync').onmessage = reloadAndRerender;
-		new BroadcastChannel('ww_finished_products_sync').onmessage = reloadAndRerender;
-		new BroadcastChannel('ww_equipment_sync').onmessage = reloadAndRerender;
+		new BroadcastChannel('ww_raw_materials_sync').onmessage = () => reloadAndRerender().catch(() => {});
+		new BroadcastChannel('ww_finished_products_sync').onmessage = () => reloadAndRerender().catch(() => {});
+		new BroadcastChannel('ww_equipment_sync').onmessage = () => reloadAndRerender().catch(() => {});
 	} catch (_e) { /* BroadcastChannel not supported */ }
 }
 
@@ -2816,6 +3166,15 @@ function loadMonthData(month) {
 			const tb = Number.isNaN(db) ? Number.MAX_SAFE_INTEGER : db;
 			return ta - tb;
 		});
+		const getIdNum = (id) => {
+			const m = String(id || '').match(/(\d+)$/);
+			return m ? Number(m[1]) : 0;
+		};
+		const idsOutOfSequence = salesModuleData.invoices.some((inv, idx) => getIdNum(inv?.id) !== idx + 1);
+		if (idsOutOfSequence) {
+			resequenceSalesIdsForCurrentMonth();
+			dirty = true;
+		}
 	}
 
 	/* Keep Sales Orders strictly 1:1 with invoices (linked by sourceInvoiceId). */
@@ -3047,6 +3406,7 @@ function resequenceSalesIdsForCurrentMonth() {
 
 function nextInvoiceId() {
 	// Numbering resets each month — choose the next missing number in this month
+	const year = String(currentSalesMonth || `${new Date().getFullYear()}-01`).slice(0, 4);
 	const used = new Set(
 		salesModuleData.invoices
 			.map((inv) => {
@@ -3057,11 +3417,12 @@ function nextInvoiceId() {
 	);
 	let next = 1;
 	while (used.has(next)) next += 1;
-	return `INV-${new Date().getFullYear()}-${String(next).padStart(3, '0')}`;
+	return `INV-${year}-${String(next).padStart(3, '0')}`;
 }
 
 function nextOrderId() {
 	// Numbering resets each month — choose the next missing number in this month
+	const year = String(currentSalesMonth || `${new Date().getFullYear()}-01`).slice(0, 4);
 	const used = new Set(
 		salesModuleData.salesOrders
 			.map((o) => {
@@ -3072,7 +3433,7 @@ function nextOrderId() {
 	);
 	let next = 1;
 	while (used.has(next)) next += 1;
-	return `SO-${new Date().getFullYear()}-${String(next).padStart(3, '0')}`;
+	return `SO-${year}-${String(next).padStart(3, '0')}`;
 }
 
 function upsertSalesOrderFromInvoice(invoice) {
@@ -3380,7 +3741,7 @@ async function initSalesInvoicesPage() {
 				{ id: 'customer', label: 'Customer Name', type: 'text', required: true },
 				{ id: 'address', label: 'Address / P.O. Box', type: 'text', placeholder: 'City / Street / P.O. Box' },
 				{ id: 'phone', label: 'Telephone', type: 'text', placeholder: '000-000-0000' },
-				{ id: 'product', label: 'Product', type: 'select', required: true, options: ['mobile water (500ML)'] },
+				{ id: 'product', label: 'Product', type: 'select', required: true, options: ['Mobile water (500ML)'] },
 				{ id: 'qty', label: 'Quantity', type: 'number', min: '1', required: true },
 				{ id: 'promo', label: 'Promo', type: 'number', min: '0', defaultValue: '0' },
 				{ id: 'unitPrice', label: 'Unit Price (GH)', type: 'number', min: '0', step: '0.01', required: true },
@@ -3741,6 +4102,7 @@ async function initSalesInvoicesPage() {
 				}
 			}
 
+			resequenceSalesIdsForCurrentMonth();
 			saveSalesDataToStorage();
 			const savedEntity = currentEntity;
 			clearModalDraft(savedEntity);
@@ -6718,11 +7080,66 @@ function renderReportsData() {
 
 	const totalInvoicesAllTime = getAllSalesData().invoices.length;
 
+	// ── Market Growth Rate KPI (filter-aware) ──
+	const mgMonthly = (() => {
+		const byMonth = {};
+		for (const month of recoverSalesMonthsFromStorage()) {
+			if (/^\d{4}-\d{2}$/.test(month)) byMonth[month] = byMonth[month] || 0;
+		}
+		for (const inv of getAllSalesData().invoices) {
+			if (inv.status !== 'paid') continue;
+			const d = new Date(inv.date);
+			if (isNaN(d)) continue;
+			const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+			byMonth[key] = (byMonth[key] || 0) + (Number(inv.amount) || 0);
+		}
+		return Object.keys(byMonth).sort().map((key) => {
+			const [year, month] = key.split('-');
+			return { key, year: Number(year), month: Number(month), value: byMonth[key] };
+		});
+	})();
+	let mgGrowth = null;
+	let mgMeta = '';
+	if (filterType === 'month' && filterStart) {
+		const y = filterStart.getFullYear();
+		const m = filterStart.getMonth() + 1;
+		const curKey = `${y}-${String(m).padStart(2, '0')}`;
+		const prevDate = new Date(y, m - 2, 1);
+		const prevKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+		const curRev = mgMonthly.find((r) => r.key === curKey)?.value || 0;
+		const prevRev = mgMonthly.find((r) => r.key === prevKey)?.value || 0;
+		if (prevRev > 0) { mgGrowth = ((curRev - prevRev) / prevRev) * 100; mgMeta = `${filterLabel} vs ${monthNames[prevDate.getMonth()]} ${prevDate.getFullYear()}`; }
+		else { mgMeta = prevRev === 0 && curRev === 0 ? 'No data for period' : 'No prior month to compare'; }
+	} else if (filterType === 'year' && filterStart) {
+		const year = filterStart.getFullYear();
+		const byYear = mgMonthly.reduce((acc, r) => { acc[r.year] = (acc[r.year] || 0) + r.value; return acc; }, {});
+		const curRev = byYear[year] || 0;
+		const prevRev = byYear[year - 1] || 0;
+		if (prevRev > 0) { mgGrowth = ((curRev - prevRev) / prevRev) * 100; mgMeta = `${year} vs ${year - 1}`; }
+		else { mgMeta = prevRev === 0 && curRev === 0 ? 'No data for period' : `No ${year - 1} data to compare`; }
+	} else {
+		if (mgMonthly.length >= 2) {
+			const current = mgMonthly[mgMonthly.length - 1];
+			const previous = mgMonthly[mgMonthly.length - 2];
+			if (previous.value > 0) {
+				mgGrowth = ((current.value - previous.value) / previous.value) * 100;
+				mgMeta = `${current.key} vs ${previous.key}`;
+			} else {
+				mgMeta = 'No prior month to compare';
+			}
+		} else {
+			mgMeta = 'Not enough data yet';
+		}
+	}
+	const mgLabel = mgGrowth !== null ? `${mgGrowth >= 0 ? '+' : ''}${mgGrowth.toFixed(1)}%` : '—';
+	const mgColor = mgGrowth === null ? '' : mgGrowth >= 0 ? 'green' : 'red';
+
 	const kpis = [
 		{ icon: '<i class="fa-solid fa-chart-bar"></i>', label: 'Sales (' + filterLabel + ')', value: formatCurrency(allSalesTotal), meta: filterType === 'all' ? 'All tracked sales' : 'Filtered period', color: '' },
 		{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Forecast', value: formatCurrency(projected), meta: salesTrends.length >= 2 ? 'Trend-based projection' : 'Need more months', color: 'green' },
 		{ icon: '<i class="fa-solid fa-coins"></i>', label: 'Net Profit', value: formatCurrency(netProfit), meta: 'Revenue − COGS − Expenses', color: 'yellow' },
-		{ icon: '<i class="fa-solid fa-file-invoice"></i>', label: 'Total Invoices (All Time)', value: totalInvoicesAllTime.toLocaleString(), meta: `Overall total • ${invoices.length} in ${filterLabel}`, color: 'purple' },
+		{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Market Growth Rate', value: mgLabel, meta: mgMeta, color: mgColor },
+		{ icon: '<i class="fa-solid fa-file-invoice"></i>', label: filterType === 'all' ? 'Total Invoices (All Time)' : `Total Invoices (${filterLabel})`, value: filterType === 'all' ? totalInvoicesAllTime.toLocaleString() : invoices.length.toLocaleString(), meta: filterType === 'all' ? `${totalInvoicesAllTime} invoices overall` : `${invoices.length} invoices in ${filterLabel}`, color: 'purple' },
 		{ icon: '<i class="fa-solid fa-industry"></i>', label: 'Ops Health', value: `${opsHealth}%`, meta: totalEquip > 0 ? `${operationalEquip}/${totalEquip} equipment up` : 'No equipment tracked', color: '' },
 	];
 
