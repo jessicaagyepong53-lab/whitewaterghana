@@ -2012,7 +2012,7 @@ async function initDashboardPage() {
 		if (explicitYearly.length >= 2) {
 			const current = explicitYearly[explicitYearly.length - 1];
 			const previous = explicitYearly[explicitYearly.length - 2];
-			if (previous.value > 0) {
+			if (previous.value > 0 && current.value > 0) {
 				const growth = ((current.value - previous.value) / previous.value) * 100;
 				return {
 					value: growth,
@@ -2035,7 +2035,7 @@ async function initDashboardPage() {
 			const previousYear = derivedYears[derivedYears.length - 2];
 			const currentValue = yearlyFromMonthly[currentYear] || 0;
 			const previousValue = yearlyFromMonthly[previousYear] || 0;
-			if (previousValue > 0) {
+			if (previousValue > 0 && currentValue > 0) {
 				const growth = ((currentValue - previousValue) / previousValue) * 100;
 				return {
 					value: growth,
@@ -2049,7 +2049,7 @@ async function initDashboardPage() {
 		if (monthlyRevenue.length >= 2) {
 			const current = monthlyRevenue[monthlyRevenue.length - 1];
 			const previous = monthlyRevenue[monthlyRevenue.length - 2];
-			if (previous.value > 0) {
+			if (previous.value > 0 && current.value > 0) {
 				const growth = ((current.value - previous.value) / previous.value) * 100;
 				return {
 					value: growth,
@@ -3744,11 +3744,7 @@ function getAllSalesData() {
 	const allInvoices = [];
 	const allOrders = [];
 	const seenInvoiceIds = new Set();
-	const seenInvoiceSignatures = new Set();
-	const seenInvoiceContentKeys = new Set();
 	const seenOrderIds = new Set();
-	const seenOrderSignatures = new Set();
-	const seenOrderContentKeys = new Set();
 	for (const m of months) {
 		try {
 			const stored = JSON.parse(localStorage.getItem(monthStorageKey(m)) || 'null');
@@ -3756,50 +3752,20 @@ function getAllSalesData() {
 				if (Array.isArray(stored.invoices)) {
 					for (const inv of stored.invoices) {
 						if (!inv || !inv.id) continue;
+						if (getInvoiceMonth(inv) !== m) continue;
 						const id = String(inv.id);
-						const sig = invoiceSignature(inv);
-						const firstItem = Array.isArray(inv.items) && inv.items[0] ? inv.items[0] : null;
-						const contentKey = [
-							String(inv.date || '').trim(),
-							String(inv.customer || '').trim().toLowerCase(),
-							Number(inv.amount || 0),
-							Number((firstItem && firstItem.qty) || inv.bags || 0),
-							Number((firstItem && firstItem.unitPrice) || inv.rate || 0),
-							String(inv.status || '').trim().toLowerCase(),
-							String(inv.paymentMode || '').trim().toLowerCase(),
-						].join('|');
-						if (
-							seenInvoiceIds.has(id)
-							|| (sig && seenInvoiceSignatures.has(sig))
-							|| seenInvoiceContentKeys.has(contentKey)
-						) continue;
+						if (seenInvoiceIds.has(id)) continue;
 						seenInvoiceIds.add(id);
-						if (sig) seenInvoiceSignatures.add(sig);
-						seenInvoiceContentKeys.add(contentKey);
 						allInvoices.push(inv);
 					}
 				}
 				if (Array.isArray(stored.salesOrders)) {
 					for (const ord of stored.salesOrders) {
 						if (!ord || !ord.id) continue;
+						if (getInvoiceMonth(ord) !== m) continue;
 						const id = String(ord.id);
-						const sig = orderSignature(ord);
-						const contentKey = [
-							String(ord.orderDate || ord.date || '').trim(),
-							String(ord.customer || '').trim().toLowerCase(),
-							Number(ord.amount || 0),
-							Number(ord.bags || 0),
-							Number(ord.rate || 0),
-							String(ord.status || '').trim().toLowerCase(),
-						].join('|');
-						if (
-							seenOrderIds.has(id)
-							|| (sig && seenOrderSignatures.has(sig))
-							|| seenOrderContentKeys.has(contentKey)
-						) continue;
+						if (seenOrderIds.has(id)) continue;
 						seenOrderIds.add(id);
-						if (sig) seenOrderSignatures.add(sig);
-						seenOrderContentKeys.add(contentKey);
 						allOrders.push(ord);
 					}
 				}
@@ -8325,20 +8291,20 @@ function renderReportsData() {
 		const prevKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
 		const curRev = mgMonthly.find((r) => r.key === curKey)?.value || 0;
 		const prevRev = mgMonthly.find((r) => r.key === prevKey)?.value || 0;
-		if (prevRev > 0) { mgGrowth = ((curRev - prevRev) / prevRev) * 100; mgMeta = `${filterLabel} vs ${monthNames[prevDate.getMonth()]} ${prevDate.getFullYear()}`; }
+		if (prevRev > 0 && curRev > 0) { mgGrowth = ((curRev - prevRev) / prevRev) * 100; mgMeta = `${filterLabel} vs ${monthNames[prevDate.getMonth()]} ${prevDate.getFullYear()}`; }
 		else { mgMeta = prevRev === 0 && curRev === 0 ? 'No data for period' : 'No prior month to compare'; }
 	} else if (filterType === 'year' && filterStart) {
 		const year = filterStart.getFullYear();
 		const byYear = mgMonthly.reduce((acc, r) => { acc[r.year] = (acc[r.year] || 0) + r.value; return acc; }, {});
 		const curRev = byYear[year] || 0;
 		const prevRev = byYear[year - 1] || 0;
-		if (prevRev > 0) { mgGrowth = ((curRev - prevRev) / prevRev) * 100; mgMeta = `${year} vs ${year - 1}`; }
+		if (prevRev > 0 && curRev > 0) { mgGrowth = ((curRev - prevRev) / prevRev) * 100; mgMeta = `${year} vs ${year - 1}`; }
 		else { mgMeta = prevRev === 0 && curRev === 0 ? 'No data for period' : `No ${year - 1} data to compare`; }
 	} else {
 		if (mgMonthly.length >= 2) {
 			const current = mgMonthly[mgMonthly.length - 1];
 			const previous = mgMonthly[mgMonthly.length - 2];
-			if (previous.value > 0) {
+			if (previous.value > 0 && current.value > 0) {
 				mgGrowth = ((current.value - previous.value) / previous.value) * 100;
 				mgMeta = `${current.key} vs ${previous.key}`;
 			} else {
