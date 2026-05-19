@@ -27,8 +27,8 @@ function getSalesVersionKey(month) {
 }
 
 function isCanonicalExcelMarchMonth(monthOrKey) {
-	const value = String(monthOrKey || '').trim();
-	return value === '2026-03' || value === monthStorageKey('2026-03') || value === getSalesProtectedKey('2026-03');
+	// March remains editable; do not force server-authoritative overwrite.
+	return false;
 }
 
 function hasPendingSalesSyncForKey(key) {
