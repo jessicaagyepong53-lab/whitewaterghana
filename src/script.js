@@ -336,33 +336,61 @@ async function mergeSyncSalesMonth(month, localData) {
 			const json = await res.json();
 			const serverData = json && json.data;
 			if (serverData && typeof serverData === 'object') {
-				// Overwrite local with server canonical data, then merge in only truly unsynced new invoices
 				const serverInvs = Array.isArray(serverData.invoices) ? serverData.invoices : [];
 				const serverOrds = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
+				const localInvs = Array.isArray(toSync.invoices) ? toSync.invoices : [];
+				const localOrds = Array.isArray(toSync.salesOrders) ? toSync.salesOrders : [];
 				const mergedDeletedInv = normalizeIdArray([...(toSync.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]);
 				const mergedDeletedOrd = normalizeIdArray([...(toSync.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]);
 				const delInv = new Set(mergedDeletedInv);
 				const delOrd = new Set(mergedDeletedOrd);
-				// Only add local invoices that are not present in server by id or signature
-				const serverInvIds = new Set(serverInvs.map((inv) => String(inv.id)));
-				const serverInvSigs = new Set(serverInvs.map((inv) => invoiceSignature(inv)).filter(Boolean));
-				const trulyUnsyncedInvs = (toSync.invoices || []).filter((inv) => {
-					if (!inv || !inv.id) return false;
+
+				// Merge by ID with local taking precedence so edits persist across refreshes.
+				const invoiceById = new Map();
+				for (const inv of serverInvs) {
+					if (!inv || !inv.id) continue;
 					const id = String(inv.id);
-					const sig = invoiceSignature(inv);
-					return !serverInvIds.has(id) && !(sig && serverInvSigs.has(sig)) && !delInv.has(id);
-				});
-				const mergedInvoices = [...serverInvs, ...trulyUnsyncedInvs].filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
-				// Orders: same logic
-				const serverOrdIds = new Set(serverOrds.map((ord) => String(ord.id)));
-				const serverOrdSigs = new Set(serverOrds.map((ord) => orderSignature(ord)).filter(Boolean));
-				const trulyUnsyncedOrds = (toSync.salesOrders || []).filter((ord) => {
-					if (!ord || !ord.id) return false;
+					if (delInv.has(id)) continue;
+					invoiceById.set(id, inv);
+				}
+				for (const inv of localInvs) {
+					if (!inv || !inv.id) continue;
+					const id = String(inv.id);
+					if (delInv.has(id)) continue;
+					invoiceById.set(id, inv);
+				}
+				const mergedInvoices = Array.from(invoiceById.values());
+
+				const resolveInvoiceLinkFromOrder = (ord) => {
+					if (!ord) return '';
+					const src = String(ord.sourceInvoiceId || '').trim();
+					if (src) return src;
+					const m = String(ord.id || '').match(/^SO-(\d{4})-(\d{3})$/);
+					return m ? `INV-${m[1]}-${m[2]}` : '';
+				};
+
+				const activeInvoiceIds = new Set(mergedInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
+				const orderById = new Map();
+				for (const ord of serverOrds) {
+					if (!ord || !ord.id) continue;
 					const id = String(ord.id);
-					const sig = orderSignature(ord);
-					return !serverOrdIds.has(id) && !(sig && serverOrdSigs.has(sig)) && !delOrd.has(id);
-				});
-				const mergedOrders = [...serverOrds, ...trulyUnsyncedOrds].filter((ord) => ord && ord.id && !delOrd.has(String(ord.id)));
+					if (delOrd.has(id)) continue;
+					const src = resolveInvoiceLinkFromOrder(ord);
+					if (!src || !activeInvoiceIds.has(String(src)) || delInv.has(String(src))) continue;
+					ord.sourceInvoiceId = src;
+					orderById.set(id, ord);
+				}
+				for (const ord of localOrds) {
+					if (!ord || !ord.id) continue;
+					const id = String(ord.id);
+					if (delOrd.has(id)) continue;
+					const src = resolveInvoiceLinkFromOrder(ord);
+					if (!src || !activeInvoiceIds.has(String(src)) || delInv.has(String(src))) continue;
+					ord.sourceInvoiceId = src;
+					orderById.set(id, ord);
+				}
+				const mergedOrders = Array.from(orderById.values());
+
 				toSync = { invoices: mergedInvoices, salesOrders: mergedOrders, deletedInvoiceIds: mergedDeletedInv, deletedOrderIds: mergedDeletedOrd };
 				localStorage.setItem(key, JSON.stringify(toSync));
 				if (month === currentSalesMonth) {
@@ -497,14 +525,21 @@ async function reloadSalesMonthsFromServerHard() {
 		for (const month of serverMonths) {
 			const key = monthStorageKey(month);
 			try {
-				try { localStorage.removeItem(getSalesProtectedKey(month)); } catch (_e) { /* ignore */ }
 				const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), { credentials: 'include', cache: 'no-store' });
 				if (!res.ok) continue;
 				const json = await res.json();
 				if (json && json.data && typeof json.data === 'object') {
-					localStorage.setItem(key, JSON.stringify(json.data));
-					setProtectedSalesPayload(month, json.data);
-					clearPendingSalesSync(month);
+					const localPayload = getSalesMonthPayload(month);
+					const hasPending = hasPendingSalesSyncForKey(key);
+					if (hasPending) {
+						const merged = mergeSalesMonthPayloads(localPayload, json.data, month);
+						localStorage.setItem(key, JSON.stringify(merged));
+						setProtectedSalesPayload(month, merged);
+					} else {
+						localStorage.setItem(key, JSON.stringify(json.data));
+						setProtectedSalesPayload(month, json.data);
+						clearPendingSalesSync(month);
+					}
 				}
 			} catch (_e) { /* ignore */ }
 		}
@@ -4030,16 +4065,7 @@ function loadSalesDataFromStorage() {
 	recoverSalesMonthsFromStorage();
 	runOneTimeSalesMonthDedupeMigration();
 
-	/* One-time cleanup: remove legacy March 2026 sales payload that could rehydrate deleted rows */
-	if (localStorage.getItem(LEGACY_MARCH_SALES_CLEANUP_KEY) !== '1') {
-		try { localStorage.removeItem(monthStorageKey('2026-03')); } catch (_e) {}
-		try { localStorage.removeItem(getSalesProtectedKey('2026-03')); } catch (_e) {}
-		try { localStorage.removeItem(getPendingSalesSyncKey('2026-03')); } catch (_e) {}
-		try { localStorage.removeItem(getSalesVersionKey('2026-03')); } catch (_e) {}
-		const months = getSalesMonths().filter((m) => m !== '2026-03');
-		saveSalesMonths(months);
-		localStorage.setItem(LEGACY_MARCH_SALES_CLEANUP_KEY, '1');
-	}
+	/* March entries are editable and persistent; no automatic month cleanup here. */
 
 	runOneTimeSalesYearResequenceMigration();
 
