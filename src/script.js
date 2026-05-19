@@ -786,27 +786,56 @@ function mergeServerSalesIntoMemory(serverData) {
 	const localOrdIds = new Set(salesModuleData.salesOrders.map((ord) => String(ord.id)));
 	const localInvSignatures = new Set(salesModuleData.invoices.map((inv) => invoiceSignature(inv)).filter(Boolean));
 	const localOrdSignatures = new Set(salesModuleData.salesOrders.map((ord) => orderSignature(ord)).filter(Boolean));
+	const localInvIndexById = new Map(salesModuleData.invoices.map((inv, idx) => [String(inv.id), idx]));
+	const localOrdIndexById = new Map(salesModuleData.salesOrders.map((ord, idx) => [String(ord.id), idx]));
 	let changed = false;
 	serverInvoices.forEach((inv) => {
+		if (!inv || !inv.id) return;
+		const invId = String(inv.id);
+		if (deletedInv.has(invId)) return;
+		const existingIdx = localInvIndexById.get(invId);
+		if (existingIdx !== undefined) {
+			const existing = salesModuleData.invoices[existingIdx];
+			const winner = pickNewerRecord(existing, inv);
+			if (winner !== existing) {
+				salesModuleData.invoices[existingIdx] = winner;
+				changed = true;
+			}
+			return;
+		}
 		const sig = invoiceSignature(inv);
-		if (inv && inv.id && !deletedInv.has(String(inv.id)) && !localInvIds.has(String(inv.id)) && !(sig && localInvSignatures.has(sig))) {
+		if (!localInvIds.has(invId) && !(sig && localInvSignatures.has(sig))) {
 			salesModuleData.invoices.push(inv);
-			localInvIds.add(String(inv.id));
+			localInvIds.add(invId);
+			localInvIndexById.set(invId, salesModuleData.invoices.length - 1);
 			if (sig) localInvSignatures.add(sig);
 			changed = true;
 		}
 	});
 	const activeInvoiceIds = new Set(salesModuleData.invoices.map((inv) => String(inv.id)).filter(Boolean));
 	serverOrders.forEach((ord) => {
-		const sig = orderSignature(ord);
 		if (!ord || !ord.id) return;
+		const ordId = String(ord.id);
+		if (deletedOrd.has(ordId)) return;
 		const sourceInvoiceId = resolveInvoiceLinkFromOrder(ord);
 		if (!sourceInvoiceId || deletedInv.has(String(sourceInvoiceId))) return;
 		if (!activeInvoiceIds.has(String(sourceInvoiceId))) return;
 		ord.sourceInvoiceId = sourceInvoiceId;
-		if (!deletedOrd.has(String(ord.id)) && !localOrdIds.has(String(ord.id)) && !(sig && localOrdSignatures.has(sig))) {
+		const existingIdx = localOrdIndexById.get(ordId);
+		if (existingIdx !== undefined) {
+			const existing = salesModuleData.salesOrders[existingIdx];
+			const winner = pickNewerRecord(existing, ord);
+			if (winner !== existing) {
+				salesModuleData.salesOrders[existingIdx] = winner;
+				changed = true;
+			}
+			return;
+		}
+		const sig = orderSignature(ord);
+		if (!localOrdIds.has(ordId) && !(sig && localOrdSignatures.has(sig))) {
 			salesModuleData.salesOrders.push(ord);
-			localOrdIds.add(String(ord.id));
+			localOrdIds.add(ordId);
+			localOrdIndexById.set(ordId, salesModuleData.salesOrders.length - 1);
 			if (sig) localOrdSignatures.add(sig);
 			changed = true;
 		}
