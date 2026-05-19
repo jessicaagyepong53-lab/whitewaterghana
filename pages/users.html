@@ -108,6 +108,9 @@
           <option value="purchaseOrders">Purchase Orders</option>
           <option value="factory-equipment">Factory Equipment</option>
         </select>
+        <button type="button" class="btn-secondary" id="trash-undo-last-btn" title="Undo the most recent restore" style="padding:6px 10px;font-size:.82rem">
+          <i class="fa-solid fa-rotate-right"></i> Undo Last Restore
+        </button>
       </div>
       <table class="data-table">
         <thead>
@@ -161,7 +164,7 @@
     </div>
   </div>
 </main>
-<script src="../src/script.js?v=20260507v"></script>
+<script src="../src/script.js?v=20260519b"></script>
 <script>
 (function() {
   const ACCESS_LEVELS = {
@@ -373,6 +376,7 @@
 (function() {
   var trashTbody = document.getElementById('trash-tbody');
   var moduleFilter = document.getElementById('trash-module-filter');
+  var undoLastBtn = document.getElementById('trash-undo-last-btn');
   var cachedTrash = [];
 
   var MODULE_LABELS = {
@@ -407,6 +411,22 @@
     var diff = Math.ceil((new Date(dt) - new Date()) / (1000 * 60 * 60 * 24));
     if (diff <= 0) return 'Expiring soon';
     return diff + ' day' + (diff !== 1 ? 's' : '') + ' left';
+  }
+
+  function restoreTargetLabel(item) {
+    if (!item || !item.restoreMeta) return (MODULE_LABELS[item && item.module] || (item && item.module) || 'module collection');
+    var meta = item.restoreMeta;
+    if (meta.kind === 'appDataArray') {
+      var key = String(meta.key || '').trim();
+      var path = String(meta.arrayPath || '').trim();
+      return path ? (key + ' -> ' + path) : key;
+    }
+    if (meta.kind === 'bomComponent') {
+      var key2 = String(meta.key || '').trim();
+      var product = String(meta.product || '').trim();
+      return key2 + (product ? (' -> ' + product + '.components') : '');
+    }
+    return (MODULE_LABELS[item.module] || item.module || 'module collection');
   }
 
   function renderTrash(items) {
@@ -455,11 +475,21 @@
 
     if (restoreBtn) {
       var id = restoreBtn.dataset.id;
-      if (!confirm('Restore this item back to its original module?')) return;
+      var item = cachedTrash.find(function(t) { return String(t.id) === String(id); });
+      var moduleName = item ? (MODULE_LABELS[item.module] || item.module) : 'module';
+      var summary = item ? getRecordSummary(item) : 'record';
+      var target = restoreTargetLabel(item);
+      var previewText = 'Restore preview:\n' +
+        'Module: ' + moduleName + '\n' +
+        'Record: ' + summary + '\n' +
+        'Target: ' + target + '\n\n' +
+        'Continue with restore?';
+      if (!confirm(previewText)) return;
       try {
         var res = await fetch('/api/trash/' + id + '/restore', { method: 'POST', credentials: 'include' });
         if (!res.ok) { var err = await res.json().catch(function() { return {}; }); alert(err.message || 'Restore failed'); return; }
-        loadTrash();
+        await loadTrash();
+        alert('Item restored. You can click "Undo Last Restore" if this was a mistake.');
       } catch (err) { alert('Restore failed'); }
     }
 
@@ -469,14 +499,29 @@
       try {
         var res2 = await fetch('/api/trash/' + id2, { method: 'DELETE', credentials: 'include' });
         if (!res2.ok) { var err2 = await res2.json().catch(function() { return {}; }); alert(err2.message || 'Delete failed'); return; }
-        loadTrash();
+        await loadTrash();
       } catch (err) { alert('Delete failed'); }
+    }
+  });
+
+  if (undoLastBtn) undoLastBtn.addEventListener('click', async function() {
+    if (!confirm('Undo the most recent restore action?')) return;
+    try {
+      var res = await fetch('/api/trash/restore/undo-last', { method: 'POST', credentials: 'include' });
+      var data = await res.json().catch(function() { return {}; });
+      if (!res.ok) { alert(data.message || 'No recent restore to undo.'); return; }
+      alert(data.message || 'Last restore undone successfully.');
+      await loadTrash();
+    } catch (err) {
+      alert('Undo failed');
     }
   });
 })();
 </script>
 </body>
 </html>
+
+
 
 
 

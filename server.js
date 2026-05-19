@@ -1005,6 +1005,26 @@ app.delete('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, n
    ═══════════════════════════════════════════════ */
 
 const TRASH_TTL_DAYS = 30;
+const recentRestoreByUser = new Map();
+
+function restoreActorKey(user) {
+  if (!user) return 'anon';
+  return String(user.id || user._id || user.email || user.name || 'anon');
+}
+
+function rememberRecentRestore(user, action) {
+  recentRestoreByUser.set(restoreActorKey(user), {
+    ...action,
+    recordedAt: Date.now(),
+  });
+}
+
+function popRecentRestore(user) {
+  const key = restoreActorKey(user);
+  const action = recentRestoreByUser.get(key);
+  recentRestoreByUser.delete(key);
+  return action;
+}
 
 async function moveToTrash(module, record, deletedBy, restoreMeta = null) {
   const expiresAt = new Date();
@@ -1017,6 +1037,137 @@ async function moveToTrash(module, record, deletedBy, restoreMeta = null) {
     deleted_at: new Date(),
     expires_at: expiresAt,
   });
+}
+
+async function restoreTrashAppDataItem(trashItem) {
+  const meta = trashItem && trashItem.restore_meta ? trashItem.restore_meta : null;
+  if (!meta || !meta.kind) throw createError(400, 'Unsupported restore metadata kind');
+
+  if (meta.kind === 'appDataArray') {
+    const key = String(meta.key || '').trim();
+    if (!isAllowedDataKey(key)) throw createError(400, 'Cannot restore to invalid app-data key');
+
+    if (meta.arrayPath) {
+      const updatePath = `data.${meta.arrayPath}`;
+      await AppData.updateOne(
+        { key },
+        {
+          $setOnInsert: { key, data: {} },
+          $push: { [updatePath]: trashItem.record_data },
+        },
+        { upsert: true }
+      );
+    } else {
+      const doc = await AppData.findOne({ key }).lean();
+      const current = Array.isArray(doc && doc.data) ? doc.data : [];
+      current.push(trashItem.record_data);
+      await AppData.updateOne(
+        { key },
+        { $set: { key, data: current } },
+        { upsert: true }
+      );
+    }
+
+    await TrashBin.deleteOne({ _id: trashItem._id });
+    return {
+      kind: 'appDataRestore',
+      module: trashItem.module,
+      recordData: trashItem.record_data,
+      restoreMeta: trashItem.restore_meta || null,
+    };
+  }
+
+  if (meta.kind === 'bomComponent') {
+    const key = String(meta.key || '').trim();
+    const product = String(meta.product || '').trim();
+    if (!isAllowedDataKey(key) || !product) throw createError(400, 'Cannot restore BOM component');
+
+    const doc = await AppData.findOne({ key }).lean();
+    const data = (doc && doc.data && typeof doc.data === 'object' && !Array.isArray(doc.data)) ? doc.data : {};
+    const productData = (data[product] && typeof data[product] === 'object') ? data[product] : { components: [], labor: 0, overhead: 0 };
+    const components = Array.isArray(productData.components) ? productData.components : [];
+    components.push(trashItem.record_data);
+    productData.components = components;
+    data[product] = productData;
+
+    await AppData.updateOne({ key }, { $set: { key, data } }, { upsert: true });
+    await TrashBin.deleteOne({ _id: trashItem._id });
+    return {
+      kind: 'appDataRestore',
+      module: trashItem.module,
+      recordData: trashItem.record_data,
+      restoreMeta: trashItem.restore_meta || null,
+    };
+  }
+
+  throw createError(400, 'Unsupported restore metadata kind');
+}
+
+async function undoSingleRestoreAction(action, user) {
+  if (action.kind === 'appDataRestore') {
+    const meta = action.restoreMeta || {};
+    const key = String(meta.key || '').trim();
+    if (!isAllowedDataKey(key)) throw createError(400, 'Undo failed: invalid restore key');
+
+    if (meta.kind === 'appDataArray') {
+      if (meta.arrayPath) {
+        await AppData.updateOne(
+          { key },
+          {
+            $setOnInsert: { key, data: {} },
+            $pull: { [`data.${meta.arrayPath}`]: action.recordData },
+          },
+          { upsert: true }
+        );
+      } else {
+        await AppData.updateOne(
+          { key },
+          {
+            $setOnInsert: { key, data: [] },
+            $pull: { data: action.recordData },
+          },
+          { upsert: true }
+        );
+      }
+    } else if (meta.kind === 'bomComponent') {
+      const product = String(meta.product || '').trim();
+      if (!product) throw createError(400, 'Undo failed: invalid BOM product');
+      await AppData.updateOne(
+        { key },
+        {
+          $setOnInsert: { key, data: {} },
+          $pull: { [`data.${product}.components`]: action.recordData },
+        },
+        { upsert: true }
+      );
+    } else {
+      throw createError(400, 'Undo failed: unsupported restore metadata');
+    }
+
+    await moveToTrash(action.module, action.recordData, `${user.name} (${user.role})`, action.restoreMeta || null);
+    if (action.module === 'sales' || action.module === 'invoices') await refreshCustomerStats();
+    if (action.module === 'inventory') await refreshInventoryStatuses();
+    return;
+  }
+
+  if (action.kind === 'modelRestore') {
+    const restoreMap = {
+      users: User, customers: Customer, vendors: Vendor,
+      inventory: InventoryItem, machines: Machine, production: ProductionBatch,
+      sales: SalesOrder, invoices: Invoice, accounting: AccountingEntry,
+      purchaseOrders: PurchaseOrder, 'factory-equipment': FactoryEquipment,
+    };
+    const Model = restoreMap[action.module];
+    if (!Model) throw createError(400, 'Undo failed: unsupported module');
+
+    await Model.deleteOne({ _id: action.restoredId });
+    await moveToTrash(action.module, action.recordData, `${user.name} (${user.role})`, action.restoreMeta || null);
+    if (action.module === 'sales' || action.module === 'invoices') await refreshCustomerStats();
+    if (action.module === 'inventory') await refreshInventoryStatuses();
+    return;
+  }
+
+  throw createError(400, 'Undo failed: unsupported action type');
 }
 
 app.post('/api/trash/app-data-delete', ensureAuthenticated, async (req, res, next) => {
@@ -1117,50 +1268,50 @@ app.post('/api/trash/:id/restore', ensureAuthenticated, ensureRole('users'), asy
 
     if (trashItem.restore_meta && trashItem.restore_meta.kind) {
       const meta = trashItem.restore_meta;
-      if (meta.kind === 'appDataArray') {
+      const restoredActions = [];
+      restoredActions.push(await restoreTrashAppDataItem(trashItem));
+
+      // Invoices and sales are a linked pair in app-data payloads.
+      // Restoring an invoice should also restore its linked sales order(s).
+      if (trashItem.module === 'invoices' && meta.kind === 'appDataArray') {
         const key = String(meta.key || '').trim();
-        if (!isAllowedDataKey(key)) throw createError(400, 'Cannot restore to invalid app-data key');
+        const invoiceId = String((trashItem.record_data && trashItem.record_data.id) || '').trim();
+        const derivedOrderId = invoiceId.startsWith('INV-') ? `SO${invoiceId.slice(3)}` : '';
+        if (invoiceId && isAllowedDataKey(key)) {
+          const salesTrashItems = await TrashBin.find({
+            module: 'sales',
+            'restore_meta.kind': 'appDataArray',
+            'restore_meta.key': key,
+            'restore_meta.arrayPath': 'salesOrders',
+          }).sort({ deleted_at: -1 });
 
-        const doc = await AppData.findOne({ key }).lean();
-        let nextData = doc ? doc.data : (meta.arrayPath ? {} : []);
-
-        if (meta.arrayPath) {
-          if (!nextData || typeof nextData !== 'object' || Array.isArray(nextData)) nextData = {};
-          const current = Array.isArray(nextData[meta.arrayPath]) ? nextData[meta.arrayPath] : [];
-          current.push(trashItem.record_data);
-          nextData[meta.arrayPath] = current;
-        } else {
-          const current = Array.isArray(nextData) ? nextData : [];
-          current.push(trashItem.record_data);
-          nextData = current;
+          const pickedBySalesId = new Set();
+          for (const salesTrash of salesTrashItems) {
+            const rd = salesTrash.record_data || {};
+            const sourceInvoiceId = String(rd.sourceInvoiceId || '').trim();
+            const salesId = String(rd.id || '').trim();
+            const matchesInvoice = sourceInvoiceId === invoiceId || (derivedOrderId && salesId === derivedOrderId);
+            if (!matchesInvoice) continue;
+            const dedupeKey = salesId || String(salesTrash._id);
+            if (pickedBySalesId.has(dedupeKey)) continue;
+            pickedBySalesId.add(dedupeKey);
+            restoredActions.push(await restoreTrashAppDataItem(salesTrash));
+          }
         }
-
-        await AppData.updateOne({ key }, { key, data: nextData }, { upsert: true });
-        await TrashBin.deleteOne({ _id: trashItem._id });
-        res.json({ ok: true });
-        return;
       }
 
-      if (meta.kind === 'bomComponent') {
-        const key = String(meta.key || '').trim();
-        const product = String(meta.product || '').trim();
-        if (!isAllowedDataKey(key) || !product) throw createError(400, 'Cannot restore BOM component');
-
-        const doc = await AppData.findOne({ key }).lean();
-        const data = (doc && doc.data && typeof doc.data === 'object' && !Array.isArray(doc.data)) ? doc.data : {};
-        const productData = (data[product] && typeof data[product] === 'object') ? data[product] : { components: [], labor: 0, overhead: 0 };
-        const components = Array.isArray(productData.components) ? productData.components : [];
-        components.push(trashItem.record_data);
-        productData.components = components;
-        data[product] = productData;
-
-        await AppData.updateOne({ key }, { key, data }, { upsert: true });
-        await TrashBin.deleteOne({ _id: trashItem._id });
-        res.json({ ok: true });
-        return;
-      }
-
-      throw createError(400, 'Unsupported restore metadata kind');
+      rememberRecentRestore(
+        req.user,
+        restoredActions.length > 1 ? { kind: 'restoreBatch', actions: restoredActions } : restoredActions[0]
+      );
+      if (restoredActions.some((a) => a.module === 'sales' || a.module === 'invoices')) await refreshCustomerStats();
+      if (restoredActions.some((a) => a.module === 'inventory')) await refreshInventoryStatuses();
+      res.json({
+        ok: true,
+        restored: restoredActions.length,
+        restoredLinkedSales: restoredActions.filter((a) => a.module === 'sales').length,
+      });
+      return;
     }
 
     const restoreMap = {
@@ -1182,11 +1333,17 @@ app.post('/api/trash/:id/restore', ensureAuthenticated, ensureRole('users'), asy
     const existing = originalId ? await Model.findById(originalId).lean() : null;
     if (existing) throw createError(409, 'A record with this ID already exists. It may have been re-created.');
 
-    if (originalId) {
-      await Model.create({ _id: originalId, ...data });
-    } else {
-      await Model.create(data);
-    }
+    const restoredDoc = originalId
+      ? await Model.create({ _id: originalId, ...data })
+      : await Model.create(data);
+
+    rememberRecentRestore(req.user, {
+      kind: 'modelRestore',
+      module: trashItem.module,
+      restoredId: String(restoredDoc._id),
+      recordData: trashItem.record_data,
+      restoreMeta: null,
+    });
 
     await TrashBin.deleteOne({ _id: trashItem._id });
 
@@ -1195,6 +1352,38 @@ app.post('/api/trash/:id/restore', ensureAuthenticated, ensureRole('users'), asy
 
     res.json({ ok: true });
   } catch (error) { next(error); }
+});
+
+app.post('/api/trash/restore/undo-last', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
+  try {
+    const action = popRecentRestore(req.user);
+    if (!action) throw createError(404, 'No recent restore to undo');
+
+    if (action.kind === 'restoreBatch') {
+      const actions = Array.isArray(action.actions) ? action.actions : [];
+      for (let i = actions.length - 1; i >= 0; i -= 1) {
+        await undoSingleRestoreAction(actions[i], req.user);
+      }
+      res.json({ ok: true, message: 'Last restore has been undone.' });
+      return;
+    }
+
+    if (action.kind === 'appDataRestore') {
+      await undoSingleRestoreAction(action, req.user);
+      res.json({ ok: true, message: 'Last restore has been undone.' });
+      return;
+    }
+
+    if (action.kind === 'modelRestore') {
+      await undoSingleRestoreAction(action, req.user);
+      res.json({ ok: true, message: 'Last restore has been undone.' });
+      return;
+    }
+
+    throw createError(400, 'Undo failed: unsupported action type');
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.delete('/api/trash/:id', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
@@ -1397,7 +1586,7 @@ app.get('/api/store/orders', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.get('/api/store/admin/orders', attachUser, ensureAuthenticated, async (req, res, next) => {
+const handleStoreAdminOrders = async (req, res, next) => {
   try {
     const orders = await StoreOrder.find().populate('customer_id').sort({ createdAt: -1 }).lean();
     res.json(orders.map(o => ({
@@ -1405,9 +1594,12 @@ app.get('/api/store/admin/orders', attachUser, ensureAuthenticated, async (req, 
       customerName: o.customer_id?.name, customerEmail: o.customer_id?.email, customerPhone: o.customer_id?.phone,
     })));
   } catch (error) { next(error); }
-});
+};
 
-app.put('/api/store/admin/orders/:id/status', attachUser, ensureAuthenticated, async (req, res, next) => {
+app.get('/api/store/admin/orders', attachUser, ensureAuthenticated, handleStoreAdminOrders);
+app.post('/api/store/admin/orders', attachUser, ensureAuthenticated, handleStoreAdminOrders);
+
+const handleStoreAdminOrderStatus = async (req, res, next) => {
   try {
     requireFields(req.body, ['status']);
     const validStatuses = ['Pending', 'Confirmed', 'Processing', 'Dispatched', 'Delivered', 'Cancelled'];
@@ -1415,9 +1607,13 @@ app.put('/api/store/admin/orders/:id/status', attachUser, ensureAuthenticated, a
     await StoreOrder.updateOne({ _id: req.params.id }, { status: req.body.status });
     res.json({ ok: true });
   } catch (error) { next(error); }
-});
+};
 
-app.get('/api/store/admin/stats', attachUser, ensureAuthenticated, async (_req, res) => {
+app.put('/api/store/admin/orders/:id/status', attachUser, ensureAuthenticated, handleStoreAdminOrderStatus);
+app.patch('/api/store/admin/orders/:id/status', attachUser, ensureAuthenticated, handleStoreAdminOrderStatus);
+app.post('/api/store/admin/orders/:id/status', attachUser, ensureAuthenticated, handleStoreAdminOrderStatus);
+
+const handleStoreAdminStats = async (_req, res) => {
   const [customerCount, orderCount, pendingOrders, revenueAgg] = await Promise.all([
     StoreCustomer.countDocuments(),
     StoreOrder.countDocuments(),
@@ -1425,6 +1621,42 @@ app.get('/api/store/admin/stats', attachUser, ensureAuthenticated, async (_req, 
     StoreOrder.aggregate([{ $group: { _id: null, t: { $sum: '$total' } } }]),
   ]);
   res.json({ customerCount, orderCount, pendingOrders, totalRevenue: revenueAgg[0]?.t || 0 });
+};
+
+app.get('/api/store/admin/stats', attachUser, ensureAuthenticated, handleStoreAdminStats);
+app.post('/api/store/admin/stats', attachUser, ensureAuthenticated, handleStoreAdminStats);
+
+// ── HARD DELETE: wipe all sales, invoices, store orders, and re-sync ──
+app.delete('/api/admin/purge-sales-and-invoices', attachUser, ensureAuthenticated, ensureRole('production'), async (req, res, next) => {
+  try {
+    // Only allow CEO
+    if (req.user.role !== 'ceo') {
+      return next(createError(403, 'Only a CEO can perform this action'));
+    }
+
+    // 1. Delete all sales orders and invoices
+    await SalesOrder.deleteMany({});
+    await Invoice.deleteMany({});
+
+    // 2. Delete all store orders (they auto-create sales+invoices)
+    await StoreOrder.deleteMany({});
+
+    // 3. Remove synced sales app-data so the browser cannot rehydrate stale figures
+    await AppData.deleteMany({ key: /^ww_sales_/ });
+
+    // 4. Clean matching trash entries for these modules
+    await TrashBin.deleteMany({ module: { $in: ['sales', 'invoices'] } });
+
+    // 5. Reset customer stats (total_orders, outstanding) to zero
+    await Customer.updateMany({}, { total_orders: 0, outstanding: 0 });
+
+    // 6. Re-run the stats refresh on clean data
+    await refreshCustomerStats();
+
+    res.json({ ok: true, message: 'All sales, invoices, and store orders purged. Customer stats reset.' });
+  } catch (error) {
+    next(error);
+  }
 });
 
 /* ═══════════════════════════════════════════════

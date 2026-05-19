@@ -31,6 +31,8 @@
       <select id="sales-month-select"></select>
     </div>
     <button type="button" class="btn-secondary" id="new-month-btn"><i class="fa-solid fa-plus"></i> New Month</button>
+    <button type="button" class="btn-secondary" id="repair-month-btn" title="Repair current month consistency"><i class="fa-solid fa-wrench"></i> Repair Current Month</button>
+    <button type="button" id="purge-sales-btn" style="display:none;background:#dc2626;color:#fff;border:none;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:0.83rem;font-weight:600;gap:6px;align-items:center;" onclick="openPurgeModal()"><i class="fa-solid fa-trash-can"></i> Purge All Sales &amp; Invoices</button>
   </section>
   <section class="stats-row" id="si-stats-row"></section>
   <div class="panel">
@@ -61,6 +63,101 @@
     </div>
   </div>
 </main>
-<script src="../src/script.js?v=20260507v"></script>
+<!-- Purge Confirmation Modal -->
+<div id="purge-sales-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+  <div class="inv-modal" style="max-width:420px">
+    <div class="inv-modal-header" style="background:#fef2f2;border-bottom:1px solid #fecaca">
+      <h3 style="color:#b91c1c"><i class="fa-solid fa-triangle-exclamation" style="margin-right:6px"></i>Purge All Sales &amp; Invoices</h3>
+      <button type="button" class="inv-modal-close" onclick="closePurgeModal()" aria-label="Close">&times;</button>
+    </div>
+    <div class="inv-modal-body">
+      <p style="margin:0 0 10px;color:#374151">This will <strong>permanently delete</strong> all sales orders, invoices, store orders, and related trash entries, then reset all customer balances to zero.</p>
+      <p style="margin:0;color:#991b1b;font-weight:600">This action cannot be undone. Are you sure?</p>
+      <div id="purge-sales-msg" style="margin-top:12px;font-size:0.85rem"></div>
+    </div>
+    <div class="inv-modal-footer">
+      <button type="button" class="btn-secondary" onclick="closePurgeModal()">Cancel</button>
+      <button type="button" id="purge-confirm-btn" onclick="confirmPurge()" style="background:#dc2626;color:#fff;border:none;padding:7px 18px;border-radius:6px;cursor:pointer;font-weight:600">Yes, Purge Everything</button>
+    </div>
+  </div>
+</div>
+
+<script src="../src/script.js?v=20260519e"></script>
+<script>
+(async function initPurgeBtn() {
+  const role = await resolveCurrentUserRole();
+  if (role === 'ceo') {
+    const btn = document.getElementById('purge-sales-btn');
+    if (btn) btn.style.display = 'inline-flex';
+  }
+})();
+
+function openPurgeModal() {
+  document.getElementById('purge-sales-msg').textContent = '';
+  document.getElementById('purge-confirm-btn').disabled = false;
+  document.getElementById('purge-sales-modal').style.display = 'flex';
+}
+
+function closePurgeModal() {
+  document.getElementById('purge-sales-modal').style.display = 'none';
+}
+
+function clearSalesBrowserCache() {
+  const keysToRemove = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    if (key === 'ww_sales_months' || key === 'ww_sales_data' || key === 'ww_last_data_update') {
+      keysToRemove.push(key);
+      continue;
+    }
+    if (key.startsWith('ww_sales_') || key.startsWith('ww_pending_sales_sync_') || key.startsWith('ww_sales_protected_') || key.startsWith('ww_sales_version_')) {
+      keysToRemove.push(key);
+    }
+  }
+
+  keysToRemove.forEach((key) => localStorage.removeItem(key));
+  if (typeof setLastDataUpdateStamp === 'function') {
+    setLastDataUpdateStamp(new Date().toISOString());
+  }
+  if (typeof broadcastRemoteSyncRefresh === 'function') {
+    broadcastRemoteSyncRefresh();
+  }
+}
+
+async function confirmPurge() {
+  const msgEl = document.getElementById('purge-sales-msg');
+  const btn = document.getElementById('purge-confirm-btn');
+  btn.disabled = true;
+  btn.textContent = 'Purging…';
+  msgEl.style.color = '#374151';
+  msgEl.textContent = 'Working…';
+  try {
+    const res = await fetch('/api/admin/purge-sales-and-invoices', {
+      method: 'DELETE',
+      credentials: 'include'
+    });
+    const data = await res.json();
+    if (res.ok) {
+      msgEl.style.color = '#15803d';
+      msgEl.textContent = data.message || 'Purge complete.';
+      clearSalesBrowserCache();
+      btn.textContent = 'Done';
+      setTimeout(() => { closePurgeModal(); location.reload(); }, 1800);
+    } else {
+      msgEl.style.color = '#b91c1c';
+      msgEl.textContent = data.message || 'Purge failed.';
+      btn.disabled = false;
+      btn.textContent = 'Yes, Purge Everything';
+    }
+  } catch (err) {
+    msgEl.style.color = '#b91c1c';
+    msgEl.textContent = 'Network error. Please try again.';
+    btn.disabled = false;
+    btn.textContent = 'Yes, Purge Everything';
+  }
+}
+</script>
 </body>
 </html>
+

@@ -5,6 +5,8 @@ const LOCKED_SALES_MONTHS = {};
 const SALES_PROTECTED_PREFIX = 'ww_sales_protected_';
 const SALES_VERSION_PREFIX = 'ww_sales_version_';
 const SALES_MONTH_DEDUPE_MIGRATION_KEY = 'ww_sales_month_dedupe_v1';
+const SALES_YEAR_RESEQUENCE_MIGRATION_KEY = 'ww_sales_year_resequence_v1';
+const LEGACY_MARCH_SALES_CLEANUP_KEY = 'ww_march2026_sales_cleanup_v2';
 
 function getPendingSalesSyncKey(month) {
 	return `${SALES_PENDING_SYNC_PREFIX}${month}`;
@@ -22,6 +24,11 @@ function getSalesProtectedKey(month) {
 
 function getSalesVersionKey(month) {
 	return `${SALES_VERSION_PREFIX}${month}`;
+}
+
+function isCanonicalExcelMarchMonth(monthOrKey) {
+	const value = String(monthOrKey || '').trim();
+	return value === '2026-03' || value === monthStorageKey('2026-03') || value === getSalesProtectedKey('2026-03');
 }
 
 function hasPendingSalesSyncForKey(key) {
@@ -100,6 +107,7 @@ function invoiceSignature(inv) {
 	const qty = Number((firstItem && firstItem.qty) || 0);
 	const unitPrice = Number((firstItem && firstItem.unitPrice) || inv.rate || 0);
 	return [
+		String(inv.id || '').trim(),
 		String(inv.customer || '').trim().toLowerCase(),
 		String(inv.date || '').trim(),
 		String(inv.phone || '').trim(),
@@ -117,6 +125,7 @@ function invoiceSignature(inv) {
 function orderSignature(ord) {
 	if (!ord || typeof ord !== 'object') return '';
 	return [
+		String(ord.id || '').trim(),
 		String(ord.customer || '').trim().toLowerCase(),
 		String(ord.orderDate || ord.date || '').trim(),
 		Number(ord.amount || 0),
@@ -247,12 +256,8 @@ function mergeSalesMonthPayloads(localPayload, incomingPayload, month) {
 		if (!ordById.has(id)) ordById.set(id, ord);
 	});
 
-	const activeInvIds = new Set(Array.from(invById.keys()));
-	const activeOrdIds = new Set(Array.from(ordById.keys()));
-	const deletedInvoiceIds = normalizeIdArray([...(local.deletedInvoiceIds || []), ...(incoming.deletedInvoiceIds || [])])
-		.filter((id) => !activeInvIds.has(String(id)));
-	const deletedOrderIds = normalizeIdArray([...(local.deletedOrderIds || []), ...(incoming.deletedOrderIds || [])])
-		.filter((id) => !activeOrdIds.has(String(id)));
+	const deletedInvoiceIds = normalizeIdArray([...(local.deletedInvoiceIds || []), ...(incoming.deletedInvoiceIds || [])]);
+	const deletedOrderIds = normalizeIdArray([...(local.deletedOrderIds || []), ...(incoming.deletedOrderIds || [])]);
 	const delInv = new Set(deletedInvoiceIds.map((id) => String(id)));
 	const delOrd = new Set(deletedOrderIds.map((id) => String(id)));
 
@@ -275,15 +280,12 @@ function buildSalesSyncPayload(month, data) {
 	const existingVersion = sanitizeSalesPayloadVersion(existing);
 	const dataVersion = sanitizeSalesPayloadVersion(data);
 	const version = Math.max(existingVersion, dataVersion);
-	const activeInvIds = new Set((Array.isArray(data?.invoices) ? data.invoices : []).map((inv) => String(inv?.id || '')).filter(Boolean));
-	const activeOrdIds = new Set((Array.isArray(data?.salesOrders) ? data.salesOrders : []).map((ord) => String(ord?.id || '')).filter(Boolean));
-	const activeSourceInvIds = new Set((Array.isArray(data?.salesOrders) ? data.salesOrders : []).map((ord) => String(ord?.sourceInvoiceId || '')).filter(Boolean));
-	const deletedInvoiceIds = normalizeIdArray(existing.deletedInvoiceIds).filter((id) => !activeInvIds.has(String(id)));
-	const deletedOrderIds = normalizeIdArray(existing.deletedOrderIds).filter((id) => !activeOrdIds.has(String(id)));
+	const activeInvoiceIds = new Set((Array.isArray(data?.invoices) ? data.invoices : []).map((inv) => String(inv?.id || '')).filter(Boolean));
+	const activeOrderIds = new Set((Array.isArray(data?.salesOrders) ? data.salesOrders : []).map((ord) => String(ord?.id || '')).filter(Boolean));
+	const deletedInvoiceIds = normalizeIdArray(existing.deletedInvoiceIds).filter((id) => !activeInvoiceIds.has(String(id)));
+	const deletedOrderIds = normalizeIdArray(existing.deletedOrderIds).filter((id) => !activeOrderIds.has(String(id)));
 	const delInv = new Set(deletedInvoiceIds);
 	const delOrd = new Set(deletedOrderIds);
-	// If an order actively references an invoice, that invoice must not remain tombstoned.
-	activeSourceInvIds.forEach((id) => delInv.delete(String(id)));
 	const invoices = (Array.isArray(data?.invoices) ? data.invoices : []).filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
 	const salesOrders = (Array.isArray(data?.salesOrders) ? data.salesOrders : []).filter((ord) => {
 		if (!ord || !ord.id) return false;
@@ -334,41 +336,33 @@ async function mergeSyncSalesMonth(month, localData) {
 			const json = await res.json();
 			const serverData = json && json.data;
 			if (serverData && typeof serverData === 'object') {
+				// Overwrite local with server canonical data, then merge in only truly unsynced new invoices
 				const serverInvs = Array.isArray(serverData.invoices) ? serverData.invoices : [];
 				const serverOrds = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
-				const activeInvIds = new Set([...(toSync.invoices || []).map((i) => String(i.id)), ...serverInvs.map((i) => String(i?.id || '')).filter(Boolean)]);
-				const activeOrdIds = new Set([...(toSync.salesOrders || []).map((o) => String(o.id)), ...serverOrds.map((o) => String(o?.id || '')).filter(Boolean)]);
-				const mergedDeletedInv = normalizeIdArray([...(toSync.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]).filter((id) => !activeInvIds.has(String(id)));
-				const mergedDeletedOrd = normalizeIdArray([...(toSync.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]).filter((id) => !activeOrdIds.has(String(id)));
+				const mergedDeletedInv = normalizeIdArray([...(toSync.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]);
+				const mergedDeletedOrd = normalizeIdArray([...(toSync.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]);
 				const delInv = new Set(mergedDeletedInv);
 				const delOrd = new Set(mergedDeletedOrd);
-				const localInvIds = new Set((toSync.invoices || []).map((i) => String(i.id)));
-				const localOrdIds = new Set((toSync.salesOrders || []).map((o) => String(o.id)));
-				const mergedInvoices = [...(toSync.invoices || [])].filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
-				const mergedOrders = [...(toSync.salesOrders || [])].filter((ord) => ord && ord.id && !delOrd.has(String(ord.id)) && !(ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))));
-				const localInvSignatures = new Set(mergedInvoices.map((inv) => invoiceSignature(inv)).filter(Boolean));
-				const localOrdSignatures = new Set(mergedOrders.map((ord) => orderSignature(ord)).filter(Boolean));
-				serverInvs.forEach((inv) => {
-					if (!inv || !inv.id) return;
-					const invId = String(inv.id);
-					if (delInv.has(invId)) return;
+				// Only add local invoices that are not present in server by id or signature
+				const serverInvIds = new Set(serverInvs.map((inv) => String(inv.id)));
+				const serverInvSigs = new Set(serverInvs.map((inv) => invoiceSignature(inv)).filter(Boolean));
+				const trulyUnsyncedInvs = (toSync.invoices || []).filter((inv) => {
+					if (!inv || !inv.id) return false;
+					const id = String(inv.id);
 					const sig = invoiceSignature(inv);
-					if (!localInvIds.has(invId) && !(sig && localInvSignatures.has(sig))) {
-						mergedInvoices.push(inv);
-						if (sig) localInvSignatures.add(sig);
-					}
+					return !serverInvIds.has(id) && !(sig && serverInvSigs.has(sig)) && !delInv.has(id);
 				});
-				serverOrds.forEach((ord) => {
-					if (!ord || !ord.id) return;
-					const ordId = String(ord.id);
-					if (delOrd.has(ordId)) return;
-					if (ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))) return;
+				const mergedInvoices = [...serverInvs, ...trulyUnsyncedInvs].filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
+				// Orders: same logic
+				const serverOrdIds = new Set(serverOrds.map((ord) => String(ord.id)));
+				const serverOrdSigs = new Set(serverOrds.map((ord) => orderSignature(ord)).filter(Boolean));
+				const trulyUnsyncedOrds = (toSync.salesOrders || []).filter((ord) => {
+					if (!ord || !ord.id) return false;
+					const id = String(ord.id);
 					const sig = orderSignature(ord);
-					if (!localOrdIds.has(ordId) && !(sig && localOrdSignatures.has(sig))) {
-						mergedOrders.push(ord);
-						if (sig) localOrdSignatures.add(sig);
-					}
+					return !serverOrdIds.has(id) && !(sig && serverOrdSigs.has(sig)) && !delOrd.has(id);
 				});
+				const mergedOrders = [...serverOrds, ...trulyUnsyncedOrds].filter((ord) => ord && ord.id && !delOrd.has(String(ord.id)));
 				toSync = { invoices: mergedInvoices, salesOrders: mergedOrders, deletedInvoiceIds: mergedDeletedInv, deletedOrderIds: mergedDeletedOrd };
 				localStorage.setItem(key, JSON.stringify(toSync));
 				if (month === currentSalesMonth) {
@@ -447,6 +441,80 @@ function syncToServer(key, data) {
 	return putAppDataKeyToServer(key, data, true);
 }
 
+async function clearSalesBrowserCacheIfServerEmpty() {
+	try {
+		const res = await fetch(API_BASE + '/api/app-data/ww_sales_months', { credentials: 'include', cache: 'no-store' });
+		if (!res.ok) return false;
+		const json = await res.json();
+		if (Array.isArray(json?.data) && json.data.length > 0) return false;
+		const keysToRemove = [];
+		for (let i = 0; i < localStorage.length; i += 1) {
+			const key = localStorage.key(i);
+			if (!key) continue;
+			if (key === 'ww_sales_months' || key === 'ww_sales_data' || key === 'ww_last_data_update') {
+				keysToRemove.push(key);
+				continue;
+			}
+			if (key.startsWith('ww_sales_') || key.startsWith('ww_pending_sales_sync_') || key.startsWith('ww_sales_protected_') || key.startsWith('ww_sales_version_')) {
+				keysToRemove.push(key);
+			}
+		}
+		keysToRemove.forEach((key) => localStorage.removeItem(key));
+		return keysToRemove.length > 0;
+	} catch (_e) {
+		return false;
+	}
+}
+
+async function reloadSalesMonthsFromServerHard() {
+	try {
+		const monthsRes = await fetch(API_BASE + '/api/app-data/ww_sales_months', { credentials: 'include', cache: 'no-store' });
+		if (!monthsRes.ok) return false;
+		const monthsJson = await monthsRes.json();
+		const serverMonths = Array.isArray(monthsJson?.data)
+			? monthsJson.data.filter((m) => /^\d{4}-\d{2}$/.test(String(m)))
+			: [];
+		const monthSet = new Set(serverMonths);
+
+		try { localStorage.setItem(MONTHS_KEY, JSON.stringify(serverMonths)); } catch (_e) { /* ignore */ }
+
+		const keysToRemove = [];
+		for (let i = 0; i < localStorage.length; i += 1) {
+			const key = localStorage.key(i);
+			if (!key) continue;
+			const match = /^ww_sales_(\d{4}-\d{2})$/.exec(key);
+			if (match && match[1] && !monthSet.has(match[1])) {
+				keysToRemove.push(key);
+				keysToRemove.push(getPendingSalesSyncKey(match[1]));
+				keysToRemove.push(getSalesProtectedKey(match[1]));
+				keysToRemove.push(getSalesVersionKey(match[1]));
+			}
+		}
+		keysToRemove.forEach((k) => {
+			try { localStorage.removeItem(k); } catch (_e) { /* ignore */ }
+		});
+
+		for (const month of serverMonths) {
+			const key = monthStorageKey(month);
+			try {
+				try { localStorage.removeItem(getSalesProtectedKey(month)); } catch (_e) { /* ignore */ }
+				const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), { credentials: 'include', cache: 'no-store' });
+				if (!res.ok) continue;
+				const json = await res.json();
+				if (json && json.data && typeof json.data === 'object') {
+					localStorage.setItem(key, JSON.stringify(json.data));
+					setProtectedSalesPayload(month, json.data);
+					clearPendingSalesSync(month);
+				}
+			} catch (_e) { /* ignore */ }
+		}
+
+		return true;
+	} catch (_e) {
+		return false;
+	}
+}
+
 function moveAppDataDeleteToTrash(module, recordData, restoreMeta) {
 	if (!recordData || !restoreMeta) return Promise.resolve(false);
 	return fetch(API_BASE + '/api/trash/app-data-delete', {
@@ -470,9 +538,6 @@ function showDeleteToast(message) {
 		container.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
 		document.body.appendChild(container);
 	}
-			const payloadVersion = sanitizeSalesPayloadVersion(payload);
-			const protectedVersion = sanitizeSalesPayloadVersion(protectedPayload);
-			if (payloadVersion >= protectedVersion) setProtectedSalesPayload(month, payload);
 	const toast = document.createElement('div');
 	toast.style.cssText = 'background:#ef4444;color:#fff;padding:10px 18px;border-radius:8px;font-size:0.9rem;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,0.18);opacity:1;transition:opacity 0.4s;max-width:320px;pointer-events:none;display:flex;align-items:center;gap:8px;';
 	toast.innerHTML = `<i class="fa-solid fa-trash-can" style="flex-shrink:0"></i><span>${message}</span>`;
@@ -508,6 +573,12 @@ async function loadFromServer(key) {
 				}
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
+					if (isCanonicalExcelMarchMonth(salesMonth)) {
+						localStorage.setItem(key, JSON.stringify(json.data));
+						setProtectedSalesPayload(salesMonth, json.data);
+						clearPendingSalesSync(salesMonth);
+						return json.data;
+					}
 					const localPayload = getSalesMonthPayload(salesMonth);
 					const merged = mergeSalesMonthPayloads(localPayload, json.data, salesMonth);
 					localStorage.setItem(key, JSON.stringify(merged));
@@ -532,6 +603,12 @@ async function loadFromServerForceFresh(key) {
 			if (json.data !== null && json.data !== undefined) {
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
+					if (isCanonicalExcelMarchMonth(salesMonth)) {
+						localStorage.setItem(key, JSON.stringify(json.data));
+						setProtectedSalesPayload(salesMonth, json.data);
+						clearPendingSalesSync(salesMonth);
+						return json.data;
+					}
 					const localPayload = getSalesMonthPayload(salesMonth);
 					const merged = mergeSalesMonthPayloads(localPayload, json.data, salesMonth);
 					localStorage.setItem(key, JSON.stringify(merged));
@@ -551,6 +628,19 @@ async function loadFromServerForceFresh(key) {
 // Returns true if anything was added.
 function mergeServerSalesIntoMemory(serverData) {
 	if (!/^\d{4}-\d{2}$/.test(String(currentSalesMonth || ''))) return false;
+	if (isCanonicalExcelMarchMonth(currentSalesMonth)) {
+		if (!serverData || typeof serverData !== 'object') return false;
+		salesModuleData.invoices = Array.isArray(serverData.invoices) ? [...serverData.invoices] : [];
+		salesModuleData.salesOrders = Array.isArray(serverData.salesOrders) ? [...serverData.salesOrders] : [];
+		return true;
+	}
+	const resolveInvoiceLinkFromOrder = (ord) => {
+		if (!ord) return '';
+		const source = String(ord.sourceInvoiceId || '').trim();
+		if (source) return source;
+		const m = String(ord.id || '').match(/^SO-(\d{4})-(\d{3})$/);
+		return m ? `INV-${m[1]}-${m[2]}` : '';
+	};
 	const protectedPayload = getProtectedSalesPayload(currentSalesMonth);
 	if (protectedPayload) {
 		const protectedVersion = sanitizeSalesPayloadVersion(protectedPayload);
@@ -581,15 +671,28 @@ function mergeServerSalesIntoMemory(serverData) {
 			changed = true;
 		}
 	});
+	const activeInvoiceIds = new Set(salesModuleData.invoices.map((inv) => String(inv.id)).filter(Boolean));
 	serverOrders.forEach((ord) => {
 		const sig = orderSignature(ord);
-		if (ord && ord.id && !deletedOrd.has(String(ord.id)) && !(ord.sourceInvoiceId && deletedInv.has(String(ord.sourceInvoiceId))) && !localOrdIds.has(String(ord.id)) && !(sig && localOrdSignatures.has(sig))) {
+		if (!ord || !ord.id) return;
+		const sourceInvoiceId = resolveInvoiceLinkFromOrder(ord);
+		if (!sourceInvoiceId || deletedInv.has(String(sourceInvoiceId))) return;
+		if (!activeInvoiceIds.has(String(sourceInvoiceId))) return;
+		ord.sourceInvoiceId = sourceInvoiceId;
+		if (!deletedOrd.has(String(ord.id)) && !localOrdIds.has(String(ord.id)) && !(sig && localOrdSignatures.has(sig))) {
 			salesModuleData.salesOrders.push(ord);
 			localOrdIds.add(String(ord.id));
 			if (sig) localOrdSignatures.add(sig);
 			changed = true;
 		}
 	});
+	if (changed) {
+		salesModuleData.salesOrders = salesModuleData.salesOrders.filter((ord) => {
+			const sourceInvoiceId = resolveInvoiceLinkFromOrder(ord);
+			if (!sourceInvoiceId || deletedInv.has(String(sourceInvoiceId))) return false;
+			return activeInvoiceIds.has(String(sourceInvoiceId));
+		});
+	}
 	return changed;
 }
 
@@ -605,6 +708,12 @@ async function loadBulkFromServer(keys) {
 					// For sales month keys, merge server+local by ID to avoid losing local entries.
 					const salesMonth = getSalesMonthFromStorageKey(k);
 					if (salesMonth) {
+						if (isCanonicalExcelMarchMonth(salesMonth)) {
+							localStorage.setItem(k, JSON.stringify(v));
+							setProtectedSalesPayload(salesMonth, v);
+							clearPendingSalesSync(salesMonth);
+							continue;
+						}
 						const existing = getSalesMonthPayload(salesMonth);
 						const merged = mergeSalesMonthPayloads(existing, v, salesMonth);
 						localStorage.setItem(k, JSON.stringify(merged));
@@ -1606,10 +1715,11 @@ function calcWeeklyEfficiencyLabel(dailyLog, todayStr) {
 	return `${sign}${change.toFixed(1)}% vs last week • ${streakPercent}% weekly streak (${trendText})`;
 }
 
-function initDashboardPage() {
+async function initDashboardPage() {
 	if (document.body.getAttribute('data-page') !== 'dashboard') {
 		return;
 	}
+	await clearSalesBrowserCacheIfServerEmpty();
 
 	let selectedDashboardYear = null;
 	const parseYearFromDateLike = (raw) => {
@@ -1849,9 +1959,6 @@ function initDashboardPage() {
 	const buildInvoiceRevenueByMonth = () => {
 		const salesData = getAllSalesData();
 		const byMonth = {};
-		recoverSalesMonthsFromStorage().forEach((month) => {
-			if (/^\d{4}-\d{2}$/.test(month)) byMonth[month] = byMonth[month] || 0;
-		});
 		for (const inv of salesData.invoices) {
 			if (inv.status !== 'paid') continue;
 			const d = new Date(inv.date);
@@ -2019,15 +2126,22 @@ function initDashboardPage() {
 		const stockAlertCount = stockAlerts.filter((a) => a.current < a.min).length;
 		const stockCriticalCount = stockAlerts.filter((a) => a.current < a.min * 0.5).length;
 
+		const salesData = getAllSalesData();
+		const hasInvoiceData = salesData.invoices.some((invoice) => Number(invoice?.amount || 0) > 0);
 		const revenueData = buildRevenueData();
-		const totalRevenue = getAllSalesData().invoices.reduce((sum, invoice) => {
+		const totalRevenue = hasInvoiceData ? salesData.invoices.reduce((sum, invoice) => {
 			if (!isDateInSelectedDashboardYear(invoice.date)) return sum;
 			return invoice.status === 'paid' ? sum + (Number(invoice.amount) || 0) : sum;
-		}, 0);
+		}, 0) : 0;
 		const revenueMtd = revenueData.length > 0 ? revenueData[revenueData.length - 1].revenue : 0;
 		const prevRevenue = revenueData.length > 1 ? revenueData[revenueData.length - 2].revenue : 0;
 		const revChange = prevRevenue > 0 ? (((revenueMtd - prevRevenue) / prevRevenue) * 100).toFixed(1) : 0;
-		const marketGrowth = calculateMarketGrowthRate();
+		const marketGrowth = hasInvoiceData ? calculateMarketGrowthRate() : {
+			value: null,
+			label: 'N/A',
+			meta: 'No sales data yet',
+			color: 'yellow',
+		};
 		const isCurrentYearView = !selectedDashboardYear || selectedDashboardYear === new Date().getFullYear();
 		const unitsMeta = totalUnitsProduced > 0
 			? (isCurrentYearView
@@ -3436,6 +3550,44 @@ function monthStorageKey(month) {
 	return `ww_sales_${month}`;
 }
 
+function getSalesYearPayloads(year) {
+	const normalizedYear = String(year || '').trim();
+	if (!/^\d{4}$/.test(normalizedYear)) return [];
+	return recoverSalesMonthsFromStorage()
+		.filter((month) => String(month || '').slice(0, 4) === normalizedYear)
+		.map((month) => {
+			const payload = getSalesMonthPayload(month);
+			return payload && typeof payload === 'object' ? payload : null;
+		})
+		.filter(Boolean);
+}
+
+function getAvailableInvoiceProducts(preferredProduct) {
+	const options = [];
+	const seen = new Set();
+	const addOption = (value) => {
+		const normalized = String(value || '').trim();
+		if (!normalized || seen.has(normalized)) return;
+		seen.add(normalized);
+		options.push(normalized);
+	};
+
+	addOption(preferredProduct);
+	addOption('Mobile water (500ML)');
+	addOption('500ml Sachet Water (500 pcs/bag)');
+
+	try {
+		const finishedProducts = JSON.parse(localStorage.getItem('ww_finished_products') || '[]');
+		if (Array.isArray(finishedProducts)) {
+			finishedProducts.forEach((row) => {
+				if (row && typeof row === 'object') addOption(row.product || row.name);
+			});
+		}
+	} catch (_e) { /* ignore */ }
+
+	return options.length ? options : ['Mobile water (500ML)'];
+}
+
 function recoverSalesMonthsFromStorage() {
 	const existing = getSalesMonths();
 	const recovered = new Set(existing);
@@ -3482,6 +3634,67 @@ function normalizeMonthInvoices(month, invoices) {
 		keep.push(inv);
 	}
 	return { keep, movedByMonth };
+}
+
+function normalizeMonthSalesRecords(month, invoices, orders) {
+	const invoiceResult = normalizeMonthInvoices(month, invoices);
+	const keepInvoices = invoiceResult.keep;
+	const movedByMonth = {};
+	const invoiceById = new Map(keepInvoices.map((inv) => [String(inv.id), inv]));
+	const keepOrders = (Array.isArray(orders) ? orders : []).filter((ord) => {
+		if (!ord || !ord.id) return false;
+		const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
+		const linkedInvoice = sourceInvoiceId ? invoiceById.get(sourceInvoiceId) : null;
+		if (linkedInvoice) return true;
+		const derivedInvoiceId = `INV${String(ord.id || '').slice(2)}`;
+		if (invoiceById.has(derivedInvoiceId)) return true;
+		const ordMonth = getInvoiceMonth(ord);
+		return !ordMonth || ordMonth === month;
+	});
+	return { keepInvoices, keepOrders, movedByMonth };
+}
+
+function mergeSalesRecordsIntoMonth(month, invoices, orders) {
+	if (!month) return false;
+	const invoiceList = Array.isArray(invoices) ? invoices.filter((inv) => inv && inv.id) : [];
+	const orderList = Array.isArray(orders) ? orders.filter((ord) => ord && ord.id) : [];
+	if (!invoiceList.length && !orderList.length) return false;
+	const payload = getSalesMonthPayload(month);
+	const existingInvs = Array.isArray(payload.invoices) ? payload.invoices : [];
+	const existingOrds = Array.isArray(payload.salesOrders) ? payload.salesOrders : [];
+	const deletedInv = new Set(normalizeIdArray(payload.deletedInvoiceIds));
+	const deletedOrd = new Set(normalizeIdArray(payload.deletedOrderIds));
+	const existingIds = new Set(existingInvs.map((inv) => String(inv?.id || '')).filter(Boolean));
+	const existingOrderIds = new Set(existingOrds.map((ord) => String(ord?.id || '')).filter(Boolean));
+	const nextInvoices = [...existingInvs];
+	const nextOrders = [...existingOrds];
+	let changed = false;
+	for (const inv of invoiceList) {
+		const id = String(inv.id);
+		if (deletedInv.has(id) || existingIds.has(id)) continue;
+		nextInvoices.push(inv);
+		existingIds.add(id);
+		changed = true;
+	}
+	for (const ord of orderList) {
+		const id = String(ord.id);
+		if (deletedOrd.has(id) || existingOrderIds.has(id)) continue;
+		nextOrders.push(ord);
+		existingOrderIds.add(id);
+		changed = true;
+	}
+	if (!changed) return false;
+	const nextPayload = {
+		...payload,
+		invoices: nextInvoices,
+		salesOrders: nextOrders,
+		deletedInvoiceIds: normalizeIdArray(payload.deletedInvoiceIds),
+		deletedOrderIds: normalizeIdArray(payload.deletedOrderIds),
+	};
+	localStorage.setItem(monthStorageKey(month), JSON.stringify(nextPayload));
+	setProtectedSalesPayload(month, nextPayload);
+	queuePendingSalesSync(month, nextPayload);
+	return true;
 }
 
 function mergeInvoicesIntoMonthStorage(month, invoices) {
@@ -3585,15 +3798,105 @@ function dedupeSalesMonthPayload(payload) {
 		if (sig) seenOrderSignatures.add(sig);
 	}
 
-	const activeOrderIds = new Set(dedupedOrders.map((ord) => String(ord.id || '')).filter(Boolean));
-	const deletedInvoiceIds = normalizeIdArray(base.deletedInvoiceIds).filter((id) => !activeInvoiceIds.has(String(id)));
-	const deletedOrderIds = normalizeIdArray(base.deletedOrderIds).filter((id) => !activeOrderIds.has(String(id)));
+	const deletedInvoiceIds = normalizeIdArray(base.deletedInvoiceIds);
+	const deletedOrderIds = normalizeIdArray(base.deletedOrderIds);
 	return {
 		...base,
 		invoices: dedupedInvoices,
 		salesOrders: dedupedOrders,
 		deletedInvoiceIds,
 		deletedOrderIds,
+	};
+}
+
+function repairSalesMonthConsistency(month) {
+	if (!month) return { beforeInvoices: 0, afterInvoices: 0, beforeOrders: 0, afterOrders: 0 };
+	const current = getSalesMonthPayload(month);
+	const protectedPayload = getProtectedSalesPayload(month);
+	const candidates = [current, protectedPayload].filter((p) => p && typeof p === 'object');
+	const base = candidates.sort((a, b) => {
+		const ai = Array.isArray(a.invoices) ? a.invoices.length : 0;
+		const bi = Array.isArray(b.invoices) ? b.invoices.length : 0;
+		if (bi !== ai) return bi - ai;
+		const ao = Array.isArray(a.salesOrders) ? a.salesOrders.length : 0;
+		const bo = Array.isArray(b.salesOrders) ? b.salesOrders.length : 0;
+		return bo - ao;
+	})[0] || {};
+
+	const beforeInvoices = Array.isArray(current.invoices) ? current.invoices.length : 0;
+	const beforeOrders = Array.isArray(current.salesOrders) ? current.salesOrders.length : 0;
+	const deduped = dedupeSalesMonthPayload(base);
+	const invoices = (Array.isArray(deduped.invoices) ? deduped.invoices : []).filter((inv) => inv && inv.id);
+	const existingOrders = (Array.isArray(deduped.salesOrders) ? deduped.salesOrders : []).filter((ord) => ord && ord.id);
+
+	invoices.sort((a, b) => {
+		const da = new Date(a.date || a.orderDate || a.createdAt || 0).getTime();
+		const db = new Date(b.date || b.orderDate || b.createdAt || 0).getTime();
+		const ta = Number.isNaN(da) ? Number.MAX_SAFE_INTEGER : da;
+		const tb = Number.isNaN(db) ? Number.MAX_SAFE_INTEGER : db;
+		if (ta !== tb) return ta - tb;
+		return String(a.id || '').localeCompare(String(b.id || ''));
+	});
+
+	const rebuiltOrders = invoices.map((inv) => {
+		const soId = `SO${String(inv.id || '').slice(3)}`;
+		const existing = existingOrders.find((o) => String(o?.sourceInvoiceId || '') === String(inv.id) || String(o?.id || '') === soId) || {};
+		const firstItem = Array.isArray(inv.items) && inv.items[0] ? inv.items[0] : null;
+		const qty = Number((firstItem && firstItem.qty) || inv.bags || existing.bags || 0);
+		const rate = Number((firstItem && firstItem.unitPrice) || inv.rate || existing.rate || 0);
+		return {
+			...existing,
+			id: soId,
+			sourceInvoiceId: inv.id,
+			customer: inv.customer,
+			orderDate: inv.date || inv.orderDate,
+			deliveryDate: inv.date || inv.orderDate,
+			amount: Number(inv.amount || qty * rate || 0),
+			status: inv.status || existing.status || 'pending',
+			bags: qty,
+			rate,
+			promo: Number(inv.promo || 0),
+			promoNote: inv.promoNote || existing.promoNote || '',
+			paymentMode: inv.paymentMode || existing.paymentMode || '',
+			paidDate: inv.paidDate || existing.paidDate || '',
+			items: Array.isArray(inv.items) ? JSON.parse(JSON.stringify(inv.items)) : (Array.isArray(existing.items) ? JSON.parse(JSON.stringify(existing.items)) : []),
+		};
+	});
+
+	const activeInvoiceIds = new Set(invoices.map((inv) => String(inv.id)));
+	const activeOrderIds = new Set(rebuiltOrders.map((ord) => String(ord.id)));
+	const repaired = {
+		...deduped,
+		invoices,
+		salesOrders: rebuiltOrders,
+		deletedInvoiceIds: normalizeIdArray(deduped.deletedInvoiceIds).filter((id) => !activeInvoiceIds.has(String(id))),
+		deletedOrderIds: normalizeIdArray(deduped.deletedOrderIds).filter((id) => !activeOrderIds.has(String(id))),
+	};
+
+	localStorage.setItem(monthStorageKey(month), JSON.stringify(repaired));
+	setProtectedSalesPayload(month, repaired);
+	if (String(currentSalesMonth) === String(month)) {
+		salesModuleData.invoices = JSON.parse(JSON.stringify(repaired.invoices || []));
+		salesModuleData.salesOrders = JSON.parse(JSON.stringify(repaired.salesOrders || []));
+		saveSalesDataToStorage();
+	} else {
+		queuePendingSalesSync(month, repaired);
+		const snapshot = {
+			invoices: [...(repaired.invoices || [])],
+			salesOrders: [...(repaired.salesOrders || [])],
+			deletedInvoiceIds: [...(repaired.deletedInvoiceIds || [])],
+			deletedOrderIds: [...(repaired.deletedOrderIds || [])],
+		};
+		mergeSyncSalesMonth(month, snapshot).then((ok) => {
+			if (ok) clearPendingSalesSync(month);
+		});
+	}
+
+	return {
+		beforeInvoices,
+		afterInvoices: repaired.invoices.length,
+		beforeOrders,
+		afterOrders: repaired.salesOrders.length,
 	};
 }
 
@@ -3619,6 +3922,86 @@ function runOneTimeSalesMonthDedupeMigration() {
 	localStorage.setItem(SALES_MONTH_DEDUPE_MIGRATION_KEY, '1');
 }
 
+function runOneTimeSalesYearResequenceMigration() {
+	if (localStorage.getItem(SALES_YEAR_RESEQUENCE_MIGRATION_KEY) === '1') return;
+
+	const resolveInvoiceLinkFromOrder = (ord) => {
+		if (!ord) return '';
+		const source = String(ord.sourceInvoiceId || '').trim();
+		if (source) return source;
+		const m = String(ord.id || '').match(/^SO-(\d{4})-(\d{3})$/);
+		return m ? `INV-${m[1]}-${m[2]}` : '';
+	};
+	const getIdNum = (id) => {
+		const m = String(id || '').match(/(\d+)$/);
+		return m ? Number(m[1]) : 0;
+	};
+	const payloadsByYear = new Map();
+
+	recoverSalesMonthsFromStorage().forEach((month) => {
+		if (getLockedSalesMonthConfig(month)) return;
+		const payload = getSalesMonthPayload(month);
+		if (!payload || typeof payload !== 'object') return;
+		const year = String(month || '').slice(0, 4);
+		if (!/^\d{4}$/.test(year)) return;
+		const bucket = payloadsByYear.get(year) || [];
+		bucket.push({ month, payload });
+		payloadsByYear.set(year, bucket);
+	});
+
+	payloadsByYear.forEach((entries, year) => {
+		const invoiceRows = entries.flatMap(({ month, payload }) => {
+			const invoices = Array.isArray(payload.invoices) ? payload.invoices : [];
+			return invoices
+				.filter((inv) => inv && inv.id)
+				.map((inv) => ({ month, inv }));
+		});
+
+		invoiceRows.sort((a, b) => {
+			const aDate = String(a.inv?.date || a.inv?.orderDate || a.inv?.createdAt || '');
+			const bDate = String(b.inv?.date || b.inv?.orderDate || b.inv?.createdAt || '');
+			const dateDiff = aDate.localeCompare(bDate);
+			if (dateDiff !== 0) return dateDiff;
+			const monthDiff = String(a.month || '').localeCompare(String(b.month || ''));
+			if (monthDiff !== 0) return monthDiff;
+			return getIdNum(a.inv?.id) - getIdNum(b.inv?.id);
+		});
+
+		const invoiceIdMapByMonth = new Map();
+		invoiceRows.forEach(({ month, inv }, index) => {
+			const oldId = String(inv.id || '');
+			const newId = `INV-${year}-${String(index + 1).padStart(3, '0')}`;
+			inv.id = newId;
+			const monthMap = invoiceIdMapByMonth.get(month) || new Map();
+			monthMap.set(oldId, newId);
+			invoiceIdMapByMonth.set(month, monthMap);
+		});
+
+		entries.forEach(({ month, payload }) => {
+			const monthMap = invoiceIdMapByMonth.get(month) || new Map();
+			const orders = Array.isArray(payload.salesOrders) ? payload.salesOrders : [];
+			orders.forEach((ord) => {
+				const sourceInvoiceId = resolveInvoiceLinkFromOrder(ord);
+				const mappedInvId = monthMap.get(String(sourceInvoiceId || ''));
+				if (!mappedInvId) return;
+				ord.sourceInvoiceId = mappedInvId;
+				ord.id = `SO${String(mappedInvId).slice(3)}`;
+			});
+
+			const activeInvoiceIds = new Set((Array.isArray(payload.invoices) ? payload.invoices : []).map((inv) => String(inv?.id || '')).filter(Boolean));
+			const activeOrderIds = new Set(orders.map((ord) => String(ord?.id || '')).filter(Boolean));
+			payload.deletedInvoiceIds = normalizeIdArray(payload.deletedInvoiceIds).filter((id) => !activeInvoiceIds.has(String(id)));
+			payload.deletedOrderIds = normalizeIdArray(payload.deletedOrderIds).filter((id) => !activeOrderIds.has(String(id)));
+
+			localStorage.setItem(monthStorageKey(month), JSON.stringify(payload));
+			setProtectedSalesPayload(month, payload);
+			queuePendingSalesSync(month, payload);
+		});
+	});
+
+	localStorage.setItem(SALES_YEAR_RESEQUENCE_MIGRATION_KEY, '1');
+}
+
 function loadSalesDataFromStorage() {
 	/* Clean up any old key */
 	try { localStorage.removeItem('ww_sales_data'); } catch(_e) {}
@@ -3627,29 +4010,28 @@ function loadSalesDataFromStorage() {
 	recoverSalesMonthsFromStorage();
 	runOneTimeSalesMonthDedupeMigration();
 
-	/* Ensure March 2026 month exists */
-	ensureMonthExists('2026-03');
-
-	/* Seed March only when that month payload is missing/corrupt */
-	let marchData = null;
-	try { marchData = getSalesMonthPayload('2026-03'); } catch(_e) {}
-	if (!marchData || !Array.isArray(marchData.invoices)) {
-		currentSalesMonth = '2026-03';
-		salesModuleData.invoices = [];
-		salesModuleData.salesOrders = [];
-		seedMarchSalesData();
-		setSeedFlag('march2026_sales_v2');
-		return; /* seedMarchSalesData calls saveSalesDataToStorage, data is already in salesModuleData */
-	} else {
-		setSeedFlag('march2026_sales_v2');
+	/* One-time cleanup: remove legacy March 2026 sales payload that could rehydrate deleted rows */
+	if (localStorage.getItem(LEGACY_MARCH_SALES_CLEANUP_KEY) !== '1') {
+		try { localStorage.removeItem(monthStorageKey('2026-03')); } catch (_e) {}
+		try { localStorage.removeItem(getSalesProtectedKey('2026-03')); } catch (_e) {}
+		try { localStorage.removeItem(getPendingSalesSyncKey('2026-03')); } catch (_e) {}
+		try { localStorage.removeItem(getSalesVersionKey('2026-03')); } catch (_e) {}
+		const months = getSalesMonths().filter((m) => m !== '2026-03');
+		saveSalesMonths(months);
+		localStorage.setItem(LEGACY_MARCH_SALES_CLEANUP_KEY, '1');
 	}
+
+	runOneTimeSalesYearResequenceMigration();
 
 	/* Pick the month to display */
 	if (!currentSalesMonth) {
 		const now = new Date();
 		const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 		const allMonths = getSalesMonths();
-		currentSalesMonth = allMonths.includes(thisMonth) ? thisMonth : (allMonths[allMonths.length - 1] || '2026-03');
+		currentSalesMonth = allMonths.includes(thisMonth) ? thisMonth : (allMonths[allMonths.length - 1] || thisMonth);
+		if (!allMonths.length) {
+			ensureMonthExists(thisMonth);
+		}
 	}
 
 	loadMonthData(currentSalesMonth);
@@ -3664,8 +4046,37 @@ function loadMonthData(month) {
 	try {
 		const stored = getSalesMonthPayload(month);
 		if (stored && typeof stored === 'object') {
-			salesModuleData.invoices = Array.isArray(stored.invoices) ? stored.invoices : [];
-			salesModuleData.salesOrders = Array.isArray(stored.salesOrders) ? stored.salesOrders : [];
+			const rawInvoices = (Array.isArray(stored.invoices) ? stored.invoices : []).filter((inv) => inv && inv.id);
+			const rawOrders = (Array.isArray(stored.salesOrders) ? stored.salesOrders : []).filter((ord) => ord && ord.id);
+			const normalizedMonthRecords = normalizeMonthSalesRecords(month, rawInvoices, rawOrders);
+			if (Object.keys(normalizedMonthRecords.movedByMonth || {}).length) {
+				for (const [targetMonth, movedRows] of Object.entries(normalizedMonthRecords.movedByMonth)) {
+					const movedInvoices = movedRows.map((row) => row.invoice).filter(Boolean);
+					const movedOrders = movedRows.map((row) => row.order).filter(Boolean);
+					mergeSalesRecordsIntoMonth(targetMonth, movedInvoices, movedOrders);
+				}
+				dirty = true;
+			}
+			const activeInvoiceIds = new Set(normalizedMonthRecords.keepInvoices.map((inv) => String(inv.id)));
+			const activeOrderIds = new Set(normalizedMonthRecords.keepOrders.map((ord) => String(ord.id)));
+			const normalizedDeletedInv = normalizeIdArray(stored.deletedInvoiceIds).map((id) => String(id));
+			const normalizedDeletedOrd = normalizeIdArray(stored.deletedOrderIds).map((id) => String(id));
+			const reconciledDeletedInv = normalizedDeletedInv.filter((id) => !activeInvoiceIds.has(id));
+			const reconciledDeletedOrd = normalizedDeletedOrd.filter((id) => !activeOrderIds.has(id));
+			if (reconciledDeletedInv.length !== normalizedDeletedInv.length || reconciledDeletedOrd.length !== normalizedDeletedOrd.length) {
+				stored.deletedInvoiceIds = reconciledDeletedInv;
+				stored.deletedOrderIds = reconciledDeletedOrd;
+				dirty = true;
+			}
+			const deletedInv = new Set(reconciledDeletedInv);
+			const deletedOrd = new Set(reconciledDeletedOrd);
+			salesModuleData.invoices = normalizedMonthRecords.keepInvoices.filter((inv) => !deletedInv.has(String(inv.id)));
+			salesModuleData.salesOrders = normalizedMonthRecords.keepOrders.filter((ord) => {
+				if (!ord || !ord.id) return false;
+				if (deletedOrd.has(String(ord.id))) return false;
+				if (ord.sourceInvoiceId && deletedInv.has(String(ord.sourceInvoiceId))) return false;
+				return true;
+			});
 		}
 	} catch (_e) { /* ignore */ }
 
@@ -3691,15 +4102,6 @@ function loadMonthData(month) {
 			const tb = Number.isNaN(db) ? Number.MAX_SAFE_INTEGER : db;
 			return ta - tb;
 		});
-		const getIdNum = (id) => {
-			const m = String(id || '').match(/(\d+)$/);
-			return m ? Number(m[1]) : 0;
-		};
-		const idsOutOfSequence = salesModuleData.invoices.some((inv, idx) => getIdNum(inv?.id) !== idx + 1);
-		if (idsOutOfSequence) {
-			resequenceSalesIdsForCurrentMonth();
-			dirty = true;
-		}
 	}
 
 	/* Keep Sales Orders strictly 1:1 with invoices (linked by sourceInvoiceId). */
@@ -3938,10 +4340,11 @@ function resequenceSalesIdsForCurrentMonth() {
 }
 
 function nextInvoiceId() {
-	// Numbering resets each month — choose the next missing number in this month
+	// Invoice numbering is year-wide, so scan all sales months in the active year.
 	const year = String(currentSalesMonth || `${new Date().getFullYear()}-01`).slice(0, 4);
+	const yearInvoices = getSalesYearPayloads(year).flatMap((payload) => Array.isArray(payload.invoices) ? payload.invoices : []);
 	const used = new Set(
-		salesModuleData.invoices
+		[...yearInvoices, ...salesModuleData.invoices]
 			.map((inv) => {
 				const m = String(inv.id || '').match(/(\d+)$/);
 				return m ? Number(m[1]) : 0;
@@ -4054,6 +4457,7 @@ function renderInvoiceDetail(invoice) {
 				<div class="inv-doc-numbers">
 					<div class="inv-doc-num-row"><span>Invoice no:</span><strong>${invNo}</strong></div>
 					<div class="inv-doc-num-row"><span>Date:</span><strong>${fmtDate(invoice.date)}</strong></div>
+					${invoice.entryTime ? `<div class="inv-doc-num-row"><span>Time:</span><strong>${invoice.entryTime}</strong></div>` : ''}
 					${invoice.paidDate ? `<div class="inv-doc-num-row"><span>Paid date:</span><strong>${fmtDate(invoice.paidDate)}</strong></div>` : ''}
 					${invoice.createdAt ? '<div class="inv-doc-num-row"><span>Created:</span><strong>' + new Date(invoice.createdAt).toLocaleString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:true }) + '</strong></div>' : ''}
 				</div>
@@ -4194,6 +4598,8 @@ async function initSalesInvoicesPage() {
 	if (page !== 'invoices' && page !== 'sales') {
 		return;
 	}
+	await clearSalesBrowserCacheIfServerEmpty();
+	await reloadSalesMonthsFromServerHard();
 
 	const userRole = await resolveCurrentUserRole();
 	const isApprover = canEditDelete(userRole);
@@ -4228,6 +4634,7 @@ async function initSalesInvoicesPage() {
 	const yearSelect = document.getElementById('sales-year-select');
 	const yearLabel = document.getElementById('sales-year-label');
 	const newMonthBtn = document.getElementById('new-month-btn');
+	const repairMonthBtn = document.getElementById('repair-month-btn');
 	let selectedSalesYear = null;
 
 	function populateMonthSelect(options) {
@@ -4306,17 +4713,34 @@ async function initSalesInvoicesPage() {
 		});
 	}
 
-	const todayStr = getTodayDateStr();
+	if (repairMonthBtn) {
+		repairMonthBtn.addEventListener('click', () => {
+			const month = currentSalesMonth;
+			if (!month) return;
+			const ok = window.confirm(`Repair ${monthLabel(month)} consistency now? This keeps your latest entries and rebuilds invoice/sales pairing.`);
+			if (!ok) return;
+			const summary = repairSalesMonthConsistency(month);
+			loadMonthData(month);
+			renderSalesPage();
+			alert(
+				`Repair complete for ${monthLabel(month)}.\n` +
+				`Invoices: ${summary.beforeInvoices} -> ${summary.afterInvoices}\n` +
+				`Sales Orders: ${summary.beforeOrders} -> ${summary.afterOrders}`
+			);
+		});
+	}
 
+	const todayStr = getTodayDateStr();
 	const SI_MODAL_CONFIGS = {
 		invoice: {
 			title: 'Add Invoice',
 			fields: [
 				{ id: 'carNumber', label: 'Car Number', type: 'text', placeholder: 'e.g. GR-1234-20' },
+				{ id: 'entryTime', label: 'Entry Time', type: 'time' },
 				{ id: 'customer', label: 'Customer Name', type: 'text', required: true },
 				{ id: 'address', label: 'Address / P.O. Box', type: 'text', placeholder: 'City / Street / P.O. Box' },
 				{ id: 'phone', label: 'Telephone', type: 'text', placeholder: '000-000-0000' },
-				{ id: 'product', label: 'Product', type: 'select', required: true, options: ['Mobile water (500ML)'] },
+				{ id: 'product', label: 'Product', type: 'select', required: true, options: getAvailableInvoiceProducts() },
 				{ id: 'qty', label: 'Quantity', type: 'number', min: '1', required: true },
 				{ id: 'promo', label: 'Promo', type: 'number', min: '0', defaultValue: '0' },
 				{ id: 'unitPrice', label: 'Unit Price (GH)', type: 'number', min: '0', step: '0.01', required: true },
@@ -4478,8 +4902,21 @@ async function initSalesInvoicesPage() {
 	window.addEventListener('beforeunload', () => { if (editingSiIdx < 0 && currentEntity) saveModalDraft(currentEntity); });
 
 	const openModal = (entity, editId, resumeDraft = false) => {
-		const config = SI_MODAL_CONFIGS[entity];
+		let config = SI_MODAL_CONFIGS[entity];
 		if (!config || !addModal) return;
+		if (entity === 'invoice') {
+			const editingInvoice = editId != null
+				? salesModuleData.invoices.find((inv) => String(inv.id) === String(editId))
+				: null;
+			config = {
+				...config,
+				fields: config.fields.map((field) => (
+					field.id === 'product'
+						? { ...field, options: getAvailableInvoiceProducts(editingInvoice?.product || editingInvoice?.items?.[0]?.name) }
+						: field
+				)),
+			};
+		}
 		currentEntity = entity;
 		// Resolve editing index from ID so we always get the right record regardless of array order
 		if (editId != null) {
@@ -4543,6 +4980,7 @@ async function initSalesInvoicesPage() {
 					setVal('status', row.status || 'paid');
 					setVal('paymentMode', row.paymentMode);
 					setVal('carNumber', row.carNumber || '');
+					setVal('entryTime', row.entryTime || '');
 				}
 			} else if (entity === 'order') {
 				row = salesModuleData.salesOrders[editingSiIdx];
@@ -4559,6 +4997,12 @@ async function initSalesInvoicesPage() {
 			}
 		}
 		if (resumeDraft) restoreModalDraft(entity);
+		if (editingSiIdx < 0 && entity === 'invoice') {
+			const productField = document.getElementById('si-field-product');
+			if (productField && !String(productField.value || '').trim() && productField.options && productField.options.length) {
+				productField.value = productField.options[0].value;
+			}
+		}
 		addModal.style.display = 'flex';
 		/* Auto-calculate promo when qty changes: 4 bags per 100 */
 		const qtyField = document.getElementById('si-field-qty');
@@ -4589,21 +5033,8 @@ async function initSalesInvoicesPage() {
 		return Number.isFinite(v) && v >= 0 ? v : 0;
 	};
 
-	const validateEntryMonth = (fieldId, isoDate) => {
-		const targetMonth = /^\d{4}-\d{2}-\d{2}$/.test(isoDate) ? isoDate.slice(0, 7) : '';
-		if (!targetMonth || targetMonth === currentSalesMonth) return true;
-		setFieldValidationError(
-			fieldId,
-			`Date month ${monthLabel(targetMonth)} does not match selected month ${monthLabel(currentSalesMonth)}.`
-		);
-		const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
-		if (summary) {
-			summary.textContent = `Wrong month selected. Switch to ${monthLabel(targetMonth)} before saving this entry.`;
-		}
-		const input = document.getElementById(`si-field-${fieldId}`);
-		if (input) input.focus();
-		return false;
-	};
+	// Allow saving invoices for any date, regardless of selected month
+	const validateEntryMonth = (_fieldId, _isoDate) => true;
 
 	if (modalForm && !modalForm.dataset.bound) {
 		modalForm.dataset.bound = '1';
@@ -4630,6 +5061,7 @@ async function initSalesInvoicesPage() {
 					requestedStatus: undefined,
 					paymentMode: getValue('paymentMode'),
 					carNumber: getValue('carNumber'),
+					entryTime: getValue('entryTime'),
 					promo: getNum('promo'),
 					promoNote: existingInvoice?.promoNote || '',
 					product,
@@ -4684,14 +5116,59 @@ async function initSalesInvoicesPage() {
 				};
 				if (editingSiIdx >= 0 && salesModuleData.salesOrders[editingSiIdx]) {
 					Object.assign(salesModuleData.salesOrders[editingSiIdx], ordData);
+					const linkedOrder = salesModuleData.salesOrders[editingSiIdx];
+					const derivedInvoiceId = linkedOrder && linkedOrder.id ? `INV${String(linkedOrder.id).slice(2)}` : '';
+					const linkedInvoice = salesModuleData.invoices.find((inv) => String(inv.id) === String(linkedOrder?.sourceInvoiceId || ''))
+						|| salesModuleData.invoices.find((inv) => String(inv.id) === String(derivedInvoiceId));
+					if (linkedInvoice) {
+						const firstItem = Array.isArray(linkedInvoice.items) && linkedInvoice.items[0] ? linkedInvoice.items[0] : null;
+						const qty = Number((linkedOrder?.bags || (firstItem && firstItem.qty) || 1) || 1);
+						const unitPrice = qty > 0 ? +(ordData.amount / qty).toFixed(2) : ordData.rate;
+						linkedInvoice.customer = ordData.customer;
+						linkedInvoice.date = ordData.orderDate;
+						linkedInvoice.paidDate = String(ordData.status || '').toLowerCase() === 'paid' ? ordData.orderDate : (linkedInvoice.paidDate || '');
+						linkedInvoice.paymentMode = ordData.paymentMode;
+						linkedInvoice.carNumber = ordData.carNumber;
+						linkedInvoice.promo = Number(ordData.promo || 0);
+						linkedInvoice.rate = unitPrice;
+						linkedInvoice.amount = Number(ordData.amount || 0);
+						linkedInvoice.items = [{
+							name: (firstItem && firstItem.name) || linkedInvoice.product || 'Mobile water (500ML)',
+							qty,
+							unitPrice,
+						}];
+					}
 				} else {
-					ordData.id = nextOrderId();
+					const invId = nextInvoiceId();
+					const qty = Number(existingOrder?.bags || 1) || 1;
+					const unitPrice = qty > 0 ? +(ordData.amount / qty).toFixed(2) : ordData.rate;
+					const invData = {
+						id: invId,
+						customer,
+						date: orderDate,
+						paidDate: String(chosenStatus || '').toLowerCase() === 'paid' ? orderDate : '',
+						status: chosenStatus,
+						paymentMode: ordData.paymentMode,
+						carNumber: ordData.carNumber,
+						promo: Number(ordData.promo || 0),
+						promoNote: ordData.promoNote || '',
+						product: 'Mobile water (500ML)',
+						items: [{ name: 'Mobile water (500ML)', qty, unitPrice }],
+						deliveryFee: 0,
+						rate: unitPrice,
+						amount: Number(ordData.amount || 0),
+						createdAt: new Date().toISOString(),
+					};
+					ordData.id = `SO${String(invId).slice(3)}`;
+					ordData.sourceInvoiceId = invId;
+					ordData.bags = qty;
+					unmarkSalesDeletion(currentSalesMonth, 'invoice', invId);
 					unmarkSalesDeletion(currentSalesMonth, 'order', ordData.id);
+					salesModuleData.invoices.push(invData);
 					salesModuleData.salesOrders.push(ordData);
 				}
 			}
 
-			resequenceSalesIdsForCurrentMonth();
 			saveSalesDataToStorage();
 			const savedEntity = currentEntity;
 			clearModalDraft(savedEntity);
@@ -4740,7 +5217,6 @@ async function initSalesInvoicesPage() {
 						salesModuleData.salesOrders.splice(soIdx, 1);
 					}
 				}
-				resequenceSalesIdsForCurrentMonth();
 				showDeleteToast(`Invoice ${inv ? inv.id : ''} deleted.`);
 			} else if (entity === 'order') {
 				const idx = salesModuleData.salesOrders.findIndex((ord) => String(ord.id) === String(deleteId));
@@ -4748,7 +5224,6 @@ async function initSalesInvoicesPage() {
 				if (ord) moveAppDataDeleteToTrash('sales', ord, { kind: 'appDataArray', key: monthStorageKey(currentSalesMonth), arrayPath: 'salesOrders' });
 				if (ord && ord.id) markSalesDeletion(currentSalesMonth, 'order', ord.id);
 				if (idx >= 0) salesModuleData.salesOrders.splice(idx, 1);
-				resequenceSalesIdsForCurrentMonth();
 				showDeleteToast(`Sales order ${ord ? ord.id : ''} deleted.`);
 			}
 			saveSalesDataToStorage();
@@ -4845,7 +5320,7 @@ async function initSalesInvoicesPage() {
 			const draftRow = invoiceDraft ? `
 				<tr class="draft-row">
 					<td>DRAFT</td>
-					<td>${escapeHtml(invoiceDraft.customer || 'Unsaved invoice')}</td>
+					<td>${escapeHtml(invoiceDraft.customer || 'Unsaved invoice')}${invoiceDraft.entryTime ? `<small style="display:block;color:#6b7280">${escapeHtml(invoiceDraft.entryTime)}</small>` : ''}</td>
 					<td>${escapeHtml(invoiceDraft.promo || '')}</td>
 					<td>${escapeHtml(invoiceDraft.qty || '')}</td>
 					<td>${hideMoney ? '—' : escapeHtml(invoiceDraft.unitPrice || '')}</td>
@@ -4865,7 +5340,7 @@ async function initSalesInvoicesPage() {
 				return `
 					<tr class="selectable" data-invoice-id="${invoice.id}">
 						<td>${invoice.id}</td>
-						<td>${invoice.customer}</td>
+						<td>${invoice.customer}${invoice.entryTime ? `<small style="display:block;color:#6b7280">${invoice.entryTime}</small>` : ''}</td>
 						<td>${invoice.promo ? invoice.promo + (invoice.promoNote ? ' <small style="color:#6b7280">(' + invoice.promoNote + ')</small>' : '') : ''}</td>
 						<td>${invoice.items && invoice.items[0] ? invoice.items[0].qty : ''}</td>
 						<td>${hideMoney ? '—' : (invoice.rate ? invoice.rate : (invoice.items && invoice.items[0] && invoice.items[0].qty ? (invoice.amount / invoice.items[0].qty).toFixed(1) : ''))}</td>
