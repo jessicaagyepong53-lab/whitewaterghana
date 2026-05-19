@@ -612,6 +612,25 @@ body {
 	background: #1d4ed8;
 }
 
+.inv-total-caption {
+	margin: 2px 0 0;
+	font-size: 0.78rem;
+	color: #64748b;
+}
+
+.inv-overall-block {
+	margin-top: 8px;
+	padding-top: 8px;
+	border-top: 1px dashed #d6e7f8;
+}
+
+.inv-overall-value {
+	margin: 0;
+	font-size: 1.08rem;
+	font-weight: 700;
+	color: #1e3a8a;
+}
+
 /* ---- Stats Row (plain white cards) ---- */
 .stats-row {
 	display: grid;
@@ -1322,6 +1341,46 @@ body {
 	border-top: 2px solid #0077b6;
 	margin-top: 4px;
 	font-size: 0.88rem;
+}
+
+.accounting-month-toggle {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 12px 14px;
+	border: 0;
+	background: #dbeafe;
+	color: #1d4ed8;
+	font-size: 1rem;
+	font-weight: 800;
+	text-align: left;
+	cursor: pointer;
+	border-top: 3px solid #93c5fd;
+}
+.accounting-month-toggle:hover {
+	background: #bfdbfe;
+}
+.accounting-month-toggle-left {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+}
+.accounting-month-chevron {
+	transition: transform 0.18s ease;
+}
+.accounting-month-chevron.is-open {
+	transform: rotate(90deg);
+}
+.accounting-month-toggle-meta {
+	font-size: 0.8rem;
+	font-weight: 700;
+	color: #1e40af;
+	white-space: nowrap;
+}
+.accounting-month-row.is-hidden {
+	display: none;
 }
 
 /* ---- Currency Cards ---- */

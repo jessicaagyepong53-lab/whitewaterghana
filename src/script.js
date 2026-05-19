@@ -1,14 +1,27 @@
 const API_BASE = '';
 const LAST_DATA_UPDATE_KEY = 'ww_last_data_update';
 const SALES_PENDING_SYNC_PREFIX = 'ww_pending_sales_sync_';
+const LOCKED_SALES_MONTHS = {};
+const SALES_PROTECTED_PREFIX = 'ww_sales_protected_';
+const SALES_VERSION_PREFIX = 'ww_sales_version_';
+const SALES_MONTH_DEDUPE_MIGRATION_KEY = 'ww_sales_month_dedupe_v1';
 
 function getPendingSalesSyncKey(month) {
 	return `${SALES_PENDING_SYNC_PREFIX}${month}`;
 }
 
 function getSalesMonthFromStorageKey(key) {
-	if (typeof key !== 'string' || !key.startsWith('ww_sales_')) return '';
-	return key.slice('ww_sales_'.length);
+	if (typeof key !== 'string') return '';
+	const match = /^ww_sales_(\d{4}-\d{2})$/.exec(key);
+	return match && match[1] ? match[1] : '';
+}
+
+function getSalesProtectedKey(month) {
+	return `${SALES_PROTECTED_PREFIX}${month}`;
+}
+
+function getSalesVersionKey(month) {
+	return `${SALES_VERSION_PREFIX}${month}`;
 }
 
 function hasPendingSalesSyncForKey(key) {
@@ -36,6 +49,50 @@ function normalizeIdArray(values) {
 	return Array.from(new Set(values.map((v) => String(v || '').trim()).filter(Boolean)));
 }
 
+function sanitizeSalesPayloadVersion(payload) {
+	const version = Number(payload?.__wwLocalVersion || 0);
+	return Number.isFinite(version) && version > 0 ? Math.floor(version) : 0;
+}
+
+function getProtectedSalesPayload(month) {
+	if (!month) return null;
+	try {
+		const raw = localStorage.getItem(getSalesProtectedKey(month));
+		const parsed = raw ? JSON.parse(raw) : null;
+		return parsed && typeof parsed === 'object' ? parsed : null;
+	} catch (_e) {
+		return null;
+	}
+}
+
+function setProtectedSalesPayload(month, payload) {
+	if (!month || !payload || typeof payload !== 'object') return;
+	const incomingVersion = sanitizeSalesPayloadVersion(payload);
+	const existing = getProtectedSalesPayload(month);
+	const existingVersion = sanitizeSalesPayloadVersion(existing);
+	if (existing && existingVersion > incomingVersion) return;
+	try {
+		localStorage.setItem(getSalesProtectedKey(month), JSON.stringify(payload));
+	} catch (_e) { /* ignore */ }
+}
+
+function getNextSalesLocalVersion(month) {
+	if (!month) return 1;
+	const key = getSalesVersionKey(month);
+	let version = 0;
+	try {
+		version = Number(localStorage.getItem(key) || '0');
+	} catch (_e) {
+		version = 0;
+	}
+	if (!Number.isFinite(version) || version < 0) version = 0;
+	const next = Math.floor(version) + 1;
+	try {
+		localStorage.setItem(key, String(next));
+	} catch (_e) { /* ignore */ }
+	return next;
+}
+
 function invoiceSignature(inv) {
 	if (!inv || typeof inv !== 'object') return '';
 	const firstItem = Array.isArray(inv.items) && inv.items[0] ? inv.items[0] : null;
@@ -45,7 +102,6 @@ function invoiceSignature(inv) {
 	return [
 		String(inv.customer || '').trim().toLowerCase(),
 		String(inv.date || '').trim(),
-		String(inv.createdAt || '').trim(),
 		String(inv.phone || '').trim(),
 		String(inv.address || '').trim(),
 		String(inv.paidDate || '').trim(),
@@ -71,18 +127,154 @@ function orderSignature(ord) {
 	].join('|');
 }
 
+function getLockedSalesMonthConfig(month) {
+	if (!month) return null;
+	return LOCKED_SALES_MONTHS[month] || null;
+}
+
+function isLockedSalesPayload(month, payload) {
+	const cfg = getLockedSalesMonthConfig(month);
+	if (!cfg) return false;
+	if (!payload || typeof payload !== 'object') return false;
+	const invoices = Array.isArray(payload.invoices) ? payload.invoices : [];
+	const total = invoices.reduce((sum, inv) => sum + Number(inv?.amount || 0), 0);
+	return invoices.length === cfg.count && Math.abs(total - cfg.total) < 0.01;
+}
+
+function getLockedSalesPayload(month) {
+	const cfg = getLockedSalesMonthConfig(month);
+	if (!cfg) return null;
+	try {
+		const raw = localStorage.getItem(cfg.key);
+		const parsed = raw ? JSON.parse(raw) : null;
+		return isLockedSalesPayload(month, parsed) ? parsed : null;
+	} catch (_e) {
+		return null;
+	}
+}
+
+function enforceLockedSalesPayload(month) {
+	const locked = getLockedSalesPayload(month);
+	if (!locked) return null;
+	try {
+		localStorage.setItem(monthStorageKey(month), JSON.stringify(locked));
+		queuePendingSalesSync(month, locked);
+	} catch (_e) { /* ignore */ }
+	return locked;
+}
+
+function updateLockedSalesPayloadIfCanonical(month, payload) {
+	const cfg = getLockedSalesMonthConfig(month);
+	if (!cfg) return;
+	if (!isLockedSalesPayload(month, payload)) return;
+	try {
+		localStorage.setItem(cfg.key, JSON.stringify(payload));
+	} catch (_e) { /* ignore */ }
+}
+
 function getSalesMonthPayload(month) {
 	try {
 		const raw = localStorage.getItem(monthStorageKey(month));
 		const parsed = raw ? JSON.parse(raw) : null;
-		return parsed && typeof parsed === 'object' ? parsed : {};
+		const payload = parsed && typeof parsed === 'object' ? parsed : {};
+		const protectedPayload = getProtectedSalesPayload(month);
+		const payloadVersion = sanitizeSalesPayloadVersion(payload);
+		const protectedVersion = sanitizeSalesPayloadVersion(protectedPayload);
+		if (protectedPayload && protectedVersion > payloadVersion) {
+			localStorage.setItem(monthStorageKey(month), JSON.stringify(protectedPayload));
+			queuePendingSalesSync(month, protectedPayload);
+			return protectedPayload;
+		}
+		if (protectedPayload && protectedVersion === payloadVersion && protectedVersion > 0) {
+			return payload;
+		}
+		if (month && payload && typeof payload === 'object') {
+			if (payloadVersion >= protectedVersion) setProtectedSalesPayload(month, payload);
+		}
+		if (getLockedSalesMonthConfig(month)) {
+			if (isLockedSalesPayload(month, payload)) {
+				updateLockedSalesPayloadIfCanonical(month, payload);
+				return payload;
+			}
+			const locked = getLockedSalesPayload(month);
+			if (locked) {
+				localStorage.setItem(monthStorageKey(month), JSON.stringify(locked));
+				queuePendingSalesSync(month, locked);
+				return locked;
+			}
+		}
+		return payload;
 	} catch (_e) {
+		if (getLockedSalesMonthConfig(month)) {
+			const locked = getLockedSalesPayload(month);
+			if (locked) return locked;
+		}
 		return {};
 	}
 }
 
+function mergeSalesMonthPayloads(localPayload, incomingPayload, month) {
+	if (month && getLockedSalesMonthConfig(month)) {
+		const locked = getLockedSalesPayload(month);
+		if (locked) return locked;
+		if (isLockedSalesPayload(month, localPayload)) return localPayload;
+	}
+	const local = localPayload && typeof localPayload === 'object' ? localPayload : {};
+	const incoming = incomingPayload && typeof incomingPayload === 'object' ? incomingPayload : {};
+	const localInv = Array.isArray(local.invoices) ? local.invoices : [];
+	const incomingInv = Array.isArray(incoming.invoices) ? incoming.invoices : [];
+	const localOrd = Array.isArray(local.salesOrders) ? local.salesOrders : [];
+	const incomingOrd = Array.isArray(incoming.salesOrders) ? incoming.salesOrders : [];
+
+	// Prefer local records for matching IDs, but keep any incoming IDs not present locally.
+	const invById = new Map();
+	localInv.forEach((inv) => {
+		if (inv && inv.id) invById.set(String(inv.id), inv);
+	});
+	incomingInv.forEach((inv) => {
+		if (!inv || !inv.id) return;
+		const id = String(inv.id);
+		if (!invById.has(id)) invById.set(id, inv);
+	});
+
+	const ordById = new Map();
+	localOrd.forEach((ord) => {
+		if (ord && ord.id) ordById.set(String(ord.id), ord);
+	});
+	incomingOrd.forEach((ord) => {
+		if (!ord || !ord.id) return;
+		const id = String(ord.id);
+		if (!ordById.has(id)) ordById.set(id, ord);
+	});
+
+	const activeInvIds = new Set(Array.from(invById.keys()));
+	const activeOrdIds = new Set(Array.from(ordById.keys()));
+	const deletedInvoiceIds = normalizeIdArray([...(local.deletedInvoiceIds || []), ...(incoming.deletedInvoiceIds || [])])
+		.filter((id) => !activeInvIds.has(String(id)));
+	const deletedOrderIds = normalizeIdArray([...(local.deletedOrderIds || []), ...(incoming.deletedOrderIds || [])])
+		.filter((id) => !activeOrdIds.has(String(id)));
+	const delInv = new Set(deletedInvoiceIds.map((id) => String(id)));
+	const delOrd = new Set(deletedOrderIds.map((id) => String(id)));
+
+	const invoices = Array.from(invById.values()).filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
+	const salesOrders = Array.from(ordById.values()).filter((ord) => {
+		if (!ord || !ord.id) return false;
+		if (delOrd.has(String(ord.id))) return false;
+		if (ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))) return false;
+		return true;
+	});
+
+	const localVersion = sanitizeSalesPayloadVersion(local);
+	const incomingVersion = sanitizeSalesPayloadVersion(incoming);
+	const mergedVersion = Math.max(localVersion, incomingVersion);
+	return { invoices, salesOrders, deletedInvoiceIds, deletedOrderIds, ...(mergedVersion > 0 ? { __wwLocalVersion: mergedVersion } : {}) };
+}
+
 function buildSalesSyncPayload(month, data) {
 	const existing = getSalesMonthPayload(month);
+	const existingVersion = sanitizeSalesPayloadVersion(existing);
+	const dataVersion = sanitizeSalesPayloadVersion(data);
+	const version = Math.max(existingVersion, dataVersion);
 	const activeInvIds = new Set((Array.isArray(data?.invoices) ? data.invoices : []).map((inv) => String(inv?.id || '')).filter(Boolean));
 	const activeOrdIds = new Set((Array.isArray(data?.salesOrders) ? data.salesOrders : []).map((ord) => String(ord?.id || '')).filter(Boolean));
 	const activeSourceInvIds = new Set((Array.isArray(data?.salesOrders) ? data.salesOrders : []).map((ord) => String(ord?.sourceInvoiceId || '')).filter(Boolean));
@@ -100,7 +292,13 @@ function buildSalesSyncPayload(month, data) {
 		return true;
 	});
 	const reconciledDeletedInv = normalizeIdArray(Array.from(delInv));
-	return { invoices, salesOrders, deletedInvoiceIds: reconciledDeletedInv, deletedOrderIds };
+	return {
+		invoices,
+		salesOrders,
+		deletedInvoiceIds: reconciledDeletedInv,
+		deletedOrderIds,
+		...(version > 0 ? { __wwLocalVersion: version } : {}),
+	};
 }
 
 function markSalesDeletion(month, entity, id) {
@@ -221,12 +419,10 @@ function setLastDataUpdateStamp(value) {
 
 function putAppDataKeyToServer(key, data, logResult = true) {
 	const body = JSON.stringify({ data });
-	const useKeepalive = body.length < 60000;
 	return fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), {
 		method: 'PUT', credentials: 'include',
 		headers: { 'Content-Type': 'application/json' },
 		body,
-		keepalive: useKeepalive,
 	})
 	.then(res => {
 		if (logResult) {
@@ -274,6 +470,9 @@ function showDeleteToast(message) {
 		container.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
 		document.body.appendChild(container);
 	}
+			const payloadVersion = sanitizeSalesPayloadVersion(payload);
+			const protectedVersion = sanitizeSalesPayloadVersion(protectedPayload);
+			if (payloadVersion >= protectedVersion) setProtectedSalesPayload(month, payload);
 	const toast = document.createElement('div');
 	toast.style.cssText = 'background:#ef4444;color:#fff;padding:10px 18px;border-radius:8px;font-size:0.9rem;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,0.18);opacity:1;transition:opacity 0.4s;max-width:320px;pointer-events:none;display:flex;align-items:center;gap:8px;';
 	toast.innerHTML = `<i class="fa-solid fa-trash-can" style="flex-shrink:0"></i><span>${message}</span>`;
@@ -307,6 +506,13 @@ async function loadFromServer(key) {
 						return json.data;
 					}
 				}
+				const salesMonth = getSalesMonthFromStorageKey(key);
+				if (salesMonth) {
+					const localPayload = getSalesMonthPayload(salesMonth);
+					const merged = mergeSalesMonthPayloads(localPayload, json.data, salesMonth);
+					localStorage.setItem(key, JSON.stringify(merged));
+					return merged;
+				}
 				localStorage.setItem(key, JSON.stringify(json.data));
 				return json.data;
 			}
@@ -324,6 +530,13 @@ async function loadFromServerForceFresh(key) {
 		if (res.ok) {
 			const json = await res.json();
 			if (json.data !== null && json.data !== undefined) {
+				const salesMonth = getSalesMonthFromStorageKey(key);
+				if (salesMonth) {
+					const localPayload = getSalesMonthPayload(salesMonth);
+					const merged = mergeSalesMonthPayloads(localPayload, json.data, salesMonth);
+					localStorage.setItem(key, JSON.stringify(merged));
+					return merged;
+				}
 				localStorage.setItem(key, JSON.stringify(json.data));
 				return json.data;
 			}
@@ -337,6 +550,17 @@ async function loadFromServerForceFresh(key) {
 // Does NOT resurrect locally-deleted records.
 // Returns true if anything was added.
 function mergeServerSalesIntoMemory(serverData) {
+	if (!/^\d{4}-\d{2}$/.test(String(currentSalesMonth || ''))) return false;
+	const protectedPayload = getProtectedSalesPayload(currentSalesMonth);
+	if (protectedPayload) {
+		const protectedVersion = sanitizeSalesPayloadVersion(protectedPayload);
+		const serverVersion = sanitizeSalesPayloadVersion(serverData);
+		if (protectedVersion >= serverVersion) {
+			salesModuleData.invoices = Array.isArray(protectedPayload.invoices) ? [...protectedPayload.invoices] : [];
+			salesModuleData.salesOrders = Array.isArray(protectedPayload.salesOrders) ? [...protectedPayload.salesOrders] : [];
+			// Keep local protected base, but still ingest any new server records by ID.
+		}
+	}
 	if (!serverData || typeof serverData !== 'object') return false;
 	const serverInvoices = Array.isArray(serverData.invoices) ? serverData.invoices : [];
 	const serverOrders = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
@@ -378,28 +602,13 @@ async function loadBulkFromServer(keys) {
 				for (const [k, v] of Object.entries(json.items)) {
 					if (v === null || v === undefined) continue;
 					if (hasPendingSalesSyncForKey(k)) continue;
-					// For sales month keys, apply local tombstones before overwriting localStorage
+					// For sales month keys, merge server+local by ID to avoid losing local entries.
 					const salesMonth = getSalesMonthFromStorageKey(k);
 					if (salesMonth) {
 						const existing = getSalesMonthPayload(salesMonth);
-						const delInv = new Set(normalizeIdArray(existing.deletedInvoiceIds));
-						const delOrd = new Set(normalizeIdArray(existing.deletedOrderIds));
-						if (delInv.size > 0 || delOrd.size > 0) {
-							const filtered = {
-								...v,
-								invoices: (Array.isArray(v.invoices) ? v.invoices : []).filter((inv) => inv && inv.id && !delInv.has(String(inv.id))),
-								salesOrders: (Array.isArray(v.salesOrders) ? v.salesOrders : []).filter((ord) => {
-									if (!ord || !ord.id) return false;
-									if (delOrd.has(String(ord.id))) return false;
-									if (ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))) return false;
-									return true;
-								}),
-								deletedInvoiceIds: normalizeIdArray([...Array.from(delInv), ...normalizeIdArray(v.deletedInvoiceIds)]),
-								deletedOrderIds: normalizeIdArray([...Array.from(delOrd), ...normalizeIdArray(v.deletedOrderIds)]),
-							};
-							localStorage.setItem(k, JSON.stringify(filtered));
-							continue;
-						}
+						const merged = mergeSalesMonthPayloads(existing, v, salesMonth);
+						localStorage.setItem(k, JSON.stringify(merged));
+						continue;
 					}
 					localStorage.setItem(k, JSON.stringify(v));
 				}
@@ -1402,6 +1611,70 @@ function initDashboardPage() {
 		return;
 	}
 
+	let selectedDashboardYear = null;
+	const parseYearFromDateLike = (raw) => {
+		const text = String(raw || '').trim();
+		if (!text) return null;
+		const iso = /^(\d{4})-(\d{2})/.exec(text);
+		if (iso) return Number(iso[1]);
+		const dt = new Date(text);
+		if (isNaN(dt)) return null;
+		return dt.getFullYear();
+	};
+	const isDateInSelectedDashboardYear = (raw) => {
+		if (!selectedDashboardYear) return true;
+		const y = parseYearFromDateLike(raw);
+		return y === selectedDashboardYear;
+	};
+	const collectDashboardYears = () => {
+		const years = new Set();
+		recoverSalesMonthsFromStorage().forEach((month) => {
+			if (/^\d{4}-\d{2}$/.test(month)) years.add(Number(month.slice(0, 4)));
+		});
+		const salesData = getAllSalesData();
+		salesData.invoices.forEach((inv) => {
+			const y = parseYearFromDateLike(inv.date);
+			if (Number.isFinite(y)) years.add(y);
+		});
+		salesData.salesOrders.forEach((ord) => {
+			const y = parseYearFromDateLike(ord.orderDate);
+			if (Number.isFinite(y)) years.add(y);
+		});
+		try {
+			const batches = JSON.parse(localStorage.getItem('ww_production_batches') || '[]');
+			(batches || []).forEach((batch) => {
+				const y = parseYearFromDateLike(batch.date || batch.addedDate);
+				if (Number.isFinite(y)) years.add(y);
+			});
+		} catch (_e) { /* ignore */ }
+		try {
+			const accounting = JSON.parse(localStorage.getItem('ww_accounting_data_v2') || 'null');
+			if (accounting && typeof accounting === 'object') {
+				['ledger', 'cashbook', 'salaries', 'assets'].forEach((bucket) => {
+					(accounting[bucket] || []).forEach((entry) => {
+						const y = parseYearFromDateLike(entry.date || entry.month || entry.week);
+						if (Number.isFinite(y)) years.add(y);
+					});
+				});
+			}
+		} catch (_e) { /* ignore */ }
+		try {
+			const purchase = JSON.parse(localStorage.getItem('ww_purchase_data_v2') || 'null');
+			if (purchase && Array.isArray(purchase.purchaseOrders)) {
+				purchase.purchaseOrders.forEach((po) => {
+					const y = parseYearFromDateLike(po.date || po.expectedDate);
+					if (Number.isFinite(y)) years.add(y);
+				});
+			}
+		} catch (_e) { /* ignore */ }
+		Object.keys(getDailyProductionLog()).forEach((dayKey) => {
+			const y = parseYearFromDateLike(dayKey);
+			if (Number.isFinite(y)) years.add(y);
+		});
+		if (years.size === 0) years.add(new Date().getFullYear());
+		return Array.from(years).sort((a, b) => a - b);
+	};
+
 	// ── Build revenue/cost chart from sales + production + accounting data ──
 	const buildRevenueData = () => {
 		const salesData = getAllSalesData();
@@ -1417,6 +1690,7 @@ function initDashboardPage() {
 			if (inv.status !== 'paid') continue;
 			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
+			if (selectedDashboardYear && d.getFullYear() !== selectedDashboardYear) continue;
 			const key = monthKeyFromDate(d);
 			ensureMonth(key);
 			byMonth[key].revenue += Number(inv.amount) || 0;
@@ -1424,13 +1698,16 @@ function initDashboardPage() {
 
 		// Keep active sales months visible on the chart even when revenue is pending.
 		for (const month of recoverSalesMonthsFromStorage()) {
-			if (/^\d{4}-\d{2}$/.test(month)) ensureMonth(month);
+			if (!/^\d{4}-\d{2}$/.test(month)) continue;
+			if (selectedDashboardYear && Number(month.slice(0, 4)) !== selectedDashboardYear) continue;
+			ensureMonth(month);
 		}
 		// (Sales orders mirror invoices — skip to avoid double-counting)
 		// Production batch costs
 		for (const b of batches) {
 			const d = new Date(b.date);
 			if (isNaN(d)) continue;
+			if (selectedDashboardYear && d.getFullYear() !== selectedDashboardYear) continue;
 			const key = monthKeyFromDate(d);
 			ensureMonth(key);
 			byMonth[key].cost += Number(b.cost) || 0;
@@ -1445,6 +1722,7 @@ function initDashboardPage() {
 				if (!expenseAccounts.includes(entry.account)) continue;
 				const d = new Date(entry.date);
 				if (isNaN(d)) continue;
+				if (selectedDashboardYear && d.getFullYear() !== selectedDashboardYear) continue;
 				const key = monthKeyFromDate(d);
 				ensureMonth(key);
 				byMonth[key].cost += Number(entry.debit || entry.amount) || 0;
@@ -1456,6 +1734,7 @@ function initDashboardPage() {
 			for (const po of purchaseData.purchaseOrders) {
 				const d = new Date(po.date || po.expectedDate);
 				if (isNaN(d)) continue;
+				if (selectedDashboardYear && d.getFullYear() !== selectedDashboardYear) continue;
 				const key = monthKeyFromDate(d);
 				ensureMonth(key);
 				const poAmount = Array.isArray(po.items) && po.items.length
@@ -1490,6 +1769,7 @@ function initDashboardPage() {
 		for (const inv of salesData.invoices) {
 			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
+			if (selectedDashboardYear && d.getFullYear() !== selectedDashboardYear) continue;
 			const key = d.toISOString().slice(0, 10);
 			if (buckets[key]) {
 				buckets[key].value += (inv.items || []).reduce((s, it) => s + it.qty, 0);
@@ -1505,6 +1785,7 @@ function initDashboardPage() {
 		for (const inv of salesData.invoices) {
 			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
+			if (selectedDashboardYear && d.getFullYear() !== selectedDashboardYear) continue;
 			const key = d.toISOString().slice(0, 10);
 			const units = (inv.items || []).reduce((s, it) => s + (Number(it.qty) || 0), 0);
 			activeMap[key] = (activeMap[key] || 0) + units;
@@ -1524,9 +1805,45 @@ function initDashboardPage() {
 	const countActiveCustomers = () => {
 		const salesData = getAllSalesData();
 		const counts = {};
-		salesData.invoices.forEach((inv) => { if (inv.customer) { const k = inv.customer.toLowerCase().trim(); counts[k] = (counts[k] || 0) + 1; } });
-		salesData.salesOrders.forEach((ord) => { if (ord.customer) { const k = ord.customer.toLowerCase().trim(); counts[k] = (counts[k] || 0) + 1; } });
+		salesData.invoices.forEach((inv) => {
+			const d = new Date(inv.date);
+			if (selectedDashboardYear && (!isNaN(d) ? d.getFullYear() !== selectedDashboardYear : true)) return;
+			if (inv.customer) { const k = inv.customer.toLowerCase().trim(); counts[k] = (counts[k] || 0) + 1; }
+		});
+		salesData.salesOrders.forEach((ord) => {
+			const d = new Date(ord.orderDate);
+			if (selectedDashboardYear && (!isNaN(d) ? d.getFullYear() !== selectedDashboardYear : true)) return;
+			if (ord.customer) { const k = ord.customer.toLowerCase().trim(); counts[k] = (counts[k] || 0) + 1; }
+		});
 		return Object.values(counts).filter((c) => c > 5).length;
+	};
+
+	const renderDashboardYearSelector = () => {
+		const yearBar = document.getElementById('dash-year-selector-bar');
+		const yearSelect = document.getElementById('dash-year-select');
+		if (!yearBar || !yearSelect) return;
+		const years = collectDashboardYears();
+		const shouldShowSelector = years.length > 1;
+		if (!shouldShowSelector) {
+			yearBar.style.display = 'none';
+			selectedDashboardYear = null;
+			return;
+		}
+		yearBar.style.display = 'flex';
+		if (!selectedDashboardYear || !years.includes(selectedDashboardYear)) {
+			const currentYear = new Date().getFullYear();
+			selectedDashboardYear = years.includes(currentYear) ? currentYear : years[years.length - 1];
+		}
+		yearSelect.innerHTML = [...years].sort((a, b) => b - a).map((year) => `<option value="${year}">${year}</option>`).join('');
+		yearSelect.value = String(selectedDashboardYear);
+		if (!yearSelect.dataset.bound) {
+			yearSelect.dataset.bound = '1';
+			yearSelect.addEventListener('change', () => {
+				const next = Number(yearSelect.value);
+				selectedDashboardYear = Number.isFinite(next) ? next : null;
+				refreshDashboardView();
+			});
+		}
 	};
 
 	const buildInvoiceRevenueByMonth = () => {
@@ -1679,10 +1996,18 @@ function initDashboardPage() {
 				return {};
 			}
 		})();
-		const productionLog = Object.keys(dailyLog).length ? dailyLog : batchLog;
+		const productionLogAll = Object.keys(dailyLog).length ? dailyLog : batchLog;
+		const productionLog = Object.entries(productionLogAll).reduce((acc, [dateKey, qty]) => {
+			if (!isDateInSelectedDashboardYear(dateKey)) return acc;
+			acc[dateKey] = qty;
+			return acc;
+		}, {});
 		const finishedProductsFallback = (() => {
 			try {
-				return JSON.parse(localStorage.getItem('ww_finished_products') || '[]').reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+				return JSON.parse(localStorage.getItem('ww_finished_products') || '[]').reduce((sum, item) => {
+					if (!isDateInSelectedDashboardYear(item.date || item.addedDate)) return sum;
+					return sum + (Number(item.qty) || 0);
+				}, 0);
 			} catch (_e) {
 				return 0;
 			}
@@ -1696,19 +2021,26 @@ function initDashboardPage() {
 
 		const revenueData = buildRevenueData();
 		const totalRevenue = getAllSalesData().invoices.reduce((sum, invoice) => {
+			if (!isDateInSelectedDashboardYear(invoice.date)) return sum;
 			return invoice.status === 'paid' ? sum + (Number(invoice.amount) || 0) : sum;
 		}, 0);
 		const revenueMtd = revenueData.length > 0 ? revenueData[revenueData.length - 1].revenue : 0;
 		const prevRevenue = revenueData.length > 1 ? revenueData[revenueData.length - 2].revenue : 0;
 		const revChange = prevRevenue > 0 ? (((revenueMtd - prevRevenue) / prevRevenue) * 100).toFixed(1) : 0;
 		const marketGrowth = calculateMarketGrowthRate();
+		const isCurrentYearView = !selectedDashboardYear || selectedDashboardYear === new Date().getFullYear();
+		const unitsMeta = totalUnitsProduced > 0
+			? (isCurrentYearView
+				? `${formatNumber(unitsProducedToday)} produced today • ${calcWeeklyEfficiencyLabel(productionLog, todayStr)}`
+				: `${formatNumber(totalUnitsProduced)} units in ${selectedDashboardYear}`)
+			: 'No production data yet';
 
 		const activeCustomers = countActiveCustomers();
 
 		const kpiCards = [
-			{ icon: '<i class="fa-solid fa-cedi-sign"></i>', label: 'Total Revenue', value: formatCurrency(totalRevenue), meta: revenueMtd > 0 ? `${formatCurrency(revenueMtd)} this month • ${revChange >= 0 ? '+' : ''}${revChange}% vs previous month` : 'No sales data yet', color: 'blue', link: null },
+			{ icon: '<i class="fa-solid fa-cedi-sign"></i>', label: 'Total Revenue', value: formatCurrency(totalRevenue), meta: revenueMtd > 0 ? `${formatCurrency(revenueMtd)} latest month • ${revChange >= 0 ? '+' : ''}${revChange}% vs previous month` : 'No sales data yet', color: 'blue', link: null },
 			{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Market Growth Rate', value: marketGrowth.label, meta: marketGrowth.meta, color: marketGrowth.color, link: null },
-			{ icon: '<i class="fa-solid fa-box"></i>', label: 'Units Produced', value: formatNumber(totalUnitsProduced), meta: totalUnitsProduced > 0 ? `${formatNumber(unitsProducedToday)} produced today • ${calcWeeklyEfficiencyLabel(productionLog, todayStr)}` : 'No production data yet', color: 'green', link: null },
+			{ icon: '<i class="fa-solid fa-box"></i>', label: 'Units Produced', value: formatNumber(totalUnitsProduced), meta: unitsMeta, color: 'green', link: null },
 			{ icon: '<i class="fa-solid fa-users"></i>', label: 'Active Customers', value: formatNumber(activeCustomers), meta: activeCustomers > 0 ? 'Unique customers from sales' : 'No customers yet', color: 'purple', link: null },
 			{ icon: '<i class="fa-solid fa-triangle-exclamation"></i>', label: 'Stock Alerts', value: String(stockAlertCount), meta: `${stockCriticalCount} critically low \u2014 needs reorder`, color: stockCriticalCount > 0 ? 'red' : 'yellow', link: `${resolvePageHref('inventory')}?tab=materials` },
 		];
@@ -1875,6 +2207,7 @@ function initDashboardPage() {
 		}
 	};
 
+	renderDashboardYearSelector();
 	renderDashboardLiveSummary();
 
 	const revData = buildRevenueData();
@@ -1977,6 +2310,7 @@ function initDashboardPage() {
 	renderDashboardEquipmentStatus();
 
 	const refreshDashboardView = () => {
+		renderDashboardYearSelector();
 		const rd = buildRevenueData();
 		renderDashboardLiveSummary();
 		renderDashboardEquipmentStatus();
@@ -2356,12 +2690,36 @@ async function initInventoryPage() {
 	};
 
 	const monthSelect = document.getElementById('inv-month-select');
+	const yearSelect = document.getElementById('inv-year-select');
+	const yearLabel = document.getElementById('inv-year-label');
 	const newMonthBtn = document.getElementById('inv-new-month-btn');
-	const renderInventoryMonthOptions = () => {
+	let selectedInventoryYear = null;
+	const renderInventoryMonthOptions = (options) => {
+		const opts = options || {};
 		if (!monthSelect) return;
-		const months = getInventoryMonths();
+		const allMonths = getInventoryMonths();
+		const years = [...new Set(allMonths.map((m) => Number(String(m).slice(0, 4))).filter(Number.isFinite))].sort((a, b) => a - b);
+		const hasMultiYear = years.length > 1;
+		if (yearSelect && yearLabel) {
+			yearSelect.style.display = hasMultiYear ? '' : 'none';
+			yearLabel.style.display = hasMultiYear ? '' : 'none';
+			if (hasMultiYear) {
+				if (!selectedInventoryYear || !years.includes(selectedInventoryYear)) {
+					selectedInventoryYear = Number(String(currentInventoryMonth || allMonths[allMonths.length - 1] || '').slice(0, 4)) || years[years.length - 1];
+				}
+				yearSelect.innerHTML = [...years].sort((a, b) => b - a).map((y) => `<option value="${y}">${y}</option>`).join('');
+				yearSelect.value = String(selectedInventoryYear);
+			} else {
+				selectedInventoryYear = years[0] || null;
+			}
+		}
+		const months = hasMultiYear
+			? allMonths.filter((m) => Number(String(m).slice(0, 4)) === selectedInventoryYear)
+			: allMonths;
 		monthSelect.innerHTML = months.map((m) => `<option value="${m}">${monthLabel(m)}</option>`).join('');
-		monthSelect.value = currentInventoryMonth;
+		if (!months.includes(currentInventoryMonth) && months.length) currentInventoryMonth = months[months.length - 1];
+		if (opts.preserveCurrent && currentInventoryMonth) monthSelect.value = currentInventoryMonth;
+		else if (months.length) monthSelect.value = months.includes(currentInventoryMonth) ? currentInventoryMonth : months[months.length - 1];
 	};
 
 	migrateLegacyInventoryMonthlyIfNeeded();
@@ -2399,11 +2757,21 @@ async function initInventoryPage() {
 		const criticalCount = rawMaterials.filter((m) => m.quantity < m.minLevel * 0.5).length;
 		const rawMaterialUnits = rawMaterials.reduce((sum, m) => sum + Number(m.quantity || 0), 0);
 		const finishedQty = finishedProducts.reduce((sum, p) => sum + Number(p.qty || 0), 0);
+		const allFinishedRows = collectAllFinishedProductsAcrossMonths();
+		const allMonthsTotal = allFinishedRows.reduce((sum, p) => sum + (Number(p.qty) || 0), 0);
+		const selectedYear = Number(String(currentInventoryMonth || '').slice(0, 4));
+		const yearMonths = getInventoryMonths().filter((m) => Number(String(m).slice(0, 4)) === selectedYear);
+		const isYearComplete = yearMonths.length === 12;
+		const yearTotal = allFinishedRows
+			.filter((p) => Number(String(p.month || inferProductMonth(p) || '').slice(0, 4)) === selectedYear)
+			.reduce((sum, p) => sum + (Number(p.qty) || 0), 0);
+		const aggregateLabel = isYearComplete ? `Total for ${selectedYear}` : 'All months';
+		const aggregateTotal = isYearComplete ? yearTotal : allMonthsTotal;
 		const statsContainer = document.getElementById('inv-stats-row');
 		if (statsContainer) {
 			statsContainer.innerHTML = `
 				<div class="stat-card stat-card-link" id="inv-raw-materials-card" role="button" tabindex="0" aria-label="Open raw materials table"><div class="s-icon"><i class="fa-solid fa-layer-group"></i></div><p class="s-label">Raw Materials</p><p class="s-value" id="inv-raw-materials-value">${rawMaterials.length}</p><p class="s-meta" id="inv-raw-materials-meta">${formatNumber(rawMaterialUnits)} total units in stock.</p></div>
-				<div class="stat-card stat-card-link" id="inv-finished-products-card" role="button" tabindex="0" aria-label="Open finished products table"><div class="s-icon"><i class="fa-solid fa-box-open"></i></div><p class="s-label">Finished Products</p><p class="s-value">${formatNumber(finishedQty)}</p><p class="s-meta">Total quantity in ${monthLabel(currentInventoryMonth)}</p></div>
+				<div class="stat-card stat-card-link" id="inv-finished-products-card" role="button" tabindex="0" aria-label="Open finished products table"><div class="s-icon"><i class="fa-solid fa-box-open"></i></div><p class="s-label">Finished Products</p><p class="s-value">${formatNumber(finishedQty)}</p><p class="s-meta inv-total-caption">Total for ${monthLabel(currentInventoryMonth)}</p><div class="inv-overall-block"><p class="inv-overall-value">${formatNumber(aggregateTotal)}</p><p class="s-meta inv-total-caption">${aggregateLabel}</p></div></div>
 				<a class="stat-card stat-card-link" id="inv-low-stock-card" href="dashboard.html#dash-stock-alerts-panel" aria-label="Open stock alerts on dashboard" style="text-decoration:none;color:inherit;display:block;"><div class="s-icon"><i class="fa-solid fa-triangle-exclamation"></i></div><p class="s-label">Low Stock</p><p class="s-value">${lowCount}</p><p class="s-meta">${criticalCount} critically low \u2014 needs reorder</p></a>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-users"></i></div><p class="s-label">Active Customers</p><p class="s-value">${customers.filter((c) => c.status === 'active').length}</p><p class="s-meta">Distribution partners</p></div>
 			`;
@@ -2635,9 +3003,23 @@ async function initInventoryPage() {
 		monthSelect.addEventListener('change', async () => {
 			const nextMonth = String(monthSelect.value || '').trim();
 			if (!/^\d{4}-\d{2}$/.test(nextMonth)) return;
+			selectedInventoryYear = Number(nextMonth.slice(0, 4));
 			ensureInventoryMonthExists(nextMonth);
 			await loadInventoryMonthState(nextMonth);
-			renderInventoryMonthOptions();
+			renderInventoryMonthOptions({ preserveCurrent: true });
+			rerenderInventory();
+		});
+	}
+	if (yearSelect && !yearSelect.dataset.bound) {
+		yearSelect.dataset.bound = '1';
+		yearSelect.addEventListener('change', async () => {
+			const nextYear = Number(yearSelect.value);
+			if (!Number.isFinite(nextYear)) return;
+			selectedInventoryYear = nextYear;
+			const monthsForYear = getInventoryMonths().filter((m) => Number(String(m).slice(0, 4)) === selectedInventoryYear);
+			if (!monthsForYear.length) return;
+			await loadInventoryMonthState(monthsForYear[monthsForYear.length - 1]);
+			renderInventoryMonthOptions({ preserveCurrent: true });
 			rerenderInventory();
 		});
 	}
@@ -2652,8 +3034,9 @@ async function initInventoryPage() {
 				return;
 			}
 			ensureInventoryMonthExists(month);
+			selectedInventoryYear = Number(month.slice(0, 4));
 			await loadInventoryMonthState(month);
-			renderInventoryMonthOptions();
+			renderInventoryMonthOptions({ preserveCurrent: true });
 			rerenderInventory();
 		});
 	}
@@ -3036,7 +3419,12 @@ const MONTHS_KEY = 'ww_sales_months';
 let currentSalesMonth = '';
 
 function getSalesMonths() {
-	try { return JSON.parse(localStorage.getItem(MONTHS_KEY) || '[]'); } catch (_e) { return []; }
+	try {
+		const parsed = JSON.parse(localStorage.getItem(MONTHS_KEY) || '[]');
+		return Array.isArray(parsed) ? parsed : [];
+	} catch (_e) {
+		return [];
+	}
 }
 
 function saveSalesMonths(months) {
@@ -3070,6 +3458,73 @@ function monthLabel(month) {
 	return `${names[parseInt(m, 10)] || m} ${y}`;
 }
 
+function getInvoiceMonth(invoice) {
+	const raw = String(invoice?.date || invoice?.orderDate || '').trim();
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return '';
+	return raw.slice(0, 7);
+}
+
+function normalizeMonthInvoices(month, invoices) {
+	const keep = [];
+	const movedByMonth = {};
+	const seenSignatures = new Set();
+	for (const inv of Array.isArray(invoices) ? invoices : []) {
+		if (!inv || !inv.id) continue;
+		const invMonth = getInvoiceMonth(inv);
+		if (invMonth && invMonth !== month) {
+			if (!movedByMonth[invMonth]) movedByMonth[invMonth] = [];
+			movedByMonth[invMonth].push(inv);
+			continue;
+		}
+		const sig = invoiceSignature(inv);
+		if (sig && seenSignatures.has(sig)) continue;
+		if (sig) seenSignatures.add(sig);
+		keep.push(inv);
+	}
+	return { keep, movedByMonth };
+}
+
+function mergeInvoicesIntoMonthStorage(month, invoices) {
+	if (!month || !Array.isArray(invoices) || !invoices.length) return false;
+	ensureMonthExists(month);
+	const payload = getSalesMonthPayload(month);
+	const existingInvs = Array.isArray(payload.invoices) ? payload.invoices : [];
+	const deletedInv = new Set(normalizeIdArray(payload.deletedInvoiceIds));
+	const existingIds = new Set(existingInvs.map((inv) => String(inv?.id || '')).filter(Boolean));
+	const existingSigs = new Set(existingInvs.map((inv) => invoiceSignature(inv)).filter(Boolean));
+	const additions = [];
+	for (const inv of invoices) {
+		if (!inv || !inv.id) continue;
+		const id = String(inv.id);
+		if (deletedInv.has(id)) continue;
+		const sig = invoiceSignature(inv);
+		if (existingIds.has(id) || (sig && existingSigs.has(sig))) continue;
+		additions.push(inv);
+		existingIds.add(id);
+		if (sig) existingSigs.add(sig);
+	}
+	if (!additions.length) return false;
+	const nextPayload = {
+		...payload,
+		invoices: [...existingInvs, ...additions],
+		salesOrders: Array.isArray(payload.salesOrders) ? payload.salesOrders : [],
+		deletedInvoiceIds: normalizeIdArray(payload.deletedInvoiceIds),
+		deletedOrderIds: normalizeIdArray(payload.deletedOrderIds),
+	};
+	localStorage.setItem(monthStorageKey(month), JSON.stringify(nextPayload));
+	queuePendingSalesSync(month, nextPayload);
+	const snapshot = {
+		invoices: [...nextPayload.invoices],
+		salesOrders: [...nextPayload.salesOrders],
+		deletedInvoiceIds: [...nextPayload.deletedInvoiceIds],
+		deletedOrderIds: [...nextPayload.deletedOrderIds],
+	};
+	mergeSyncSalesMonth(month, snapshot).then((ok) => {
+		if (ok) clearPendingSalesSync(month);
+	});
+	return true;
+}
+
 /** Aggregate invoices + salesOrders across ALL months (used by Dashboard, Reports, etc.) */
 function getAllSalesData() {
 	const months = recoverSalesMonthsFromStorage();
@@ -3096,29 +3551,95 @@ function ensureMonthExists(month) {
 	}
 }
 
+function dedupeSalesMonthPayload(payload) {
+	const base = payload && typeof payload === 'object' ? payload : {};
+	const invoices = Array.isArray(base.invoices) ? base.invoices : [];
+	const salesOrders = Array.isArray(base.salesOrders) ? base.salesOrders : [];
+	const dedupedInvoices = [];
+	const seenInvoiceIds = new Set();
+	const seenInvoiceSignatures = new Set();
+	for (const inv of invoices) {
+		if (!inv || !inv.id) continue;
+		const id = String(inv.id);
+		if (seenInvoiceIds.has(id)) continue;
+		const sig = invoiceSignature(inv);
+		if (sig && seenInvoiceSignatures.has(sig)) continue;
+		dedupedInvoices.push(inv);
+		seenInvoiceIds.add(id);
+		if (sig) seenInvoiceSignatures.add(sig);
+	}
+
+	const activeInvoiceIds = new Set(dedupedInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
+	const dedupedOrders = [];
+	const seenOrderIds = new Set();
+	const seenOrderSignatures = new Set();
+	for (const ord of salesOrders) {
+		if (!ord || !ord.id) continue;
+		const id = String(ord.id);
+		if (seenOrderIds.has(id)) continue;
+		if (ord.sourceInvoiceId && !activeInvoiceIds.has(String(ord.sourceInvoiceId))) continue;
+		const sig = orderSignature(ord);
+		if (sig && seenOrderSignatures.has(sig)) continue;
+		dedupedOrders.push(ord);
+		seenOrderIds.add(id);
+		if (sig) seenOrderSignatures.add(sig);
+	}
+
+	const activeOrderIds = new Set(dedupedOrders.map((ord) => String(ord.id || '')).filter(Boolean));
+	const deletedInvoiceIds = normalizeIdArray(base.deletedInvoiceIds).filter((id) => !activeInvoiceIds.has(String(id)));
+	const deletedOrderIds = normalizeIdArray(base.deletedOrderIds).filter((id) => !activeOrderIds.has(String(id)));
+	return {
+		...base,
+		invoices: dedupedInvoices,
+		salesOrders: dedupedOrders,
+		deletedInvoiceIds,
+		deletedOrderIds,
+	};
+}
+
+function runOneTimeSalesMonthDedupeMigration() {
+	if (localStorage.getItem(SALES_MONTH_DEDUPE_MIGRATION_KEY) === '1') return;
+	const months = recoverSalesMonthsFromStorage();
+	for (const month of months) {
+		if (getLockedSalesMonthConfig(month)) continue;
+		const storageKey = monthStorageKey(month);
+		let payload = null;
+		try {
+			payload = JSON.parse(localStorage.getItem(storageKey) || 'null');
+		} catch (_e) {
+			payload = null;
+		}
+		if (!payload || typeof payload !== 'object') continue;
+		const deduped = dedupeSalesMonthPayload(payload);
+		if (JSON.stringify(deduped) === JSON.stringify(payload)) continue;
+		localStorage.setItem(storageKey, JSON.stringify(deduped));
+		setProtectedSalesPayload(month, deduped);
+		queuePendingSalesSync(month, deduped);
+	}
+	localStorage.setItem(SALES_MONTH_DEDUPE_MIGRATION_KEY, '1');
+}
+
 function loadSalesDataFromStorage() {
 	/* Clean up any old key */
 	try { localStorage.removeItem('ww_sales_data'); } catch(_e) {}
 
 	/* Recover month index from available monthly keys */
 	recoverSalesMonthsFromStorage();
+	runOneTimeSalesMonthDedupeMigration();
 
 	/* Ensure March 2026 month exists */
 	ensureMonthExists('2026-03');
 
-	/* Seed March if it has no data yet, or re-seed if version changed */
-	const marchKey = monthStorageKey('2026-03');
+	/* Seed March only when that month payload is missing/corrupt */
 	let marchData = null;
-	try { marchData = JSON.parse(localStorage.getItem(marchKey)); } catch(_e) {}
-	if (!marchData || !marchData.invoices || marchData.invoices.length === 0) {
-		if (!getSeedFlag('march2026_sales_v2')) {
-			currentSalesMonth = '2026-03';
-			salesModuleData.invoices = [];
-			salesModuleData.salesOrders = [];
-			seedMarchSalesData();
-			setSeedFlag('march2026_sales_v2');
-			return; /* seedMarchSalesData calls saveSalesDataToStorage, data is already in salesModuleData */
-		}
+	try { marchData = getSalesMonthPayload('2026-03'); } catch(_e) {}
+	if (!marchData || !Array.isArray(marchData.invoices)) {
+		currentSalesMonth = '2026-03';
+		salesModuleData.invoices = [];
+		salesModuleData.salesOrders = [];
+		seedMarchSalesData();
+		setSeedFlag('march2026_sales_v2');
+		return; /* seedMarchSalesData calls saveSalesDataToStorage, data is already in salesModuleData */
 	} else {
 		setSeedFlag('march2026_sales_v2');
 	}
@@ -3139,13 +3660,17 @@ function loadMonthData(month) {
 	salesModuleData.invoices = [];
 	salesModuleData.salesOrders = [];
 	let dirty = false;
+	enforceLockedSalesPayload(month);
 	try {
-		const stored = JSON.parse(localStorage.getItem(monthStorageKey(month)) || 'null');
+		const stored = getSalesMonthPayload(month);
 		if (stored && typeof stored === 'object') {
 			salesModuleData.invoices = Array.isArray(stored.invoices) ? stored.invoices : [];
 			salesModuleData.salesOrders = Array.isArray(stored.salesOrders) ? stored.salesOrders : [];
 		}
 	} catch (_e) { /* ignore */ }
+
+	// Do not auto-move invoices to other months during page/month navigation.
+	// Users may intentionally keep legacy entries in the selected month bucket.
 
 	// Legacy cleanup: status "confirmed" in this module represents pending work.
 	if (salesModuleData.invoices.length || salesModuleData.salesOrders.length) {
@@ -3337,8 +3862,16 @@ function seedMarchSalesData() {
 function saveSalesDataToStorage() {
 	const month = currentSalesMonth;
 	const key = monthStorageKey(month);
-	const payload = buildSalesSyncPayload(month, salesModuleData);
+	let payload = buildSalesSyncPayload(month, salesModuleData);
+	const cfg = getLockedSalesMonthConfig(month);
+	if (cfg && !isLockedSalesPayload(month, payload)) {
+		const locked = getLockedSalesPayload(month);
+		if (locked) payload = locked;
+	}
+	payload.__wwLocalVersion = getNextSalesLocalVersion(month);
+	updateLockedSalesPayloadIfCanonical(month, payload);
 	localStorage.setItem(key, JSON.stringify(payload));
+	setProtectedSalesPayload(month, payload);
 	queuePendingSalesSync(month, payload);
 	// Merge-push: fetch current server state first, union with local entries,
 	// then push combined result so other devices' entries are never overwritten.
@@ -3692,20 +4225,61 @@ async function initSalesInvoicesPage() {
 
 	/* ── Month selector setup ── */
 	const monthSelect = document.getElementById('sales-month-select');
+	const yearSelect = document.getElementById('sales-year-select');
+	const yearLabel = document.getElementById('sales-year-label');
 	const newMonthBtn = document.getElementById('new-month-btn');
+	let selectedSalesYear = null;
 
-	function populateMonthSelect() {
+	function populateMonthSelect(options) {
+		const opts = options || {};
 		if (!monthSelect) return;
-		const months = getSalesMonths();
+		const allMonths = getSalesMonths();
+		const years = [...new Set(allMonths.map((m) => Number(String(m).slice(0, 4))).filter(Number.isFinite))].sort((a, b) => a - b);
+		const hasMultiYear = years.length > 1;
+		if (yearSelect && yearLabel) {
+			yearSelect.style.display = hasMultiYear ? '' : 'none';
+			yearLabel.style.display = hasMultiYear ? '' : 'none';
+			if (hasMultiYear) {
+				if (!selectedSalesYear || !years.includes(selectedSalesYear)) {
+					selectedSalesYear = Number(String(currentSalesMonth || allMonths[allMonths.length - 1] || '').slice(0, 4)) || years[years.length - 1];
+				}
+				yearSelect.innerHTML = [...years].sort((a, b) => b - a).map((y) => `<option value="${y}">${y}</option>`).join('');
+				yearSelect.value = String(selectedSalesYear);
+			} else {
+				selectedSalesYear = years[0] || null;
+			}
+		}
+		const months = hasMultiYear
+			? allMonths.filter((m) => Number(String(m).slice(0, 4)) === selectedSalesYear)
+			: allMonths;
 		monthSelect.innerHTML = months.map((m) =>
 			`<option value="${m}" ${m === currentSalesMonth ? 'selected' : ''}>${monthLabel(m)}</option>`
 		).join('');
+		if (!months.includes(currentSalesMonth) && months.length) {
+			currentSalesMonth = months[months.length - 1];
+			if (!opts.skipLoad) loadMonthData(currentSalesMonth);
+		}
 	}
 	populateMonthSelect();
 
 	if (monthSelect) {
 		monthSelect.addEventListener('change', () => {
+			selectedSalesYear = Number(String(monthSelect.value || '').slice(0, 4)) || selectedSalesYear;
 			loadMonthData(monthSelect.value);
+			populateMonthSelect({ skipLoad: true });
+			renderSalesPage();
+		});
+	}
+
+	if (yearSelect) {
+		yearSelect.addEventListener('change', () => {
+			const nextYear = Number(yearSelect.value);
+			if (!Number.isFinite(nextYear)) return;
+			selectedSalesYear = nextYear;
+			const monthsForYear = getSalesMonths().filter((m) => Number(String(m).slice(0, 4)) === selectedSalesYear);
+			if (!monthsForYear.length) return;
+			loadMonthData(monthsForYear[monthsForYear.length - 1]);
+			populateMonthSelect({ skipLoad: true });
 			renderSalesPage();
 		});
 	}
@@ -3719,6 +4293,7 @@ async function initSalesInvoicesPage() {
 			if (!input || !/^\d{4}-\d{2}$/.test(input.trim())) return;
 			const month = input.trim();
 			const months = getSalesMonths();
+			selectedSalesYear = Number(month.slice(0, 4)) || selectedSalesYear;
 			if (months.includes(month)) {
 				loadMonthData(month);
 			} else {
@@ -4014,6 +4589,22 @@ async function initSalesInvoicesPage() {
 		return Number.isFinite(v) && v >= 0 ? v : 0;
 	};
 
+	const validateEntryMonth = (fieldId, isoDate) => {
+		const targetMonth = /^\d{4}-\d{2}-\d{2}$/.test(isoDate) ? isoDate.slice(0, 7) : '';
+		if (!targetMonth || targetMonth === currentSalesMonth) return true;
+		setFieldValidationError(
+			fieldId,
+			`Date month ${monthLabel(targetMonth)} does not match selected month ${monthLabel(currentSalesMonth)}.`
+		);
+		const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
+		if (summary) {
+			summary.textContent = `Wrong month selected. Switch to ${monthLabel(targetMonth)} before saving this entry.`;
+		}
+		const input = document.getElementById(`si-field-${fieldId}`);
+		if (input) input.focus();
+		return false;
+	};
+
 	if (modalForm && !modalForm.dataset.bound) {
 		modalForm.dataset.bound = '1';
 		modalForm.addEventListener('submit', (event) => {
@@ -4026,12 +4617,7 @@ async function initSalesInvoicesPage() {
 				const product = getValue('product');
 				if (!customer || !product) return;
 				const invDate = getValue('date') || todayStr;
-				const targetMonth = /^\d{4}-\d{2}-\d{2}$/.test(invDate) ? invDate.slice(0, 7) : '';
-				if (editingSiIdx < 0 && targetMonth && targetMonth !== currentSalesMonth) {
-					// Auto-route new entries to the month selected in the date field.
-					ensureMonthExists(targetMonth);
-					loadMonthData(targetMonth);
-				}
+				if (!validateEntryMonth('date', invDate)) return;
 				const existingInvoice = editingSiIdx >= 0 ? salesModuleData.invoices[editingSiIdx] : null;
 				const chosenStatus = getValue('status') || existingInvoice?.requestedStatus || existingInvoice?.status || 'paid';
 				const invData = {
@@ -4053,6 +4639,14 @@ async function initSalesInvoicesPage() {
 				};
 				invData.rate = invData.items[0].unitPrice;
 				invData.amount = invData.items[0].qty * invData.items[0].unitPrice;
+				if (String(invData.status || '').toLowerCase() === 'paid' && Number(invData.amount || 0) <= 0) {
+					setFieldValidationError('unitPrice', 'Paid invoices must have an amount greater than 0.');
+					const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
+					if (summary) summary.textContent = 'Paid invoices cannot be saved with a zero amount.';
+					const unitPriceInput = document.getElementById('si-field-unitPrice');
+					if (unitPriceInput) unitPriceInput.focus();
+					return;
+				}
 				let savedInvoice;
 				if (editingSiIdx >= 0 && salesModuleData.invoices[editingSiIdx]) {
 					Object.assign(salesModuleData.invoices[editingSiIdx], invData);
@@ -4072,12 +4666,7 @@ async function initSalesInvoicesPage() {
 				const customer = getValue('customer');
 				if (!customer) return;
 				const orderDate = getValue('orderDate') || todayStr;
-				const targetMonth = /^\d{4}-\d{2}-\d{2}$/.test(orderDate) ? orderDate.slice(0, 7) : '';
-				if (editingSiIdx < 0 && targetMonth && targetMonth !== currentSalesMonth) {
-					// Auto-route new entries to the month selected in the date field.
-					ensureMonthExists(targetMonth);
-					loadMonthData(targetMonth);
-				}
+				if (!validateEntryMonth('orderDate', orderDate)) return;
 				const existingOrder = editingSiIdx >= 0 ? salesModuleData.salesOrders[editingSiIdx] : null;
 				const chosenStatus = existingOrder?.requestedStatus || existingOrder?.status || 'delivered';
 				const ordData = {
@@ -5354,9 +5943,49 @@ function initAccountingPage() {
 		const d = new Date(Number(yr), Number(mo) - 1, 1);
 		return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 	}
+	function accountingDateLabel(dateStr) {
+		if (!dateStr) return 'Unknown date';
+		try {
+			const d = new Date(dateStr + 'T00:00:00');
+			if (Number.isNaN(d.getTime())) return dateStr;
+			return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', year:'numeric' });
+		} catch (_e) {
+			return dateStr;
+		}
+	}
 
 	let currentSalaryMonth = null;
 	let currentSalaryEmployee = '__all_workers__';
+	const ledgerCollapseStorageKey = 'ww_accounting_ledger_months_collapsed';
+	const loadCollapsedLedgerMonths = () => {
+		try {
+			const stored = JSON.parse(localStorage.getItem(ledgerCollapseStorageKey) || '[]');
+			return new Set(Array.isArray(stored) ? stored : []);
+		} catch (_e) {
+			return new Set();
+		}
+	};
+	const saveCollapsedLedgerMonths = (set) => {
+		try {
+			localStorage.setItem(ledgerCollapseStorageKey, JSON.stringify([...set]));
+		} catch (_e) { /* ignore */ }
+	};
+	let collapsedLedgerMonths = loadCollapsedLedgerMonths();
+	const cashbookCollapseStorageKey = 'ww_accounting_cashbook_months_collapsed';
+	const loadCollapsedCashbookMonths = () => {
+		try {
+			const stored = JSON.parse(localStorage.getItem(cashbookCollapseStorageKey) || '[]');
+			return new Set(Array.isArray(stored) ? stored : []);
+		} catch (_e) {
+			return new Set();
+		}
+	};
+	const saveCollapsedCashbookMonths = (set) => {
+		try {
+			localStorage.setItem(cashbookCollapseStorageKey, JSON.stringify([...set]));
+		} catch (_e) { /* ignore */ }
+	};
+	let collapsedCashbookMonths = loadCollapsedCashbookMonths();
 
 	const CURRENCY_ICONS = { USD: 'fa-solid fa-dollar-sign', GBP: 'fa-solid fa-sterling-sign', EUR: 'fa-solid fa-euro-sign' };
 
@@ -5827,76 +6456,135 @@ function initAccountingPage() {
 			`;
 		}
 
-		/* General Ledger — grouped by day with subtotals */
+		/* General Ledger — grouped by month, then day, with subtotals */
 		const ledgerBody = document.getElementById('ledger-tbody');
 		if (ledgerBody) {
 			const ledgerDraftRow = ledgerDraft ? `<tr class="draft-row"><td>${escapeHtml(ledgerDraft.date || '')}</td><td>${escapeHtml(ledgerDraft.desc || 'Unsaved ledger entry')}</td><td>${escapeHtml(ledgerDraft.account || '')}</td><td><span class="badge badge-orange">Draft</span></td><td>${escapeHtml(ledgerDraft.debit || '')}</td><td>${escapeHtml(ledgerDraft.credit || '')}</td><td><div class="row-actions"><button class="btn-edit acc-resume-draft-btn" data-draft-entity="ledger" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete acc-clear-draft-btn" data-draft-entity="ledger" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
 			if (ledger.length === 0) {
 				ledgerBody.innerHTML = ledgerDraftRow || '<tr><td colspan="7" style="text-align:center;color:#94a3b8;">No entries yet. Click "Add Entry" to start.</td></tr>';
 			} else {
-				// Group entries by date
-				const byDate = {};
+				const byMonth = {};
 				ledger.forEach((row, idx) => {
-					const key = row.date || 'Unknown';
-					if (!byDate[key]) byDate[key] = [];
-					byDate[key].push({ ...row, _idx: idx });
+					const monthKey = String(row.date || '').slice(0, 7) || 'Unknown';
+					const dateKey = row.date || 'Unknown';
+					if (!byMonth[monthKey]) byMonth[monthKey] = {};
+					if (!byMonth[monthKey][dateKey]) byMonth[monthKey][dateKey] = [];
+					byMonth[monthKey][dateKey].push({ ...row, _idx: idx });
 				});
-				const sortedDates = Object.keys(byDate).sort();
+				const sortedMonths = Object.keys(byMonth).sort();
+				const newestMonth = sortedMonths[sortedMonths.length - 1] || null;
+				collapsedLedgerMonths = new Set([...collapsedLedgerMonths].filter((monthKey) => byMonth[monthKey]));
+				if (newestMonth && sortedMonths.length > 1 && !collapsedLedgerMonths.size) {
+					sortedMonths.slice(0, -1).forEach((monthKey) => collapsedLedgerMonths.add(monthKey));
+					saveCollapsedLedgerMonths(collapsedLedgerMonths);
+				}
 				let html = '';
 				let grandDebit = 0, grandCredit = 0;
-				for (const date of sortedDates) {
-					const entries = byDate[date];
-					let dayDebit = 0, dayCredit = 0;
-					// Date group header
-					const dateLabel = (() => { try { const d = new Date(date + 'T00:00:00'); return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', year:'numeric' }); } catch(_){ return date; } })();
-					html += `<tr class="ledger-date-header"><td colspan="7" style="background:#f0f4ff;font-weight:700;color:#1e40af;padding:10px 14px;border-top:2px solid #bfdbfe;font-size:0.95rem;"><i class="fa-solid fa-calendar-day" style="margin-right:6px;"></i>${dateLabel}</td></tr>`;
-					for (const row of entries) {
-						const badgeClass = row.type === 'asset' ? 'badge-blue' : row.type === 'liability' ? 'badge-red' : row.type === 'revenue' ? 'badge-green' : row.type === 'expense' ? 'badge-orange' : 'badge-purple';
-						dayDebit += row.debit || 0;
-						dayCredit += row.credit || 0;
-						html += `<tr><td>${row.date}</td><td>${row.desc}</td><td>${row.account}</td><td><span class="badge ${badgeClass}">${row.type}</span></td><td>${row.debit ? formatCurrency(row.debit) : '-'}</td><td>${row.credit ? formatCurrency(row.credit) : '-'}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="ledger" data-edit-idx="${row._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="ledger" data-delete-idx="${row._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
+				for (const monthKey of sortedMonths) {
+					const datesInMonth = byMonth[monthKey];
+					const sortedDates = Object.keys(datesInMonth).sort();
+					let monthDebit = 0, monthCredit = 0;
+					const isCollapsed = collapsedLedgerMonths.has(monthKey);
+					html += `<tr class="ledger-month-header"><td colspan="7" style="padding:0;"><button type="button" class="accounting-month-toggle${isCollapsed ? ' is-collapsed' : ''}" data-ledger-month="${escapeHtml(monthKey)}" aria-expanded="${isCollapsed ? 'false' : 'true'}"><span class="accounting-month-toggle-left"><i class="fa-solid fa-chevron-right accounting-month-chevron${isCollapsed ? '' : ' is-open'}"></i><i class="fa-solid fa-calendar-days"></i><span>${escapeHtml(monthLabel(monthKey))}</span></span><span class="accounting-month-toggle-meta">${sortedDates.length} day${sortedDates.length === 1 ? '' : 's'}</span></button></td></tr>`;
+					for (const date of sortedDates) {
+						const entries = datesInMonth[date];
+						let dayDebit = 0, dayCredit = 0;
+						const dateLabel = accountingDateLabel(date);
+						html += `<tr class="ledger-date-header accounting-month-row${isCollapsed ? ' is-hidden' : ''}" data-ledger-month-row="${escapeHtml(monthKey)}"><td colspan="7" style="background:#f0f4ff;font-weight:700;color:#1e40af;padding:10px 14px 10px 26px;border-top:1px solid #bfdbfe;font-size:0.95rem;"><i class="fa-solid fa-calendar-day" style="margin-right:6px;"></i>${escapeHtml(dateLabel)}</td></tr>`;
+						for (const row of entries) {
+							const badgeClass = row.type === 'asset' ? 'badge-blue' : row.type === 'liability' ? 'badge-red' : row.type === 'revenue' ? 'badge-green' : row.type === 'expense' ? 'badge-orange' : 'badge-purple';
+							dayDebit += row.debit || 0;
+							dayCredit += row.credit || 0;
+							html += `<tr class="accounting-month-row${isCollapsed ? ' is-hidden' : ''}" data-ledger-month-row="${escapeHtml(monthKey)}"><td>${escapeHtml(row.date || '')}</td><td>${escapeHtml(row.desc || '')}</td><td>${escapeHtml(row.account || '')}</td><td><span class="badge ${badgeClass}">${escapeHtml(row.type || '')}</span></td><td>${row.debit ? formatCurrency(row.debit) : '-'}</td><td>${row.credit ? formatCurrency(row.credit) : '-'}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="ledger" data-edit-idx="${row._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="ledger" data-delete-idx="${row._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
+						}
+						html += `<tr class="ledger-subtotal accounting-month-row${isCollapsed ? ' is-hidden' : ''}" data-ledger-month-row="${escapeHtml(monthKey)}"><td colspan="4" style="text-align:right;font-weight:700;background:#f8fafc;color:#475569;padding:8px 14px;">Subtotal — ${escapeHtml(dateLabel)}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(dayDebit)}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(dayCredit)}</td><td style="background:#f8fafc;"></td></tr>`;
+						monthDebit += dayDebit;
+						monthCredit += dayCredit;
 					}
-					// Day subtotal row
-					html += `<tr class="ledger-subtotal"><td colspan="4" style="text-align:right;font-weight:700;background:#f8fafc;color:#475569;padding:8px 14px;">Subtotal — ${dateLabel}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(dayDebit)}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(dayCredit)}</td><td style="background:#f8fafc;"></td></tr>`;
-					grandDebit += dayDebit;
-					grandCredit += dayCredit;
+					html += `<tr class="ledger-month-total accounting-month-row${isCollapsed ? ' is-hidden' : ''}" data-ledger-month-row="${escapeHtml(monthKey)}"><td colspan="4" style="text-align:right;font-weight:800;background:#e0f2fe;color:#0f172a;padding:10px 14px;">Monthly Total — ${escapeHtml(monthLabel(monthKey))}</td><td style="font-weight:800;background:#e0f2fe;color:#0369a1;">${formatCurrency(monthDebit)}</td><td style="font-weight:800;background:#e0f2fe;color:#0369a1;">${formatCurrency(monthCredit)}</td><td style="background:#e0f2fe;"></td></tr>`;
+					grandDebit += monthDebit;
+					grandCredit += monthCredit;
 				}
-				// Grand total row
 				html += `<tr class="ledger-grand-total"><td colspan="4" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">GRAND TOTAL</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandDebit)}</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandCredit)}</td><td style="background:#1e40af;"></td></tr>`;
 				ledgerBody.innerHTML = ledgerDraftRow + html;
 			}
+			if (!ledgerBody.dataset.monthToggleBound) {
+				ledgerBody.dataset.monthToggleBound = '1';
+				ledgerBody.addEventListener('click', (event) => {
+					const toggle = event.target.closest('.accounting-month-toggle[data-ledger-month]');
+					if (!toggle) return;
+					const monthKey = toggle.getAttribute('data-ledger-month');
+					if (!monthKey) return;
+					const willCollapse = !collapsedLedgerMonths.has(monthKey);
+					if (willCollapse) collapsedLedgerMonths.add(monthKey);
+					else collapsedLedgerMonths.delete(monthKey);
+					saveCollapsedLedgerMonths(collapsedLedgerMonths);
+					renderAccountingPage();
+				});
+			}
 		}
 
-		/* Cashbook — grouped by day with subtotals */
+		/* Cashbook — grouped by month, then day, with subtotals */
 		const cashbookBody = document.getElementById('cashbook-tbody');
 		if (cashbookBody) {
 			const cashbookDraftRow = cashbookDraft ? `<tr class="draft-row"><td>${escapeHtml(cashbookDraft.date || '')}</td><td>${escapeHtml(cashbookDraft.desc || 'Unsaved cashbook entry')}</td><td>${escapeHtml(cashbookDraft.amount || '')}</td><td></td><td><div class="row-actions"><button class="btn-edit acc-resume-draft-btn" data-draft-entity="cashbook" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete acc-clear-draft-btn" data-draft-entity="cashbook" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
 			if (cashbook.length === 0) {
 				cashbookBody.innerHTML = cashbookDraftRow || '<tr><td colspan="5" style="text-align:center;color:#94a3b8;">No entries yet. Click "Add Entry" to start.</td></tr>';
 			} else {
-				const byDate = {};
+				const byMonth = {};
 				cashbook.forEach((entry, idx) => {
-					const key = entry.date || 'Unknown';
-					if (!byDate[key]) byDate[key] = [];
-					byDate[key].push({ ...entry, _idx: idx });
+					const monthKey = String(entry.date || '').slice(0, 7) || 'Unknown';
+					const dateKey = entry.date || 'Unknown';
+					if (!byMonth[monthKey]) byMonth[monthKey] = {};
+					if (!byMonth[monthKey][dateKey]) byMonth[monthKey][dateKey] = [];
+					byMonth[monthKey][dateKey].push({ ...entry, _idx: idx });
 				});
-				const sortedDates = Object.keys(byDate).sort();
+				const sortedMonths = Object.keys(byMonth).sort();
+				const newestMonth = sortedMonths[sortedMonths.length - 1] || null;
+				collapsedCashbookMonths = new Set([...collapsedCashbookMonths].filter((monthKey) => byMonth[monthKey]));
+				if (newestMonth && sortedMonths.length > 1 && !collapsedCashbookMonths.size) {
+					sortedMonths.slice(0, -1).forEach((monthKey) => collapsedCashbookMonths.add(monthKey));
+					saveCollapsedCashbookMonths(collapsedCashbookMonths);
+				}
 				let html = '';
 				let grandTotal = 0;
-				for (const date of sortedDates) {
-					const entries = byDate[date];
-					let dayTotal = 0;
-					const dateLabel = (() => { try { const d = new Date(date + 'T00:00:00'); return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', year:'numeric' }); } catch(_){ return date; } })();
-					html += `<tr><td colspan="5" style="background:#f0f4ff;font-weight:700;color:#1e40af;padding:10px 14px;border-top:2px solid #bfdbfe;font-size:0.95rem;"><i class="fa-solid fa-calendar-day" style="margin-right:6px;"></i>${dateLabel}</td></tr>`;
-					for (const entry of entries) {
-						dayTotal += entry.amount || 0;
-						grandTotal += entry.amount || 0;
-						html += `<tr><td>${entry.date}</td><td>${entry.desc}</td><td>${formatCurrency(entry.amount)}</td><td>${formatCurrency(grandTotal)}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="cashbook" data-edit-idx="${entry._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="cashbook" data-delete-idx="${entry._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
+				for (const monthKey of sortedMonths) {
+					const datesInMonth = byMonth[monthKey];
+					const sortedDates = Object.keys(datesInMonth).sort();
+					const isCollapsed = collapsedCashbookMonths.has(monthKey);
+					let monthTotal = 0;
+					html += `<tr class="cashbook-month-header"><td colspan="5" style="padding:0;"><button type="button" class="accounting-month-toggle${isCollapsed ? ' is-collapsed' : ''}" data-cashbook-month="${escapeHtml(monthKey)}" aria-expanded="${isCollapsed ? 'false' : 'true'}"><span class="accounting-month-toggle-left"><i class="fa-solid fa-chevron-right accounting-month-chevron${isCollapsed ? '' : ' is-open'}"></i><i class="fa-solid fa-calendar-days"></i><span>${escapeHtml(monthLabel(monthKey))}</span></span><span class="accounting-month-toggle-meta">${sortedDates.length} day${sortedDates.length === 1 ? '' : 's'}</span></button></td></tr>`;
+					for (const date of sortedDates) {
+						const entries = datesInMonth[date];
+						let dayTotal = 0;
+						const dateLabel = accountingDateLabel(date);
+						html += `<tr class="cashbook-date-header accounting-month-row${isCollapsed ? ' is-hidden' : ''}" data-cashbook-month-row="${escapeHtml(monthKey)}"><td colspan="5" style="background:#f0f4ff;font-weight:700;color:#1e40af;padding:10px 14px 10px 26px;border-top:1px solid #bfdbfe;font-size:0.95rem;"><i class="fa-solid fa-calendar-day" style="margin-right:6px;"></i>${escapeHtml(dateLabel)}</td></tr>`;
+						for (const entry of entries) {
+							dayTotal += entry.amount || 0;
+							grandTotal += entry.amount || 0;
+							html += `<tr class="accounting-month-row${isCollapsed ? ' is-hidden' : ''}" data-cashbook-month-row="${escapeHtml(monthKey)}"><td>${escapeHtml(entry.date || '')}</td><td>${escapeHtml(entry.desc || '')}</td><td>${formatCurrency(entry.amount)}</td><td>${formatCurrency(grandTotal)}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="cashbook" data-edit-idx="${entry._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="cashbook" data-delete-idx="${entry._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
+						}
+						html += `<tr class="cashbook-subtotal accounting-month-row${isCollapsed ? ' is-hidden' : ''}" data-cashbook-month-row="${escapeHtml(monthKey)}"><td colspan="2" style="text-align:right;font-weight:700;background:#f8fafc;color:#475569;padding:8px 14px;">Subtotal — ${escapeHtml(dateLabel)}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(dayTotal)}</td><td style="background:#f8fafc;"></td><td style="background:#f8fafc;"></td></tr>`;
+						monthTotal += dayTotal;
 					}
-					html += `<tr><td colspan="2" style="text-align:right;font-weight:700;background:#f8fafc;color:#475569;padding:8px 14px;">Subtotal — ${dateLabel}</td><td style="font-weight:700;background:#f8fafc;color:#1e40af;">${formatCurrency(dayTotal)}</td><td style="background:#f8fafc;"></td><td style="background:#f8fafc;"></td></tr>`;
+					html += `<tr class="cashbook-month-total accounting-month-row${isCollapsed ? ' is-hidden' : ''}" data-cashbook-month-row="${escapeHtml(monthKey)}"><td colspan="2" style="text-align:right;font-weight:800;background:#e0f2fe;color:#0f172a;padding:10px 14px;">Monthly Total — ${escapeHtml(monthLabel(monthKey))}</td><td style="font-weight:800;background:#e0f2fe;color:#0369a1;">${formatCurrency(monthTotal)}</td><td style="background:#e0f2fe;"></td><td style="background:#e0f2fe;"></td></tr>`;
 				}
 				html += `<tr><td colspan="2" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">GRAND TOTAL</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(grandTotal)}</td><td style="background:#1e40af;"></td><td style="background:#1e40af;"></td></tr>`;
 				cashbookBody.innerHTML = cashbookDraftRow + html;
+			}
+			if (!cashbookBody.dataset.monthToggleBound) {
+				cashbookBody.dataset.monthToggleBound = '1';
+				cashbookBody.addEventListener('click', (event) => {
+					const toggle = event.target.closest('.accounting-month-toggle[data-cashbook-month]');
+					if (!toggle) return;
+					const monthKey = toggle.getAttribute('data-cashbook-month');
+					if (!monthKey) return;
+					const willCollapse = !collapsedCashbookMonths.has(monthKey);
+					if (willCollapse) collapsedCashbookMonths.add(monthKey);
+					else collapsedCashbookMonths.delete(monthKey);
+					saveCollapsedCashbookMonths(collapsedCashbookMonths);
+					renderAccountingPage();
+				});
 			}
 
 			const totalSpent = cashbook.reduce((sum, e) => sum + (e.amount || 0), 0);
@@ -7663,7 +8351,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 				const remoteStamp = typeof json.data === 'string' ? json.data : '';
 				if (!remoteStamp) return;
 				const localStamp = window.__wwLastSeenDataUpdate || getLastDataUpdateStamp();
-				if (localStamp && new Date(remoteStamp).getTime() <= new Date(localStamp).getTime()) return;
+				if (localStamp && new Date(remoteStamp).getTime() < new Date(localStamp).getTime()) return;
 				setLastDataUpdateStamp(remoteStamp);
 				window.__wwLastSeenDataUpdate = remoteStamp;
 				console.info('[Sync] Remote data changed — pulling latest data...');
@@ -7672,6 +8360,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 				try {
 					if (currentSalesMonth) {
 						const month = currentSalesMonth;
+						if (!/^\d{4}-\d{2}$/.test(String(month || ''))) return;
+						if (!getSalesMonths().includes(month)) return;
 						const syncKey = monthStorageKey(month);
 						// Pull latest server state and merge additions into memory.
 						const serverData = await loadFromServerForceFresh(syncKey);
