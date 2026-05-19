@@ -3743,12 +3743,66 @@ function getAllSalesData() {
 	const months = recoverSalesMonthsFromStorage();
 	const allInvoices = [];
 	const allOrders = [];
+	const seenInvoiceIds = new Set();
+	const seenInvoiceSignatures = new Set();
+	const seenInvoiceContentKeys = new Set();
+	const seenOrderIds = new Set();
+	const seenOrderSignatures = new Set();
+	const seenOrderContentKeys = new Set();
 	for (const m of months) {
 		try {
 			const stored = JSON.parse(localStorage.getItem(monthStorageKey(m)) || 'null');
 			if (stored && typeof stored === 'object') {
-				if (Array.isArray(stored.invoices)) allInvoices.push(...stored.invoices);
-				if (Array.isArray(stored.salesOrders)) allOrders.push(...stored.salesOrders);
+				if (Array.isArray(stored.invoices)) {
+					for (const inv of stored.invoices) {
+						if (!inv || !inv.id) continue;
+						const id = String(inv.id);
+						const sig = invoiceSignature(inv);
+						const firstItem = Array.isArray(inv.items) && inv.items[0] ? inv.items[0] : null;
+						const contentKey = [
+							String(inv.date || '').trim(),
+							String(inv.customer || '').trim().toLowerCase(),
+							Number(inv.amount || 0),
+							Number((firstItem && firstItem.qty) || inv.bags || 0),
+							Number((firstItem && firstItem.unitPrice) || inv.rate || 0),
+							String(inv.status || '').trim().toLowerCase(),
+							String(inv.paymentMode || '').trim().toLowerCase(),
+						].join('|');
+						if (
+							seenInvoiceIds.has(id)
+							|| (sig && seenInvoiceSignatures.has(sig))
+							|| seenInvoiceContentKeys.has(contentKey)
+						) continue;
+						seenInvoiceIds.add(id);
+						if (sig) seenInvoiceSignatures.add(sig);
+						seenInvoiceContentKeys.add(contentKey);
+						allInvoices.push(inv);
+					}
+				}
+				if (Array.isArray(stored.salesOrders)) {
+					for (const ord of stored.salesOrders) {
+						if (!ord || !ord.id) continue;
+						const id = String(ord.id);
+						const sig = orderSignature(ord);
+						const contentKey = [
+							String(ord.orderDate || ord.date || '').trim(),
+							String(ord.customer || '').trim().toLowerCase(),
+							Number(ord.amount || 0),
+							Number(ord.bags || 0),
+							Number(ord.rate || 0),
+							String(ord.status || '').trim().toLowerCase(),
+						].join('|');
+						if (
+							seenOrderIds.has(id)
+							|| (sig && seenOrderSignatures.has(sig))
+							|| seenOrderContentKeys.has(contentKey)
+						) continue;
+						seenOrderIds.add(id);
+						if (sig) seenOrderSignatures.add(sig);
+						seenOrderContentKeys.add(contentKey);
+						allOrders.push(ord);
+					}
+				}
 			}
 		} catch (_e) { /* skip */ }
 	}
