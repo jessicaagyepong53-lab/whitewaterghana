@@ -275,6 +275,49 @@ function mergeSalesMonthPayloads(localPayload, incomingPayload, month) {
 	return { invoices, salesOrders, deletedInvoiceIds, deletedOrderIds, ...(mergedVersion > 0 ? { __wwLocalVersion: mergedVersion } : {}) };
 }
 
+function areSalesPayloadsEquivalent(localPayload, incomingPayload) {
+	const local = localPayload && typeof localPayload === 'object' ? localPayload : {};
+	const incoming = incomingPayload && typeof incomingPayload === 'object' ? incomingPayload : {};
+
+	const localInv = Array.isArray(local.invoices) ? local.invoices : [];
+	const incomingInv = Array.isArray(incoming.invoices) ? incoming.invoices : [];
+	if (localInv.length !== incomingInv.length) return false;
+	const incomingInvById = new Map(incomingInv.filter((inv) => inv && inv.id).map((inv) => [String(inv.id), inv]));
+	for (const inv of localInv) {
+		if (!inv || !inv.id) return false;
+		const match = incomingInvById.get(String(inv.id));
+		if (!match) return false;
+		if (invoiceSignature(inv) !== invoiceSignature(match)) return false;
+	}
+
+	const localOrd = Array.isArray(local.salesOrders) ? local.salesOrders : [];
+	const incomingOrd = Array.isArray(incoming.salesOrders) ? incoming.salesOrders : [];
+	if (localOrd.length !== incomingOrd.length) return false;
+	const incomingOrdById = new Map(incomingOrd.filter((ord) => ord && ord.id).map((ord) => [String(ord.id), ord]));
+	for (const ord of localOrd) {
+		if (!ord || !ord.id) return false;
+		const match = incomingOrdById.get(String(ord.id));
+		if (!match) return false;
+		if (orderSignature(ord) !== orderSignature(match)) return false;
+	}
+
+	const localDelInv = normalizeIdArray(local.deletedInvoiceIds).sort();
+	const incomingDelInv = normalizeIdArray(incoming.deletedInvoiceIds).sort();
+	if (localDelInv.length !== incomingDelInv.length) return false;
+	for (let i = 0; i < localDelInv.length; i += 1) {
+		if (localDelInv[i] !== incomingDelInv[i]) return false;
+	}
+
+	const localDelOrd = normalizeIdArray(local.deletedOrderIds).sort();
+	const incomingDelOrd = normalizeIdArray(incoming.deletedOrderIds).sort();
+	if (localDelOrd.length !== incomingDelOrd.length) return false;
+	for (let i = 0; i < localDelOrd.length; i += 1) {
+		if (localDelOrd[i] !== incomingDelOrd[i]) return false;
+	}
+
+	return true;
+}
+
 function buildSalesSyncPayload(month, data) {
 	const existing = getSalesMonthPayload(month);
 	const existingVersion = sanitizeSalesPayloadVersion(existing);
@@ -638,6 +681,12 @@ async function loadFromServerForceFresh(key) {
 			if (json.data !== null && json.data !== undefined) {
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
+					if (hasPendingSalesSyncForKey(key)) {
+						const localPendingPayload = getSalesMonthPayload(salesMonth);
+						if (areSalesPayloadsEquivalent(localPendingPayload, json.data)) {
+							clearPendingSalesSync(salesMonth);
+						}
+					}
 					if (isCanonicalExcelMarchMonth(salesMonth)) {
 						localStorage.setItem(key, JSON.stringify(json.data));
 						setProtectedSalesPayload(salesMonth, json.data);
@@ -692,6 +741,31 @@ function mergeServerSalesIntoMemory(serverData) {
 	const monthPayload = getSalesMonthPayload(currentSalesMonth);
 	const deletedInv = new Set(normalizeIdArray([...(monthPayload.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]));
 	const deletedOrd = new Set(normalizeIdArray([...(monthPayload.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]));
+	const hasLocalPending = hasPendingSalesSyncForKey(monthStorageKey(currentSalesMonth));
+
+	// When there are no unsynced local changes, mirror server state so cross-device edits
+	// (same IDs with changed fields) appear automatically without manual refresh.
+	if (!hasLocalPending) {
+		const nextInvoices = serverInvoices.filter((inv) => inv && inv.id && !deletedInv.has(String(inv.id)));
+		const activeInvoiceIds = new Set(nextInvoices.map((inv) => String(inv.id)).filter(Boolean));
+		const nextOrders = serverOrders
+			.filter((ord) => {
+				if (!ord || !ord.id) return false;
+				if (deletedOrd.has(String(ord.id))) return false;
+				const sourceInvoiceId = resolveInvoiceLinkFromOrder(ord);
+				if (!sourceInvoiceId || deletedInv.has(String(sourceInvoiceId))) return false;
+				if (!activeInvoiceIds.has(String(sourceInvoiceId))) return false;
+				ord.sourceInvoiceId = sourceInvoiceId;
+				return true;
+			});
+		const changed =
+			JSON.stringify(salesModuleData.invoices) !== JSON.stringify(nextInvoices)
+			|| JSON.stringify(salesModuleData.salesOrders) !== JSON.stringify(nextOrders);
+		salesModuleData.invoices = nextInvoices;
+		salesModuleData.salesOrders = nextOrders;
+		return changed;
+	}
+
 	const localInvIds = new Set(salesModuleData.invoices.map((inv) => String(inv.id)));
 	const localOrdIds = new Set(salesModuleData.salesOrders.map((ord) => String(ord.id)));
 	const localInvSignatures = new Set(salesModuleData.invoices.map((inv) => invoiceSignature(inv)).filter(Boolean));
