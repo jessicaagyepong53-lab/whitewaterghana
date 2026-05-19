@@ -136,6 +136,22 @@ function orderSignature(ord) {
 	].join('|');
 }
 
+function getRecordUpdatedMs(record) {
+	if (!record || typeof record !== 'object') return 0;
+	const raw = record.updatedAt || record.modifiedAt || record.createdAt || '';
+	const ms = Date.parse(String(raw || ''));
+	return Number.isFinite(ms) ? ms : 0;
+}
+
+function pickNewerRecord(existing, incoming) {
+	if (!existing) return incoming;
+	if (!incoming) return existing;
+	const existingMs = getRecordUpdatedMs(existing);
+	const incomingMs = getRecordUpdatedMs(incoming);
+	if (incomingMs >= existingMs) return incoming;
+	return existing;
+}
+
 function getLockedSalesMonthConfig(month) {
 	if (!month) return null;
 	return LOCKED_SALES_MONTHS[month] || null;
@@ -394,13 +410,13 @@ async function mergeSyncSalesMonth(month, localData) {
 					if (!inv || !inv.id) continue;
 					const id = String(inv.id);
 					if (delInv.has(id)) continue;
-					invoiceById.set(id, inv);
+					invoiceById.set(id, pickNewerRecord(invoiceById.get(id), inv));
 				}
 				for (const inv of localInvs) {
 					if (!inv || !inv.id) continue;
 					const id = String(inv.id);
 					if (delInv.has(id)) continue;
-					invoiceById.set(id, inv);
+					invoiceById.set(id, pickNewerRecord(invoiceById.get(id), inv));
 				}
 				const mergedInvoices = Array.from(invoiceById.values());
 
@@ -421,7 +437,7 @@ async function mergeSyncSalesMonth(month, localData) {
 					const src = resolveInvoiceLinkFromOrder(ord);
 					if (!src || !activeInvoiceIds.has(String(src)) || delInv.has(String(src))) continue;
 					ord.sourceInvoiceId = src;
-					orderById.set(id, ord);
+					orderById.set(id, pickNewerRecord(orderById.get(id), ord));
 				}
 				for (const ord of localOrds) {
 					if (!ord || !ord.id) continue;
@@ -430,7 +446,7 @@ async function mergeSyncSalesMonth(month, localData) {
 					const src = resolveInvoiceLinkFromOrder(ord);
 					if (!src || !activeInvoiceIds.has(String(src)) || delInv.has(String(src))) continue;
 					ord.sourceInvoiceId = src;
-					orderById.set(id, ord);
+					orderById.set(id, pickNewerRecord(orderById.get(id), ord));
 				}
 				const mergedOrders = Array.from(orderById.values());
 
@@ -4510,6 +4526,7 @@ function upsertSalesOrderFromInvoice(invoice) {
 		promoNote: invoice.promoNote || '',
 		status: invoice.status || 'pending',
 		sourceInvoiceId: invoice.id,
+		updatedAt: invoice.updatedAt || new Date().toISOString(),
 	};
 	if (targetIdx >= 0) {
 		Object.assign(salesModuleData.salesOrders[targetIdx], orderData);
@@ -4703,6 +4720,7 @@ function renderInvoiceDetail(invoice) {
 		const idx = salesModuleData.invoices.findIndex((inv) => inv.id === invoice.id);
 		if (idx >= 0) {
 			salesModuleData.invoices[idx].status = salesModuleData.invoices[idx].requestedStatus || 'pending';
+			salesModuleData.invoices[idx].updatedAt = new Date().toISOString();
 			delete salesModuleData.invoices[idx].requestedStatus;
 			saveSalesDataToStorage();
 			renderInvoiceDetail(salesModuleData.invoices[idx]);
@@ -5188,6 +5206,7 @@ async function initSalesInvoicesPage() {
 					items: [{ name: product, qty: getNum('qty') || 1, unitPrice: getNum('unitPrice') }],
 					deliveryFee: 0,
 					createdAt: new Date().toISOString(),
+					updatedAt: new Date().toISOString(),
 				};
 				invData.rate = invData.items[0].unitPrice;
 				invData.amount = invData.items[0].qty * invData.items[0].unitPrice;
@@ -5233,6 +5252,7 @@ async function initSalesInvoicesPage() {
 					carNumber: getValue('carNumber'),
 					status: chosenStatus,
 					requestedStatus: undefined,
+					updatedAt: new Date().toISOString(),
 				};
 				if (editingSiIdx >= 0 && salesModuleData.salesOrders[editingSiIdx]) {
 					Object.assign(salesModuleData.salesOrders[editingSiIdx], ordData);
@@ -5257,6 +5277,7 @@ async function initSalesInvoicesPage() {
 							qty,
 							unitPrice,
 						}];
+						linkedInvoice.updatedAt = ordData.updatedAt;
 					}
 				} else {
 					const invId = nextInvoiceId();
@@ -5278,6 +5299,7 @@ async function initSalesInvoicesPage() {
 						rate: unitPrice,
 						amount: Number(ordData.amount || 0),
 						createdAt: new Date().toISOString(),
+						updatedAt: ordData.updatedAt,
 					};
 					ordData.id = `SO${String(invId).slice(3)}`;
 					ordData.sourceInvoiceId = invId;
