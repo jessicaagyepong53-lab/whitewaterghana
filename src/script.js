@@ -311,11 +311,21 @@ function mergeSalesMonthPayloads(localPayload, incomingPayload, month) {
 	const delInv = new Set(deletedInvoiceIds.map((id) => String(id)));
 	const delOrd = new Set(deletedOrderIds.map((id) => String(id)));
 
-	const invoices = Array.from(invById.values()).filter((inv) => inv && inv.id && !delInv.has(String(inv.id)));
+	const invoices = Array.from(invById.values()).filter((inv) => {
+		if (!inv || !inv.id) return false;
+		if (delInv.has(String(inv.id))) return false;
+		const invMonth = getInvoiceMonth(inv);
+		if (month && invMonth && invMonth !== month) return false;
+		return true;
+	});
+	const activeInvoiceIds = new Set(invoices.map((inv) => String(inv.id)).filter(Boolean));
 	const salesOrders = Array.from(ordById.values()).filter((ord) => {
 		if (!ord || !ord.id) return false;
 		if (delOrd.has(String(ord.id))) return false;
 		if (ord.sourceInvoiceId && delInv.has(String(ord.sourceInvoiceId))) return false;
+		if (ord.sourceInvoiceId && !activeInvoiceIds.has(String(ord.sourceInvoiceId))) return false;
+		const ordMonth = getInvoiceMonth(ord);
+		if (month && ordMonth && ordMonth !== month) return false;
 		return true;
 	});
 
@@ -452,7 +462,12 @@ async function mergeSyncSalesMonth(month, localData) {
 					if (delInv.has(id)) continue;
 					invoiceById.set(id, pickNewerRecord(invoiceById.get(id), inv));
 				}
-				const mergedInvoices = Array.from(invoiceById.values());
+				const mergedInvoices = Array.from(invoiceById.values()).filter((inv) => {
+					if (!inv || !inv.id) return false;
+					const invMonth = getInvoiceMonth(inv);
+					if (month && invMonth && invMonth !== month) return false;
+					return true;
+				});
 
 				const resolveInvoiceLinkFromOrder = (ord) => {
 					if (!ord) return '';
@@ -483,7 +498,13 @@ async function mergeSyncSalesMonth(month, localData) {
 					ord.sourceInvoiceId = src;
 					orderById.set(id, pickNewerRecord(orderById.get(id), ord));
 				}
-				const mergedOrders = Array.from(orderById.values());
+				const mergedOrders = Array.from(orderById.values()).filter((ord) => {
+					if (!ord || !ord.id) return false;
+					if (ord.sourceInvoiceId && !activeInvoiceIds.has(String(ord.sourceInvoiceId))) return false;
+					const ordMonth = getInvoiceMonth(ord);
+					if (month && ordMonth && ordMonth !== month) return false;
+					return true;
+				});
 
 				toSync = { invoices: mergedInvoices, salesOrders: mergedOrders, deletedInvoiceIds: mergedDeletedInv, deletedOrderIds: mergedDeletedOrd };
 				localStorage.setItem(key, JSON.stringify(toSync));
