@@ -792,8 +792,24 @@ function mergeServerSalesIntoMemory(serverData) {
 		}
 	}
 	if (!serverData || typeof serverData !== 'object') return false;
-	const serverInvoices = Array.isArray(serverData.invoices) ? serverData.invoices : [];
-	const serverOrders = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
+	const serverInvoicesRaw = Array.isArray(serverData.invoices) ? serverData.invoices : [];
+	const serverOrdersRaw = Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [];
+	const serverInvoices = serverInvoicesRaw.filter((inv) => {
+		if (!inv || !inv.id) return false;
+		const m = getInvoiceMonth(inv);
+		return !m || m === currentSalesMonth;
+	});
+	const serverInvoiceIds = new Set(serverInvoices.map((inv) => String(inv.id)).filter(Boolean));
+	const serverOrders = serverOrdersRaw.filter((ord) => {
+		if (!ord || !ord.id) return false;
+		const sourceInvoiceId = resolveInvoiceLinkFromOrder(ord);
+		if (sourceInvoiceId && serverInvoiceIds.has(String(sourceInvoiceId))) {
+			ord.sourceInvoiceId = sourceInvoiceId;
+			return true;
+		}
+		const ordMonth = getInvoiceMonth(ord);
+		return !ordMonth || ordMonth === currentSalesMonth;
+	});
 	const monthPayload = getSalesMonthPayload(currentSalesMonth);
 	const deletedInv = new Set(normalizeIdArray([...(monthPayload.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]));
 	const deletedOrd = new Set(normalizeIdArray([...(monthPayload.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]));
@@ -5802,6 +5818,7 @@ async function initSalesInvoicesPage() {
 
 				const updatedPayload = buildSalesSyncPayload(month, salesModuleData);
 				localStorage.setItem(syncKey, JSON.stringify(updatedPayload));
+				loadMonthData(month);
 				renderSalesPage();
 				try {
 					if (!window.__wwSalesChannel) window.__wwSalesChannel = new BroadcastChannel('ww_sales_sync');
@@ -9199,7 +9216,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 					await pullRemoteDataAndRefreshUi();
 					if (currentSalesMonth && document.body.getAttribute('data-page') && ['invoices', 'sales'].includes(document.body.getAttribute('data-page'))) {
 						loadMonthData(currentSalesMonth);
-						document.dispatchEvent(new Event('ww-refresh-sales'));
+						renderSalesPage();
 					}
 				} catch (_pullErr) { /* ignore */ }
 			} catch (_e) { /* keep polling */ }
