@@ -5698,6 +5698,44 @@ async function initSalesInvoicesPage() {
 
 	document.addEventListener('ww-refresh-sales', () => renderSalesPage());
 
+	// ── Cross-device live poll for current sales month ──
+	// This ensures Device A and Device B converge on edits even if last-update stamp
+	// misses an edge case or a stale local pending flag existed earlier.
+	if (!window.__wwSalesRemoteLivePoll) {
+		window.__wwSalesRemoteLivePoll = true;
+		setInterval(async () => {
+			try {
+				const activePage = document.body.getAttribute('data-page');
+				if (activePage !== 'invoices' && activePage !== 'sales') return;
+				const month = String(currentSalesMonth || '');
+				if (!/^\d{4}-\d{2}$/.test(month)) return;
+				const syncKey = monthStorageKey(month);
+
+				// Best-effort flush of local pending changes before pulling latest server state.
+				if (hasPendingSalesSyncForKey(syncKey)) {
+					const snapshot = {
+						invoices: [...salesModuleData.invoices],
+						salesOrders: [...salesModuleData.salesOrders],
+					};
+					const ok = await mergeSyncSalesMonth(month, snapshot);
+					if (ok) clearPendingSalesSync(month);
+				}
+
+				const serverData = await loadFromServerForceFresh(syncKey);
+				const changed = mergeServerSalesIntoMemory(serverData);
+				if (!changed) return;
+
+				const updatedPayload = buildSalesSyncPayload(month, salesModuleData);
+				localStorage.setItem(syncKey, JSON.stringify(updatedPayload));
+				renderSalesPage();
+				try {
+					if (!window.__wwSalesChannel) window.__wwSalesChannel = new BroadcastChannel('ww_sales_sync');
+					window.__wwSalesChannel.postMessage({ type: 'sales_updated', month });
+				} catch (_e) { /* ignore */ }
+			} catch (_e) { /* keep polling */ }
+		}, 1500);
+	}
+
 	// ── Online Orders Tab ──
 	if (document.getElementById('online-orders-tbody')) {
 		loadOnlineOrders();
