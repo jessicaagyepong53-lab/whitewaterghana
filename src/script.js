@@ -4132,37 +4132,6 @@ function normalizeMonthSalesRecords(month, invoices, orders) {
 	return { keepInvoices, keepOrders, movedByMonth };
 }
 
-function normalizeMay2026PayloadForUi(payload) {
-	const base = payload && typeof payload === 'object' ? payload : {};
-	const invoices = Array.isArray(base.invoices) ? base.invoices.filter((inv) => inv && inv.id) : [];
-	const orders = Array.isArray(base.salesOrders) ? base.salesOrders.filter((ord) => ord && ord.id) : [];
-	if (invoices.length <= 11) return { invoices, salesOrders: orders, changed: false };
-
-	const canonicalIds = [
-		'INV-2026-05-001', 'INV-2026-05-002', 'INV-2026-05-003', 'INV-2026-05-004', 'INV-2026-05-005',
-		'INV-2026-05-006', 'INV-2026-05-007', 'INV-2026-05-008', 'INV-2026-05-009', 'INV-2026-05-010',
-		'INV-2026-05-011',
-	];
-	const canonicalSet = new Set(canonicalIds);
-	let kept = invoices.filter((inv) => canonicalSet.has(String(inv.id || '')));
-	if (kept.length !== 11) {
-		const score = (inv) => Math.max(
-			Date.parse(String(inv?.updatedAt || '')) || 0,
-			Date.parse(String(inv?.modifiedAt || '')) || 0,
-			Date.parse(String(inv?.createdAt || '')) || 0,
-			Date.parse(String(inv?.date || '')) || 0,
-		);
-		kept = [...invoices]
-			.sort((a, b) => score(b) - score(a))
-			.slice(0, 11)
-			.sort((a, b) => String(a?.date || '').localeCompare(String(b?.date || '')))
-			.map((inv, idx) => ({ ...inv, id: canonicalIds[idx] }));
-	}
-	const keepIds = new Set(kept.map((inv) => String(inv.id || '')).filter(Boolean));
-	const nextOrders = orders.filter((ord) => keepIds.has(String(ord.sourceInvoiceId || '')));
-	return { invoices: kept, salesOrders: nextOrders, changed: true };
-}
-
 function mergeSalesRecordsIntoMonth(month, invoices, orders) {
 	if (!month) return false;
 	const invoiceList = Array.isArray(invoices) ? invoices.filter((inv) => inv && inv.id) : [];
@@ -4587,14 +4556,6 @@ function loadMonthData(month) {
 	enforceLockedSalesPayload(month);
 	try {
 		const stored = getSalesMonthPayload(month);
-		if (month === '2026-05' && stored && typeof stored === 'object') {
-			const normalizedMay = normalizeMay2026PayloadForUi(stored);
-			if (normalizedMay.changed) {
-				stored.invoices = normalizedMay.invoices;
-				stored.salesOrders = normalizedMay.salesOrders;
-				dirty = true;
-			}
-		}
 		if (stored && typeof stored === 'object') {
 			const rawInvoices = (Array.isArray(stored.invoices) ? stored.invoices : []).filter((inv) => inv && inv.id);
 			const rawOrders = (Array.isArray(stored.salesOrders) ? stored.salesOrders : []).filter((ord) => ord && ord.id);
