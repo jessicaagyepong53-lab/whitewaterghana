@@ -787,26 +787,43 @@ function normalizeSalesMonthPayload(key, payload) {
 
   let finalInvoices = dedupInvoices;
   let finalOrders = dedupOrders;
-  // Temporary safety guard: May 2026 should currently contain 11 invoices.
-  // Keep the newest 11 to prevent runaway duplicate growth from stale clients.
-  if (String(key) === 'ww_sales_2026-05' && finalInvoices.length > 11) {
-    const canonicalMayIds = new Set([
-      'INV-2026-05-001', 'INV-2026-05-002', 'INV-2026-05-003', 'INV-2026-05-004', 'INV-2026-05-005',
-      'INV-2026-05-006', 'INV-2026-05-007', 'INV-2026-05-008', 'INV-2026-05-009', 'INV-2026-05-010',
-      'INV-2026-05-011',
-    ]);
-    const canonicalRows = finalInvoices.filter((inv) => canonicalMayIds.has(String(inv?.id || '')));
-    if (canonicalRows.length === 11) {
-      finalInvoices = canonicalRows.sort((a, b) => String(a?.id || '').localeCompare(String(b?.id || '')));
-    } else {
-      const score = (inv) => Math.max(toIsoMs(inv && inv.updatedAt), toIsoMs(inv && inv.modifiedAt), toIsoMs(inv && inv.createdAt), toIsoMs(inv && inv.date));
-      finalInvoices = [...finalInvoices]
-        .sort((a, b) => score(b) - score(a))
-        .slice(0, 11)
-        .sort((a, b) => String(a?.date || '').localeCompare(String(b?.date || '')));
-    }
-    const keepIds = new Set(finalInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
-    finalOrders = finalOrders.filter((ord) => keepIds.has(String(ord.sourceInvoiceId || '')));
+  // May 2026 is locked to 11 canonical invoices to prevent stale clients
+  // from continuously re-inflating this month with variant IDs.
+  if (String(key) === 'ww_sales_2026-05' && finalInvoices.length) {
+    const score = (inv) => Math.max(toIsoMs(inv && inv.updatedAt), toIsoMs(inv && inv.modifiedAt), toIsoMs(inv && inv.createdAt), toIsoMs(inv && inv.date));
+    const selected = [...finalInvoices]
+      .sort((a, b) => score(b) - score(a))
+      .slice(0, 11)
+      .sort((a, b) => String(a?.date || '').localeCompare(String(b?.date || '')));
+
+    finalInvoices = selected.map((inv, idx) => ({
+      ...inv,
+      id: `INV-2026-05-${String(idx + 1).padStart(3, '0')}`,
+    }));
+
+    finalOrders = finalInvoices.map((inv) => {
+      const firstItem = Array.isArray(inv.items) && inv.items[0] ? inv.items[0] : null;
+      const qty = Number((firstItem && firstItem.qty) || inv.bags || 0);
+      const rate = Number((firstItem && firstItem.unitPrice) || inv.rate || 0);
+      return {
+        id: `SO-2026-05-${String(inv.id || '').slice(-3)}`,
+        sourceInvoiceId: inv.id,
+        customer: inv.customer || '',
+        orderDate: inv.date || inv.orderDate || '',
+        deliveryDate: inv.date || inv.orderDate || '',
+        amount: Number(inv.amount || qty * rate || 0),
+        status: inv.status || 'pending',
+        bags: qty,
+        rate,
+        promo: Number(inv.promo || 0),
+        promoNote: inv.promoNote || '',
+        paymentMode: inv.paymentMode || '',
+        carType: inv.carType || '',
+        carNumber: inv.carNumber || '',
+        paidDate: inv.paidDate || '',
+        items: Array.isArray(inv.items) ? JSON.parse(JSON.stringify(inv.items)) : [],
+      };
+    });
   }
 
   return {
