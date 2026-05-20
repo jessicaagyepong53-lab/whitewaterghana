@@ -118,6 +118,7 @@ function invoiceSignature(inv) {
 		qty,
 		unitPrice,
 		String(inv.paymentMode || '').trim().toLowerCase(),
+		String(inv.carType || '').trim().toLowerCase(),
 		String(inv.carNumber || '').trim().toLowerCase(),
 	].join('|');
 }
@@ -131,9 +132,18 @@ function orderSignature(ord) {
 		Number(ord.amount || 0),
 		Number(ord.rate || 0),
 		String(ord.paymentMode || '').trim().toLowerCase(),
+		String(ord.carType || '').trim().toLowerCase(),
 		String(ord.carNumber || '').trim().toLowerCase(),
 		String(ord.sourceInvoiceId || '').trim(),
 	].join('|');
+}
+
+function formatVehicleLabel(carType, carNumber) {
+	const type = String(carType || '').trim();
+	const number = String(carNumber || '').trim();
+	if (type && number) return `${type} - ${number}`;
+	if (type) return type;
+	return number;
 }
 
 function getRecordUpdatedMs(record) {
@@ -4032,6 +4042,8 @@ function repairSalesMonthConsistency(month) {
 			promo: Number(inv.promo || 0),
 			promoNote: inv.promoNote || existing.promoNote || '',
 			paymentMode: inv.paymentMode || existing.paymentMode || '',
+			carType: inv.carType || existing.carType || '',
+			carNumber: inv.carNumber || existing.carNumber || '',
 			paidDate: inv.paidDate || existing.paidDate || '',
 			items: Array.isArray(inv.items) ? JSON.parse(JSON.stringify(inv.items)) : (Array.isArray(existing.items) ? JSON.parse(JSON.stringify(existing.items)) : []),
 		};
@@ -4291,6 +4303,8 @@ function loadMonthData(month) {
 			promo: Number(inv.promo || 0),
 			promoNote: inv.promoNote || '',
 			paymentMode: inv.paymentMode || '',
+			carType: inv.carType || '',
+			carNumber: inv.carNumber || '',
 			paidDate: inv.paidDate || '',
 			items: Array.isArray(inv.items) ? JSON.parse(JSON.stringify(inv.items)) : [],
 		};
@@ -4551,6 +4565,7 @@ function upsertSalesOrderFromInvoice(invoice) {
 		bags: qty,
 		rate,
 		paymentMode: invoice.paymentMode || '',
+		carType: invoice.carType || '',
 		promo: Number(invoice.promo || 0),
 		promoNote: invoice.promoNote || '',
 		status: invoice.status || 'pending',
@@ -4902,6 +4917,7 @@ async function initSalesInvoicesPage() {
 		invoice: {
 			title: 'Add Invoice',
 			fields: [
+				{ id: 'carType', label: 'Car Type', type: 'text', placeholder: 'e.g. Lexus' },
 				{ id: 'carNumber', label: 'Car Number', type: 'text', placeholder: 'e.g. GR-1234-20' },
 				{ id: 'entryTime', label: 'Entry Time', type: 'time' },
 				{ id: 'customer', label: 'Customer Name', type: 'text', required: true },
@@ -4919,6 +4935,7 @@ async function initSalesInvoicesPage() {
 		order: {
 			title: 'Add Sales Order',
 			fields: [
+				{ id: 'carType', label: 'Car Type', type: 'text', placeholder: 'e.g. Lexus' },
 				{ id: 'carNumber', label: 'Car Number', type: 'text', placeholder: 'e.g. GR-1234-20' },
 				{ id: 'customer', label: 'Customer Name', type: 'text', required: true },
 				{ id: 'orderDate', label: 'Order Date', type: 'date', defaultValue: todayStr, required: true },
@@ -5146,6 +5163,7 @@ async function initSalesInvoicesPage() {
 					setVal('date', row.date);
 					setVal('status', row.status || 'paid');
 					setVal('paymentMode', row.paymentMode);
+					setVal('carType', row.carType || '');
 					setVal('carNumber', row.carNumber || '');
 					setVal('entryTime', row.entryTime || '');
 				}
@@ -5159,6 +5177,7 @@ async function initSalesInvoicesPage() {
 					setVal('amount', row.amount);
 					setVal('promo', row.promo || 0);
 					setVal('paymentMode', row.paymentMode);
+					setVal('carType', row.carType || '');
 					setVal('carNumber', row.carNumber || '');
 				}
 			}
@@ -5227,6 +5246,7 @@ async function initSalesInvoicesPage() {
 					status: chosenStatus,
 					requestedStatus: undefined,
 					paymentMode: getValue('paymentMode'),
+					carType: getValue('carType'),
 					carNumber: getValue('carNumber'),
 					entryTime: getValue('entryTime'),
 					promo: getNum('promo'),
@@ -5278,6 +5298,7 @@ async function initSalesInvoicesPage() {
 					promo: getNum('promo'),
 					promoNote: existingOrder?.promoNote || '',
 					paymentMode: getValue('paymentMode'),
+					carType: getValue('carType'),
 					carNumber: getValue('carNumber'),
 					status: chosenStatus,
 					requestedStatus: undefined,
@@ -5297,6 +5318,7 @@ async function initSalesInvoicesPage() {
 						linkedInvoice.date = ordData.orderDate;
 						linkedInvoice.paidDate = String(ordData.status || '').toLowerCase() === 'paid' ? ordData.orderDate : (linkedInvoice.paidDate || '');
 						linkedInvoice.paymentMode = ordData.paymentMode;
+						linkedInvoice.carType = ordData.carType;
 						linkedInvoice.carNumber = ordData.carNumber;
 						linkedInvoice.promo = Number(ordData.promo || 0);
 						linkedInvoice.rate = unitPrice;
@@ -5319,6 +5341,7 @@ async function initSalesInvoicesPage() {
 						paidDate: String(chosenStatus || '').toLowerCase() === 'paid' ? orderDate : '',
 						status: chosenStatus,
 						paymentMode: ordData.paymentMode,
+						carType: ordData.carType,
 						carNumber: ordData.carNumber,
 						promo: Number(ordData.promo || 0),
 						promoNote: ordData.promoNote || '',
@@ -5520,7 +5543,7 @@ async function initSalesInvoicesPage() {
 					<td>${escapeHtml(formatDateDisplay(invoiceDraft.date || ''))}</td>
 					<td>${hideMoney ? '—' : ''}</td>
 					<td>${escapeHtml(invoiceDraft.paymentMode || '')}</td>
-					<td>${escapeHtml(invoiceDraft.carNumber || '')}</td>
+					<td>${escapeHtml(formatVehicleLabel(invoiceDraft.carType, invoiceDraft.carNumber))}</td>
 					<td><span class="status-pill status-orange">Draft (Unsaved)</span></td>
 					<td><div class="row-actions"><button class="btn-edit si-resume-draft-btn" data-draft-entity="invoice" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete si-clear-draft-btn" data-draft-entity="invoice" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td>
 				</tr>
@@ -5540,7 +5563,7 @@ async function initSalesInvoicesPage() {
 						<td>${formatDateDisplay(invoice.date)}</td>
 						<td>${hideMoney ? '—' : formatCurrency(invoice.amount)}</td>
 						<td>${invoice.paymentMode || ''}</td>
-						<td>${invoice.carNumber || ''}</td>
+						<td>${formatVehicleLabel(invoice.carType, invoice.carNumber)}</td>
 						<td><span class="status-pill ${statusPillClass(invoice.status)}">${statusLabel}</span></td>
 						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="invoice" data-edit-id="${invoice.id}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="invoice" data-delete-id="${invoice.id}"><i class="fa-solid fa-trash"></i></button></div></td>
 					</tr>
@@ -5599,7 +5622,7 @@ async function initSalesInvoicesPage() {
 					<td>${escapeHtml(formatDateDisplay(orderDraft.orderDate || ''))}</td>
 					<td>${hideMoney ? '—' : escapeHtml(orderDraft.amount || '')}</td>
 					<td>${escapeHtml(orderDraft.paymentMode || '')}</td>
-					<td>${escapeHtml(orderDraft.carNumber || '')}</td>
+					<td>${escapeHtml(formatVehicleLabel(orderDraft.carType, orderDraft.carNumber))}</td>
 					<td><span class="status-pill status-orange">Draft (Unsaved)</span></td>
 					<td><div class="row-actions"><button class="btn-edit si-resume-draft-btn" data-draft-entity="order" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete si-clear-draft-btn" data-draft-entity="order" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td>
 				</tr>
@@ -5625,7 +5648,7 @@ async function initSalesInvoicesPage() {
 						<td>${orderDateDisplay}${deliveryDateNote}</td>
 						<td>${hideMoney ? '—' : formatCurrency(order.amount)}</td>
 						<td>${order.paymentMode || ''}</td>
-						<td>${order.carNumber || ''}</td>
+						<td>${formatVehicleLabel(order.carType, order.carNumber)}</td>
 						<td><span class="status-pill ${statusPillClass(order.status)}">${statusLabel}</span></td>
 						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="order" data-edit-id="${order.id}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="order" data-delete-id="${order.id}"><i class="fa-solid fa-trash"></i></button></div></td>
 					</tr>
