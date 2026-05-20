@@ -4893,6 +4893,15 @@ function nextInvoiceId() {
 		? String(currentSalesMonth)
 		: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
 	const monthPattern = new RegExp(`^INV-${monthToken}-(\\d+)$`);
+	const monthPayload = getSalesMonthPayload(monthToken);
+	const deletedNums = new Set(
+		normalizeIdArray(monthPayload && monthPayload.deletedInvoiceIds)
+			.map((id) => {
+				const m = String(id || '').match(monthPattern) || String(id || '').match(/(\d+)$/);
+				return m ? Number(m[1]) : 0;
+			})
+			.filter((n) => Number.isFinite(n) && n > 0)
+	);
 	const used = new Set(
 		salesModuleData.invoices
 			.filter((inv) => {
@@ -4906,6 +4915,7 @@ function nextInvoiceId() {
 			})
 			.filter((n) => Number.isFinite(n) && n > 0)
 	);
+	for (const n of deletedNums) used.add(n);
 	let next = 1;
 	while (used.has(next)) next += 1;
 	return `INV-${monthToken}-${String(next).padStart(3, '0')}`;
@@ -4917,6 +4927,15 @@ function nextOrderId() {
 		? String(currentSalesMonth)
 		: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
 	const monthPattern = new RegExp(`^SO-${monthToken}-(\\d+)$`);
+	const monthPayload = getSalesMonthPayload(monthToken);
+	const deletedNums = new Set(
+		normalizeIdArray(monthPayload && monthPayload.deletedOrderIds)
+			.map((id) => {
+				const m = String(id || '').match(monthPattern) || String(id || '').match(/(\d+)$/);
+				return m ? Number(m[1]) : 0;
+			})
+			.filter((n) => Number.isFinite(n) && n > 0)
+	);
 	const used = new Set(
 		salesModuleData.salesOrders
 			.filter((ord) => {
@@ -4931,6 +4950,7 @@ function nextOrderId() {
 			})
 			.filter((n) => Number.isFinite(n) && n > 0)
 	);
+	for (const n of deletedNums) used.add(n);
 	let next = 1;
 	while (used.has(next)) next += 1;
 	return `SO-${monthToken}-${String(next).padStart(3, '0')}`;
@@ -6101,77 +6121,20 @@ async function initSalesInvoicesPage() {
 
 	document.addEventListener('ww-refresh-sales', () => renderSalesPage());
 
-	// ── Cross-device live poll for current sales month ──
-	// This ensures Device A and Device B converge on edits even if last-update stamp
-	// misses an edge case or a stale local pending flag existed earlier.
-	if (!window.__wwSalesRemoteLivePoll) {
-		window.__wwSalesRemoteLivePoll = true;
+	// ── Cross-device live sync for current sales month ──
+	// Pull and apply latest month state continuously so Device B updates automatically
+	// when Device A adds/edits/deletes, without manual page refresh.
+	if (!window.__wwSalesLiveSyncLoop) {
+		window.__wwSalesLiveSyncLoop = true;
 		setInterval(async () => {
 			try {
 				const activePage = document.body.getAttribute('data-page');
 				if (activePage !== 'invoices' && activePage !== 'sales') return;
 				const month = String(currentSalesMonth || '');
 				if (!/^\d{4}-\d{2}$/.test(month)) return;
-				const syncKey = monthStorageKey(month);
-				if (hasPendingSalesSyncForKey(syncKey)) {
-					const pendingPayload = getPendingSalesSyncPayload(month) || {
-						invoices: [...salesModuleData.invoices],
-						salesOrders: [...salesModuleData.salesOrders],
-					};
-					const flushed = await mergeSyncSalesMonth(month, pendingPayload);
-					if (flushed) clearPendingSalesSync(month);
-				}
-
-				const serverData = await loadFromServerForceFresh(syncKey);
-				if (month !== currentSalesMonth) return;
-				if (SALES_SERVER_AUTHORITATIVE_MODE) {
-					if (!serverData || typeof serverData !== 'object') return;
-					applySalesMonthPayloadToUi(month, serverData);
-					return;
-				}
-				const changed = mergeServerSalesIntoMemory(serverData, month);
-				if (!changed) return;
-
-				const updatedPayload = buildSalesSyncPayload(month, salesModuleData);
-				localStorage.setItem(syncKey, JSON.stringify(updatedPayload));
-				if (month !== currentSalesMonth) return;
-				loadMonthData(month);
-				renderSalesPage();
-				try {
-					if (!window.__wwSalesChannel) window.__wwSalesChannel = new BroadcastChannel('ww_sales_sync');
-					window.__wwSalesChannel.postMessage({ type: 'sales_updated', month });
-				} catch (_e) { /* ignore */ }
-			} catch (_e) { /* keep polling */ }
-		}, 1500);
-	}
-
-	// Strong retry path: even if a previous write failed transiently, keep retrying pending
-	// month payloads and force-apply latest server month so cross-device edits converge.
-	if (!window.__wwSalesPendingRetryLoop) {
-		window.__wwSalesPendingRetryLoop = true;
-		setInterval(async () => {
-			try {
-				const activePage = document.body.getAttribute('data-page');
-				if (activePage !== 'invoices' && activePage !== 'sales') return;
-				const month = String(currentSalesMonth || '');
-				if (!/^\d{4}-\d{2}$/.test(month)) return;
-				if (hasPendingSalesSyncForKey(monthStorageKey(month))) {
-					const pendingPayload = getPendingSalesSyncPayload(month) || {
-						invoices: [...salesModuleData.invoices],
-						salesOrders: [...salesModuleData.salesOrders],
-					};
-					const flushed = await mergeSyncSalesMonth(month, pendingPayload);
-					if (flushed) clearPendingSalesSync(month);
-				} else if (!SALES_SERVER_AUTHORITATIVE_MODE) {
-					await flushPendingSalesSyncToServer();
-				}
-				const key = monthStorageKey(month);
-				const serverData = await loadFromServerForceFresh(key);
-				if (month !== currentSalesMonth) return;
-				if (!serverData || typeof serverData !== 'object') return;
-				applySalesMonthPayloadToUi(month, serverData);
-			} catch (_e) { /* keep retrying */ }
-		}, 3000);
+				await refreshSalesMonthFromServer(month);
+			} catch (_e) { /* keep syncing */ }
+		}, 1200);
 	}
 
 	// ── Online Orders Tab ──
