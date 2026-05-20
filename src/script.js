@@ -175,11 +175,28 @@ function getRecordUpdatedMs(record) {
 	return Number.isFinite(ms) ? ms : 0;
 }
 
+function getRecordSignature(record) {
+	if (!record || typeof record !== 'object') return '';
+	const id = String(record.id || '').trim();
+	if (/^INV-/.test(id)) return invoiceSignature(record);
+	if (/^SO-/.test(id)) return orderSignature(record);
+	return JSON.stringify(record);
+}
+
 function pickNewerRecord(existing, incoming) {
 	if (!existing) return incoming;
 	if (!incoming) return existing;
 	const existingMs = getRecordUpdatedMs(existing);
 	const incomingMs = getRecordUpdatedMs(incoming);
+	if (existingMs > 0 && incomingMs > 0) {
+		const signaturesDiffer = getRecordSignature(existing) !== getRecordSignature(incoming);
+		const largeSkewMs = 6 * 60 * 60 * 1000;
+		if (signaturesDiffer && (existingMs - incomingMs) > largeSkewMs) {
+			// Device clocks can drift; if an existing record timestamp is far in the future,
+			// allow incoming remote edits to win so cross-device state can converge.
+			return incoming;
+		}
+	}
 	if (incomingMs >= existingMs) return incoming;
 	return existing;
 }
@@ -4946,6 +4963,26 @@ async function initSalesInvoicesPage() {
 	loadSalesDataFromStorage();
 	console.log('[Sales] Loaded month:', currentSalesMonth, '| Invoices:', salesModuleData.invoices.length, '| Orders:', salesModuleData.salesOrders.length);
 
+	const refreshSalesMonthFromServer = async (targetMonth) => {
+		try {
+			const month = String(targetMonth || currentSalesMonth || '');
+			if (!/^\d{4}-\d{2}$/.test(month)) return false;
+			const syncKey = monthStorageKey(month);
+			const serverData = await loadFromServerForceFresh(syncKey);
+			if (month !== currentSalesMonth) return false;
+			const changed = mergeServerSalesIntoMemory(serverData, month);
+			if (!changed) return false;
+			const updatedPayload = buildSalesSyncPayload(month, salesModuleData);
+			localStorage.setItem(syncKey, JSON.stringify(updatedPayload));
+			if (month !== currentSalesMonth) return false;
+			loadMonthData(month);
+			renderSalesPage();
+			return true;
+		} catch (_e) {
+			return false;
+		}
+	};
+
 	/* ── Cross-tab live sync ── */
 	if (!window.__wwSalesSyncBound) {
 		window.__wwSalesSyncBound = true;
@@ -5014,6 +5051,7 @@ async function initSalesInvoicesPage() {
 			loadMonthData(monthSelect.value);
 			populateMonthSelect({ skipLoad: true });
 			renderSalesPage();
+			refreshSalesMonthFromServer(currentSalesMonth);
 		});
 	}
 
@@ -5027,6 +5065,7 @@ async function initSalesInvoicesPage() {
 			loadMonthData(monthsForYear[monthsForYear.length - 1]);
 			populateMonthSelect({ skipLoad: true });
 			renderSalesPage();
+			refreshSalesMonthFromServer(currentSalesMonth);
 		});
 	}
 
@@ -5049,6 +5088,7 @@ async function initSalesInvoicesPage() {
 			}
 			populateMonthSelect();
 			renderSalesPage();
+			refreshSalesMonthFromServer(currentSalesMonth);
 		});
 	}
 
@@ -5834,6 +5874,7 @@ async function initSalesInvoicesPage() {
 		}
 	}
 
+	await refreshSalesMonthFromServer(currentSalesMonth);
 	renderSalesPage();
 
 	document.addEventListener('ww-refresh-sales', () => renderSalesPage());
