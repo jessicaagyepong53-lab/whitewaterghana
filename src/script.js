@@ -894,7 +894,6 @@ async function loadBulkFromServer(keys) {
 			if (json.items) {
 				for (const [k, v] of Object.entries(json.items)) {
 					if (v === null || v === undefined) continue;
-					if (hasPendingSalesSyncForKey(k)) continue;
 					// For sales month keys, merge server+local by ID to avoid losing local entries.
 					const salesMonth = getSalesMonthFromStorageKey(k);
 					if (salesMonth) {
@@ -907,8 +906,12 @@ async function loadBulkFromServer(keys) {
 						const existing = getSalesMonthPayload(salesMonth);
 						const merged = mergeSalesMonthPayloads(existing, v, salesMonth);
 						localStorage.setItem(k, JSON.stringify(merged));
+						if (areSalesPayloadsEquivalent(merged, v)) {
+							clearPendingSalesSync(salesMonth);
+						}
 						continue;
 					}
+					if (hasPendingSalesSyncForKey(k)) continue;
 					localStorage.setItem(k, JSON.stringify(v));
 				}
 				return json.items;
