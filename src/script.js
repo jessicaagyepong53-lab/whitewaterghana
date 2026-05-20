@@ -4992,6 +4992,7 @@ function invoiceTotal(invoice) {
 
 function renderInvoiceDetail(invoice) {
 	const target = document.getElementById('invoice-detail-content');
+	window.__wwSelectedInvoiceId = invoice && invoice.id ? String(invoice.id) : '';
 	if (!target || !invoice) {
 		return;
 	}
@@ -5987,6 +5988,7 @@ async function initSalesInvoicesPage() {
 		const hideMoney = window.__wwUserRole === 'supervisor' || window.__wwUserRole === 'staff';
 		const invoiceDraft = getModalDraft('invoice');
 		const orderDraft = getModalDraft('order');
+		const selectedInvoiceId = String(window.__wwSelectedInvoiceId || '');
 		if (invoiceBody) {
 			const draftRow = invoiceDraft ? `
 				<tr class="draft-row">
@@ -6026,6 +6028,9 @@ async function initSalesInvoicesPage() {
 			}).join('');
 
 			invoiceBody.querySelectorAll('tr[data-invoice-id]').forEach((row) => {
+				if (selectedInvoiceId && row.getAttribute('data-invoice-id') === selectedInvoiceId) {
+					row.classList.add('row-selected');
+				}
 				row.addEventListener('click', () => {
 					invoiceBody.querySelectorAll('tr').forEach((r) => r.classList.remove('row-selected'));
 					row.classList.add('row-selected');
@@ -6039,6 +6044,7 @@ async function initSalesInvoicesPage() {
 		const detailContent = document.getElementById('invoice-detail-content');
 		if (detailContent) {
 			if (invoiceRows.length === 0) {
+				window.__wwSelectedInvoiceId = '';
 				detailContent.innerHTML = '<p class="detail-placeholder">No invoices yet. Add one to get started.</p>';
 			} else if (!detailContent.querySelector('.detail-section')) {
 				detailContent.innerHTML = '<ul class="invoice-quick-list">' + invoiceRows.map((inv) => {
@@ -6062,6 +6068,17 @@ async function initSalesInvoicesPage() {
 						}
 					});
 				});
+			}
+			if (selectedInvoiceId) {
+				const selectedInvoice = salesModuleData.invoices.find((inv) => String(inv.id) === selectedInvoiceId);
+				if (selectedInvoice) {
+					renderInvoiceDetail(selectedInvoice);
+					if (invoiceBody) {
+						invoiceBody.querySelectorAll('tr').forEach((r) => r.classList.remove('row-selected'));
+						const matchRow = invoiceBody.querySelector(`tr[data-invoice-id="${selectedInvoice.id}"]`);
+						if (matchRow) matchRow.classList.add('row-selected');
+					}
+				}
 			}
 		}
 

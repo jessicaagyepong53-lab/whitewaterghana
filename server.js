@@ -64,8 +64,8 @@ const RESOURCE_RULES = {
   purchaseOrders: ['ceo', 'manager', 'supervisor'],
 };
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 app.use(cookieParser());
 if (IS_PROD) app.set('trust proxy', 1);
 
@@ -755,26 +755,24 @@ function normalizeSalesMonthPayload(key, payload) {
   if (!payload || typeof payload !== 'object') return payload;
 
   const invoices = Array.isArray(payload.invoices) ? payload.invoices.filter((inv) => inv && inv.id) : [];
-  const byFingerprint = new Map();
-  const byIdFallback = new Map();
+  const byId = new Map();
   for (const inv of invoices) {
-    const fp = invoiceContentFingerprint(inv);
-    if (!fp) {
-      const id = String(inv.id || '');
-      if (!id) continue;
-      byIdFallback.set(id, pickNewerRecord(byIdFallback.get(id), inv));
-      continue;
-    }
-    byFingerprint.set(fp, pickNewerRecord(byFingerprint.get(fp), inv));
+    const id = String(inv.id || '').trim();
+    if (!id) continue;
+    byId.set(id, pickNewerRecord(byId.get(id), inv));
   }
-  const dedupInvoices = [...byFingerprint.values(), ...byIdFallback.values()];
+  const dedupInvoices = [...byId.values()];
   const activeInvoiceIds = new Set(dedupInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
 
   const orders = Array.isArray(payload.salesOrders) ? payload.salesOrders.filter((ord) => ord && ord.id) : [];
-  const dedupOrders = orders.filter((ord) => {
+  const orderById = new Map();
+  for (const ord of orders) {
     const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
-    return sourceInvoiceId && activeInvoiceIds.has(sourceInvoiceId);
-  });
+    const id = String(ord.id || '').trim();
+    if (!id || !sourceInvoiceId || !activeInvoiceIds.has(sourceInvoiceId)) continue;
+    orderById.set(id, pickNewerRecord(orderById.get(id), ord));
+  }
+  const dedupOrders = [...orderById.values()];
 
   const nextDeletedInvoiceIds = (Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : [])
     .map((id) => String(id || '').trim())
