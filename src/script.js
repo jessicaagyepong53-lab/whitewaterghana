@@ -5405,12 +5405,29 @@ async function initSalesInvoicesPage() {
 			event.stopPropagation();
 			const entity = approveBtn.getAttribute('data-approve-entity');
 			const approveId = approveBtn.getAttribute('data-approve-id');
+			const nowIso = new Date().toISOString();
 			if (entity === 'invoice') {
 				const inv = salesModuleData.invoices.find((i) => String(i.id) === String(approveId));
-				if (inv) { inv.status = inv.requestedStatus || 'pending'; delete inv.requestedStatus; }
+				if (inv) {
+					inv.status = inv.requestedStatus || 'pending';
+					inv.updatedAt = nowIso;
+					delete inv.requestedStatus;
+					upsertSalesOrderFromInvoice(inv);
+				}
 			} else if (entity === 'order') {
 				const ord = salesModuleData.salesOrders.find((o) => String(o.id) === String(approveId));
-				if (ord) { ord.status = ord.requestedStatus || 'confirmed'; delete ord.requestedStatus; }
+				if (ord) {
+					ord.status = ord.requestedStatus || 'confirmed';
+					ord.updatedAt = nowIso;
+					delete ord.requestedStatus;
+					const derivedInvoiceId = `INV${String(ord.id || '').slice(2)}`;
+					const inv = salesModuleData.invoices.find((i) => String(i.id) === String(ord.sourceInvoiceId || ''))
+						|| salesModuleData.invoices.find((i) => String(i.id) === String(derivedInvoiceId));
+					if (inv) {
+						inv.status = ord.status;
+						inv.updatedAt = nowIso;
+					}
+				}
 			}
 			saveSalesDataToStorage();
 			renderSalesPage();
@@ -5423,12 +5440,15 @@ async function initSalesInvoicesPage() {
 		salesModuleData.invoices.forEach((inv) => {
 			if (inv.status === 'pending' && inv.paidDate && new Date(inv.paidDate) < today) {
 				inv.status = 'overdue';
+				inv.updatedAt = new Date().toISOString();
+				upsertSalesOrderFromInvoice(inv);
 				changed = true;
 			}
 		});
 		salesModuleData.salesOrders.forEach((order) => {
 			if (['confirmed', 'processing', 'shipped'].includes(order.status) && order.deliveryDate && new Date(order.deliveryDate) < today) {
 				order.status = 'overdue';
+				order.updatedAt = new Date().toISOString();
 				changed = true;
 			}
 		});
@@ -5462,6 +5482,8 @@ async function initSalesInvoicesPage() {
 		});
 
 		const totalInvoices = invoiceRows.length;
+		const overallSales = getAllSalesData();
+		const overallInvoiceCount = Array.isArray(overallSales.invoices) ? overallSales.invoices.length : 0;
 		const invoiceRevenue = invoiceRows.filter((inv) => inv.status === 'paid').reduce((sum, inv) => sum + inv.amount, 0);
 		const pendingInvoices = invoiceRows.filter((inv) => inv.status === 'pending').reduce((sum, inv) => sum + inv.amount, 0);
 		const pendingSales = orders.filter((o) => ['confirmed', 'processing', 'shipped'].includes(o.status)).reduce((sum, o) => sum + Number(o.amount || 0), 0);
@@ -5475,7 +5497,7 @@ async function initSalesInvoicesPage() {
 			const nonPromoBags = totalBagsSold - invoicePromo;
 			const hideMoney = window.__wwUserRole === 'supervisor' || window.__wwUserRole === 'staff';
 			stats.innerHTML = `
-				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice"></i></div><p class="s-label">Total Invoices</p><p class="s-value">${totalInvoices}</p><p class="s-meta">${orders.length} sales order${orders.length !== 1 ? 's' : ''}</p></div>
+				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice"></i></div><p class="s-label">Total Invoices (${monthLabel(currentSalesMonth)})</p><p class="s-value">${totalInvoices}</p><p class="s-meta">${orders.length} sales order${orders.length !== 1 ? 's' : ''} in ${monthLabel(currentSalesMonth)} • ${overallInvoiceCount} overall</p></div>
 				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue)}</p><p class="s-meta">From paid invoices</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-gift"></i></div><p class="s-label">Total Promo Bags</p><p class="s-value">${formatNumber(invoicePromo)}</p><p class="s-meta split-meta"><span>Total bags: ${formatNumber(totalBagsSold)}</span><span>Non-promo: ${formatNumber(nonPromoBags)}</span><span>Promo: ${formatNumber(invoicePromo)}</span></p></div>
 				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices)}</p><p class="s-meta">From pending invoices</p></div>
