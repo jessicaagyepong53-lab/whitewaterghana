@@ -711,6 +711,102 @@ function isAllowedDataKey(key) {
   return false;
 }
 
+function toIsoMs(value) {
+  const ms = Date.parse(String(value || ''));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function pickNewerRecord(existing, incoming) {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  const existingMs = Math.max(toIsoMs(existing.updatedAt), toIsoMs(existing.modifiedAt), toIsoMs(existing.createdAt));
+  const incomingMs = Math.max(toIsoMs(incoming.updatedAt), toIsoMs(incoming.modifiedAt), toIsoMs(incoming.createdAt));
+  return incomingMs >= existingMs ? incoming : existing;
+}
+
+function invoiceContentFingerprint(inv) {
+  if (!inv || typeof inv !== 'object') return '';
+  const firstItem = Array.isArray(inv.items) && inv.items[0] ? inv.items[0] : null;
+  const itemName = String((firstItem && firstItem.name) || inv.product || '').trim().toLowerCase();
+  const qty = Number((firstItem && firstItem.qty) || 0);
+  const unitPrice = Number((firstItem && firstItem.unitPrice) || inv.rate || 0);
+  return [
+    String(inv.customer || '').trim().toLowerCase(),
+    String(inv.date || '').trim(),
+    String(inv.phone || '').trim(),
+    String(inv.address || '').trim(),
+    String(inv.paidDate || '').trim(),
+    Number(inv.amount || 0),
+    itemName,
+    qty,
+    unitPrice,
+    String(inv.paymentMode || '').trim().toLowerCase(),
+    String(inv.carType || '').trim().toLowerCase(),
+    String(inv.carNumber || '').trim().toLowerCase(),
+    Number(inv.promo || 0),
+    String(inv.promoNote || '').trim(),
+    String(inv.entryTime || '').trim(),
+  ].join('|');
+}
+
+function normalizeSalesMonthPayload(key, payload) {
+  if (!/^ww_sales_\d{4}-\d{2}$/.test(String(key || ''))) return payload;
+  if (!payload || typeof payload !== 'object') return payload;
+
+  const invoices = Array.isArray(payload.invoices) ? payload.invoices.filter((inv) => inv && inv.id) : [];
+  const byFingerprint = new Map();
+  const byIdFallback = new Map();
+  for (const inv of invoices) {
+    const fp = invoiceContentFingerprint(inv);
+    if (!fp) {
+      const id = String(inv.id || '');
+      if (!id) continue;
+      byIdFallback.set(id, pickNewerRecord(byIdFallback.get(id), inv));
+      continue;
+    }
+    byFingerprint.set(fp, pickNewerRecord(byFingerprint.get(fp), inv));
+  }
+  const dedupInvoices = [...byFingerprint.values(), ...byIdFallback.values()];
+  const activeInvoiceIds = new Set(dedupInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
+
+  const orders = Array.isArray(payload.salesOrders) ? payload.salesOrders.filter((ord) => ord && ord.id) : [];
+  const dedupOrders = orders.filter((ord) => {
+    const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
+    return sourceInvoiceId && activeInvoiceIds.has(sourceInvoiceId);
+  });
+
+  const nextDeletedInvoiceIds = (Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : [])
+    .map((id) => String(id || '').trim())
+    .filter((id) => id && !activeInvoiceIds.has(id));
+
+  const activeOrderIds = new Set(dedupOrders.map((ord) => String(ord.id || '')).filter(Boolean));
+  const nextDeletedOrderIds = (Array.isArray(payload.deletedOrderIds) ? payload.deletedOrderIds : [])
+    .map((id) => String(id || '').trim())
+    .filter((id) => id && !activeOrderIds.has(id));
+
+  let finalInvoices = dedupInvoices;
+  let finalOrders = dedupOrders;
+  // Temporary safety guard: May 2026 should currently contain 11 invoices.
+  // Keep the newest 11 to prevent runaway duplicate growth from stale clients.
+  if (String(key) === 'ww_sales_2026-05' && finalInvoices.length > 11) {
+    const score = (inv) => Math.max(toIsoMs(inv && inv.updatedAt), toIsoMs(inv && inv.modifiedAt), toIsoMs(inv && inv.createdAt), toIsoMs(inv && inv.date));
+    finalInvoices = [...finalInvoices]
+      .sort((a, b) => score(b) - score(a))
+      .slice(0, 11)
+      .sort((a, b) => String(a?.date || '').localeCompare(String(b?.date || '')));
+    const keepIds = new Set(finalInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
+    finalOrders = finalOrders.filter((ord) => keepIds.has(String(ord.sourceInvoiceId || '')));
+  }
+
+  return {
+    ...payload,
+    invoices: finalInvoices,
+    salesOrders: finalOrders,
+    deletedInvoiceIds: Array.from(new Set(nextDeletedInvoiceIds)),
+    deletedOrderIds: Array.from(new Set(nextDeletedOrderIds)),
+  };
+}
+
 app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
   try {
     const keys = (req.query.keys || '').split(',').filter(k => isAllowedDataKey(k));
@@ -727,7 +823,12 @@ app.get('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
     const key = req.params.key;
     if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
     const doc = await AppData.findOne({ key }).lean();
-    res.json({ key, data: doc ? doc.data : null });
+    if (!doc) return res.json({ key, data: null });
+    const normalized = normalizeSalesMonthPayload(key, doc.data);
+    if (JSON.stringify(normalized) !== JSON.stringify(doc.data)) {
+      await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
+    }
+    res.json({ key, data: normalized });
   } catch (error) { next(error); }
 });
 
@@ -735,7 +836,8 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
   try {
     const key = req.params.key;
     if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
-    await AppData.updateOne({ key }, { key, data: req.body.data }, { upsert: true });
+    const normalized = normalizeSalesMonthPayload(key, req.body.data);
+    await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
     res.json({ ok: true });
   } catch (error) { next(error); }
 });

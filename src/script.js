@@ -182,7 +182,6 @@ function invoiceContentFingerprint(inv) {
 		Number(inv.promo || 0),
 		String(inv.promoNote || '').trim(),
 		String(inv.entryTime || '').trim(),
-		String(inv.createdAt || '').trim(),
 	].join('|');
 }
 
@@ -214,8 +213,30 @@ function orderContentFingerprint(ord) {
 		String(ord.carNumber || '').trim().toLowerCase(),
 		Number(ord.promo || 0),
 		String(ord.promoNote || '').trim(),
-		String(ord.createdAt || '').trim(),
 	].join('|');
+}
+
+function dedupeSalesRecordsByContent(records, fingerprintFn) {
+	if (!Array.isArray(records) || !records.length) return [];
+	const byFingerprint = new Map();
+	const byIdFallback = new Map();
+	for (const record of records) {
+		if (!record || !record.id) continue;
+		const fp = typeof fingerprintFn === 'function' ? String(fingerprintFn(record) || '') : '';
+		if (!fp) {
+			const id = String(record.id);
+			const existingById = byIdFallback.get(id);
+			byIdFallback.set(id, pickNewerRecord(existingById, record));
+			continue;
+		}
+		const existing = byFingerprint.get(fp);
+		if (!existing) {
+			byFingerprint.set(fp, record);
+			continue;
+		}
+		byFingerprint.set(fp, pickNewerRecord(existing, record));
+	}
+	return [...byFingerprint.values(), ...byIdFallback.values()];
 }
 
 function formatVehicleLabel(carType, carNumber) {
@@ -4161,8 +4182,8 @@ function getAllSalesData() {
 	const months = recoverSalesMonthsFromStorage();
 	const allInvoices = [];
 	const allOrders = [];
-	const seenInvoiceIds = new Set();
-	const seenOrderIds = new Set();
+	const seenInvoiceContent = new Set();
+	const seenOrderContent = new Set();
 	for (const m of months) {
 		try {
 			const stored = JSON.parse(localStorage.getItem(monthStorageKey(m)) || 'null');
@@ -4171,9 +4192,9 @@ function getAllSalesData() {
 					for (const inv of stored.invoices) {
 						if (!inv || !inv.id) continue;
 						if (getInvoiceMonth(inv) !== m) continue;
-						const id = String(inv.id);
-						if (seenInvoiceIds.has(id)) continue;
-						seenInvoiceIds.add(id);
+						const fp = invoiceContentFingerprint(inv) || invoiceSignature(inv);
+						if (fp && seenInvoiceContent.has(fp)) continue;
+						if (fp) seenInvoiceContent.add(fp);
 						allInvoices.push(inv);
 					}
 				}
@@ -4181,9 +4202,9 @@ function getAllSalesData() {
 					for (const ord of stored.salesOrders) {
 						if (!ord || !ord.id) continue;
 						if (getInvoiceMonth(ord) !== m) continue;
-						const id = String(ord.id);
-						if (seenOrderIds.has(id)) continue;
-						seenOrderIds.add(id);
+						const fp = orderContentFingerprint(ord) || orderSignature(ord);
+						if (fp && seenOrderContent.has(fp)) continue;
+						if (fp) seenOrderContent.add(fp);
 						allOrders.push(ord);
 					}
 				}
@@ -4537,6 +4558,19 @@ function loadMonthData(month) {
 			const tb = Number.isNaN(db) ? Number.MAX_SAFE_INTEGER : db;
 			return ta - tb;
 		});
+	}
+
+	// Targeted dedupe: collapse duplicate invoice/order payload rows that have
+	// the same business content but different IDs (cross-device ID divergence).
+	const dedupedInvoices = dedupeSalesRecordsByContent(salesModuleData.invoices, invoiceContentFingerprint);
+	if (dedupedInvoices.length !== salesModuleData.invoices.length) {
+		salesModuleData.invoices = dedupedInvoices;
+		dirty = true;
+	}
+	const dedupedOrders = dedupeSalesRecordsByContent(salesModuleData.salesOrders, orderContentFingerprint);
+	if (dedupedOrders.length !== salesModuleData.salesOrders.length) {
+		salesModuleData.salesOrders = dedupedOrders;
+		dirty = true;
 	}
 
 	/* Keep Sales Orders strictly 1:1 with invoices (linked by sourceInvoiceId). */
@@ -5826,49 +5860,6 @@ async function initSalesInvoicesPage() {
 	}
 
 	function renderSalesPage() {
-		// ── TEMPORARY: Sync Status Panel for Debugging ──
-		if (document.body.getAttribute('data-page') === 'invoices' || document.body.getAttribute('data-page') === 'sales') {
-			let panel = document.getElementById('ww-sync-status-panel');
-			if (!panel) {
-				panel = document.createElement('div');
-				panel.id = 'ww-sync-status-panel';
-				panel.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:9999;background:#fffbe7;border:1px solid #eab308;padding:12px 18px;border-radius:8px;box-shadow:0 2px 8px #0001;font-size:14px;color:#92400e;max-width:340px;min-width:220px;pointer-events:auto;';
-				document.body.appendChild(panel);
-			}
-			// Gather sync diagnostics
-			const month = window.currentSalesMonth || '';
-			const syncKey = typeof month === 'string' && month ? (typeof monthStorageKey === 'function' ? monthStorageKey(month) : 'ww_sales_' + month) : '';
-			const hasPending = typeof hasPendingSalesSyncForKey === 'function' ? hasPendingSalesSyncForKey(syncKey) : false;
-			const pendingPayload = typeof getPendingSalesSyncPayload === 'function' ? getPendingSalesSyncPayload(month) : null;
-			const lastServerPull = typeof getLastDataUpdateStamp === 'function' ? getLastDataUpdateStamp() : '';
-			let serverInvoiceCount = '';
-			let localInvoiceCount = '';
-			try {
-				// Try to get last server payload from protected/localStorage
-				const protectedPayload = typeof getProtectedSalesPayload === 'function' ? getProtectedSalesPayload(month) : null;
-				serverInvoiceCount = protectedPayload && Array.isArray(protectedPayload.invoices) ? protectedPayload.invoices.length : '—';
-				// Local invoice count (after merge)
-				localInvoiceCount = Array.isArray(window.salesModuleData?.invoices) ? window.salesModuleData.invoices.length : '—';
-			} catch (_e) {
-				serverInvoiceCount = 'ERR';
-				localInvoiceCount = 'ERR';
-			}
-			panel.innerHTML = `
-				<b>Sync Status (Debug)</b><br>
-				<b>Month:</b> <span style="color:#b45309">${month || '—'}</span><br>
-				<b>Pending Edits:</b> <span style="color:${hasPending ? '#dc2626' : '#16a34a'}">${hasPending ? 'YES' : 'NO'}</span><br>
-				<b>Last Server Pull:</b> <span>${lastServerPull ? lastServerPull.replace('T', ' ').replace('Z', '') : '—'}</span><br>
-				<b>Server Invoice Count:</b> <span>${serverInvoiceCount}</span><br>
-				<b>Local Invoice Count:</b> <span>${localInvoiceCount}</span><br>
-				<button id="ww-sync-status-close" style="margin-top:6px;float:right;font-size:12px;background:#fde68a;border:none;padding:2px 8px;border-radius:4px;cursor:pointer;">Hide</button>
-			`;
-			document.getElementById('ww-sync-status-close')?.addEventListener('click', () => {
-				panel.style.display = 'none';
-			});
-		} else {
-			const panel = document.getElementById('ww-sync-status-panel');
-			if (panel) panel.remove();
-		}
 		autoDetectOverdue();
 
 		const getIdNum = (id) => { const m = String(id || '').match(/(\d+)$/); return m ? Number(m[1]) : 0; };
