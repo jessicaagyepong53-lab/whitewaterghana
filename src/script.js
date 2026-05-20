@@ -849,7 +849,14 @@ async function loadFromServer(key) {
 			if (json.data !== null && json.data !== undefined) {
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
+					const hasPending = hasPendingSalesSyncForKey(key);
 					if (isCanonicalExcelMarchMonth(salesMonth)) {
+						localStorage.setItem(key, JSON.stringify(json.data));
+						setProtectedSalesPayload(salesMonth, json.data);
+						clearPendingSalesSync(salesMonth);
+						return json.data;
+					}
+					if (!hasPending) {
 						localStorage.setItem(key, JSON.stringify(json.data));
 						setProtectedSalesPayload(salesMonth, json.data);
 						clearPendingSalesSync(salesMonth);
@@ -881,13 +888,20 @@ async function loadFromServerForceFresh(key) {
 			if (json.data !== null && json.data !== undefined) {
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
-					if (hasPendingSalesSyncForKey(key)) {
+					const hasPending = hasPendingSalesSyncForKey(key);
+					if (hasPending) {
 						const localPendingPayload = getSalesMonthPayload(salesMonth);
 						if (areSalesPayloadsEquivalent(localPendingPayload, json.data)) {
 							clearPendingSalesSync(salesMonth);
 						}
 					}
 					if (isCanonicalExcelMarchMonth(salesMonth)) {
+						localStorage.setItem(key, JSON.stringify(json.data));
+						setProtectedSalesPayload(salesMonth, json.data);
+						clearPendingSalesSync(salesMonth);
+						return json.data;
+					}
+					if (!hasPending) {
 						localStorage.setItem(key, JSON.stringify(json.data));
 						setProtectedSalesPayload(salesMonth, json.data);
 						clearPendingSalesSync(salesMonth);
