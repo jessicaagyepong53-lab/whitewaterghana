@@ -711,6 +711,8 @@ async function loadFromServer(key) {
 					const localPayload = getSalesMonthPayload(salesMonth);
 					const merged = mergeSalesMonthPayloads(localPayload, json.data, salesMonth);
 					localStorage.setItem(key, JSON.stringify(merged));
+					if (areSalesPayloadsEquivalent(merged, json.data)) clearPendingSalesSync(salesMonth);
+					else queuePendingSalesSync(salesMonth, merged);
 					return merged;
 				}
 				localStorage.setItem(key, JSON.stringify(json.data));
@@ -747,6 +749,8 @@ async function loadFromServerForceFresh(key) {
 					const localPayload = getSalesMonthPayload(salesMonth);
 					const merged = mergeSalesMonthPayloads(localPayload, json.data, salesMonth);
 					localStorage.setItem(key, JSON.stringify(merged));
+					if (areSalesPayloadsEquivalent(merged, json.data)) clearPendingSalesSync(salesMonth);
+					else queuePendingSalesSync(salesMonth, merged);
 					return merged;
 				}
 				localStorage.setItem(key, JSON.stringify(json.data));
@@ -908,6 +912,8 @@ async function loadBulkFromServer(keys) {
 						localStorage.setItem(k, JSON.stringify(merged));
 						if (areSalesPayloadsEquivalent(merged, v)) {
 							clearPendingSalesSync(salesMonth);
+						} else {
+							queuePendingSalesSync(salesMonth, merged);
 						}
 						continue;
 					}
@@ -4473,6 +4479,18 @@ function seedMarchSalesData() {
 function saveSalesDataToStorage() {
 	const month = currentSalesMonth;
 	const key = monthStorageKey(month);
+	const monthInvoices = (Array.isArray(salesModuleData.invoices) ? salesModuleData.invoices : [])
+		.filter((inv) => inv && inv.id && getInvoiceMonth(inv) === month);
+	const activeInvoiceIds = new Set(monthInvoices.map((inv) => String(inv.id)).filter(Boolean));
+	const monthOrders = (Array.isArray(salesModuleData.salesOrders) ? salesModuleData.salesOrders : [])
+		.filter((ord) => {
+			if (!ord || !ord.id) return false;
+			if (ord.sourceInvoiceId) return activeInvoiceIds.has(String(ord.sourceInvoiceId));
+			const ordMonth = getInvoiceMonth(ord);
+			return !ordMonth || ordMonth === month;
+		});
+	salesModuleData.invoices = monthInvoices;
+	salesModuleData.salesOrders = monthOrders;
 	let payload = buildSalesSyncPayload(month, salesModuleData);
 	const cfg = getLockedSalesMonthConfig(month);
 	if (cfg && !isLockedSalesPayload(month, payload)) {
@@ -4553,10 +4571,16 @@ function nextInvoiceId() {
 	const monthToken = /^\d{4}-\d{2}$/.test(String(currentSalesMonth || ''))
 		? String(currentSalesMonth)
 		: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+	const monthPattern = new RegExp(`^INV-${monthToken}-(\\d+)$`);
 	const used = new Set(
 		salesModuleData.invoices
+			.filter((inv) => {
+				if (!inv || !inv.id) return false;
+				if (monthPattern.test(String(inv.id))) return true;
+				return getInvoiceMonth(inv) === monthToken;
+			})
 			.map((inv) => {
-				const m = String(inv.id || '').match(/(\d+)$/);
+				const m = String(inv.id || '').match(monthPattern) || String(inv.id || '').match(/(\d+)$/);
 				return m ? Number(m[1]) : 0;
 			})
 			.filter((n) => Number.isFinite(n) && n > 0)
@@ -4571,10 +4595,17 @@ function nextOrderId() {
 	const monthToken = /^\d{4}-\d{2}$/.test(String(currentSalesMonth || ''))
 		? String(currentSalesMonth)
 		: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+	const monthPattern = new RegExp(`^SO-${monthToken}-(\\d+)$`);
 	const used = new Set(
 		salesModuleData.salesOrders
+			.filter((ord) => {
+				if (!ord || !ord.id) return false;
+				if (monthPattern.test(String(ord.id))) return true;
+				const ordMonth = getInvoiceMonth(ord);
+				return !ordMonth || ordMonth === monthToken;
+			})
 			.map((o) => {
-				const m = String(o.id || '').match(/(\d+)$/);
+				const m = String(o.id || '').match(monthPattern) || String(o.id || '').match(/(\d+)$/);
 				return m ? Number(m[1]) : 0;
 			})
 			.filter((n) => Number.isFinite(n) && n > 0)
