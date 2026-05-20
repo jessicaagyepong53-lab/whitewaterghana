@@ -5826,6 +5826,49 @@ async function initSalesInvoicesPage() {
 	}
 
 	function renderSalesPage() {
+		// ── TEMPORARY: Sync Status Panel for Debugging ──
+		if (document.body.getAttribute('data-page') === 'invoices' || document.body.getAttribute('data-page') === 'sales') {
+			let panel = document.getElementById('ww-sync-status-panel');
+			if (!panel) {
+				panel = document.createElement('div');
+				panel.id = 'ww-sync-status-panel';
+				panel.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:9999;background:#fffbe7;border:1px solid #eab308;padding:12px 18px;border-radius:8px;box-shadow:0 2px 8px #0001;font-size:14px;color:#92400e;max-width:340px;min-width:220px;pointer-events:auto;';
+				document.body.appendChild(panel);
+			}
+			// Gather sync diagnostics
+			const month = window.currentSalesMonth || '';
+			const syncKey = typeof month === 'string' && month ? (typeof monthStorageKey === 'function' ? monthStorageKey(month) : 'ww_sales_' + month) : '';
+			const hasPending = typeof hasPendingSalesSyncForKey === 'function' ? hasPendingSalesSyncForKey(syncKey) : false;
+			const pendingPayload = typeof getPendingSalesSyncPayload === 'function' ? getPendingSalesSyncPayload(month) : null;
+			const lastServerPull = typeof getLastDataUpdateStamp === 'function' ? getLastDataUpdateStamp() : '';
+			let serverInvoiceCount = '';
+			let localInvoiceCount = '';
+			try {
+				// Try to get last server payload from protected/localStorage
+				const protectedPayload = typeof getProtectedSalesPayload === 'function' ? getProtectedSalesPayload(month) : null;
+				serverInvoiceCount = protectedPayload && Array.isArray(protectedPayload.invoices) ? protectedPayload.invoices.length : '—';
+				// Local invoice count (after merge)
+				localInvoiceCount = Array.isArray(window.salesModuleData?.invoices) ? window.salesModuleData.invoices.length : '—';
+			} catch (_e) {
+				serverInvoiceCount = 'ERR';
+				localInvoiceCount = 'ERR';
+			}
+			panel.innerHTML = `
+				<b>Sync Status (Debug)</b><br>
+				<b>Month:</b> <span style="color:#b45309">${month || '—'}</span><br>
+				<b>Pending Edits:</b> <span style="color:${hasPending ? '#dc2626' : '#16a34a'}">${hasPending ? 'YES' : 'NO'}</span><br>
+				<b>Last Server Pull:</b> <span>${lastServerPull ? lastServerPull.replace('T', ' ').replace('Z', '') : '—'}</span><br>
+				<b>Server Invoice Count:</b> <span>${serverInvoiceCount}</span><br>
+				<b>Local Invoice Count:</b> <span>${localInvoiceCount}</span><br>
+				<button id="ww-sync-status-close" style="margin-top:6px;float:right;font-size:12px;background:#fde68a;border:none;padding:2px 8px;border-radius:4px;cursor:pointer;">Hide</button>
+			`;
+			document.getElementById('ww-sync-status-close')?.addEventListener('click', () => {
+				panel.style.display = 'none';
+			});
+		} else {
+			const panel = document.getElementById('ww-sync-status-panel');
+			if (panel) panel.remove();
+		}
 		autoDetectOverdue();
 
 		const getIdNum = (id) => { const m = String(id || '').match(/(\d+)$/); return m ? Number(m[1]) : 0; };
