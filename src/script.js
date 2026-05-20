@@ -3840,12 +3840,40 @@ function normalizeMonthSalesRecords(month, invoices, orders) {
 	const keepInvoices = invoiceResult.keep;
 	const movedByMonth = {};
 	const invoiceById = new Map(keepInvoices.map((inv) => [String(inv.id), inv]));
+	const movedInvoiceById = new Map();
+	for (const [targetMonth, movedInvoices] of Object.entries(invoiceResult.movedByMonth || {})) {
+		if (!Array.isArray(movedInvoices) || !movedInvoices.length) continue;
+		movedByMonth[targetMonth] = movedByMonth[targetMonth] || [];
+		movedInvoices.forEach((inv) => {
+			if (!inv || !inv.id) return;
+			movedInvoiceById.set(String(inv.id), { targetMonth, invoice: inv });
+			movedByMonth[targetMonth].push({ invoice: inv, order: null });
+		});
+	}
 	const keepOrders = (Array.isArray(orders) ? orders : []).filter((ord) => {
 		if (!ord || !ord.id) return false;
 		const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
+		if (sourceInvoiceId && movedInvoiceById.has(sourceInvoiceId)) {
+			const moved = movedInvoiceById.get(sourceInvoiceId);
+			if (moved && moved.targetMonth) {
+				const rows = movedByMonth[moved.targetMonth] || [];
+				const row = rows.find((r) => r && r.invoice && String(r.invoice.id) === sourceInvoiceId);
+				if (row) row.order = ord;
+			}
+			return false;
+		}
 		const linkedInvoice = sourceInvoiceId ? invoiceById.get(sourceInvoiceId) : null;
 		if (linkedInvoice) return true;
 		const derivedInvoiceId = `INV${String(ord.id || '').slice(2)}`;
+		if (movedInvoiceById.has(derivedInvoiceId)) {
+			const moved = movedInvoiceById.get(derivedInvoiceId);
+			if (moved && moved.targetMonth) {
+				const rows = movedByMonth[moved.targetMonth] || [];
+				const row = rows.find((r) => r && r.invoice && String(r.invoice.id) === derivedInvoiceId);
+				if (row) row.order = ord;
+			}
+			return false;
+		}
 		if (invoiceById.has(derivedInvoiceId)) return true;
 		const ordMonth = getInvoiceMonth(ord);
 		return !ordMonth || ordMonth === month;
@@ -5283,8 +5311,24 @@ async function initSalesInvoicesPage() {
 		return Number.isFinite(v) && v >= 0 ? v : 0;
 	};
 
-	// Allow saving invoices for any date, regardless of selected month
-	const validateEntryMonth = (_fieldId, _isoDate) => true;
+	const validateEntryMonth = (fieldId, isoDate) => {
+		const value = String(isoDate || '').trim();
+		if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+			setFieldValidationError(fieldId, 'Please provide a valid date.');
+			const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
+			if (summary) summary.textContent = 'Please fix the highlighted date field.';
+			return false;
+		}
+		const selectedMonth = String(currentSalesMonth || '').trim();
+		if (!/^\d{4}-\d{2}$/.test(selectedMonth)) return true;
+		if (value.slice(0, 7) === selectedMonth) return true;
+		setFieldValidationError(fieldId, `Date must be within ${monthLabel(selectedMonth)}.`);
+		const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
+		if (summary) summary.textContent = `Entries in this view must use a ${monthLabel(selectedMonth)} date.`;
+		const dateField = document.getElementById(`si-field-${fieldId}`);
+		if (dateField) dateField.focus();
+		return false;
+	};
 
 	if (modalForm && !modalForm.dataset.bound) {
 		modalForm.dataset.bound = '1';
