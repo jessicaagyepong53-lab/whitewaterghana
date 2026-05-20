@@ -515,7 +515,33 @@ async function mergeSyncSalesMonth(month, localData) {
 			}
 		}
 	} catch (_e) { /* fall back to local-only push */ }
-	return syncToServer(key, toSync);
+
+	const pushed = await syncToServer(key, toSync);
+	if (!pushed) return false;
+
+	// Concurrency guard: if another device wrote between our fetch and put,
+	// re-fetch and push one reconciled union so both devices converge.
+	try {
+		const latestRes = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), { credentials: 'include', cache: 'no-store' });
+		if (!latestRes.ok) return true;
+		const latestJson = await latestRes.json();
+		const latestData = latestJson && latestJson.data;
+		if (!latestData || typeof latestData !== 'object') return true;
+
+		const reconciled = mergeSalesMonthPayloads(latestData, toSync, month);
+		if (areSalesPayloadsEquivalent(reconciled, latestData)) return true;
+
+		const reconciledOk = await syncToServer(key, reconciled);
+		if (!reconciledOk) return true;
+
+		localStorage.setItem(key, JSON.stringify(reconciled));
+		if (month === currentSalesMonth) {
+			salesModuleData.invoices = Array.isArray(reconciled.invoices) ? [...reconciled.invoices] : [];
+			salesModuleData.salesOrders = Array.isArray(reconciled.salesOrders) ? [...reconciled.salesOrders] : [];
+		}
+	} catch (_e) { /* keep optimistic success */ }
+
+	return true;
 }
 
 async function flushPendingSalesSyncToServer() {
