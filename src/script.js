@@ -146,6 +146,28 @@ function formatVehicleLabel(carType, carNumber) {
 	return number;
 }
 
+function getInvoiceDisplayId(invoice) {
+	if (!invoice || !invoice.id) return String(invoice?.id || '');
+	const monthToken = /^\d{4}-\d{2}$/.test(String(currentSalesMonth || ''))
+		? String(currentSalesMonth)
+		: String(getInvoiceMonth(invoice) || '').trim();
+	if (!monthToken) return String(invoice.id);
+	const invoices = (Array.isArray(salesModuleData.invoices) ? salesModuleData.invoices : [])
+		.filter((inv) => inv && inv.id && getInvoiceMonth(inv) === monthToken)
+		.sort((a, b) => {
+			const da = String(a.date || a.orderDate || '');
+			const db = String(b.date || b.orderDate || '');
+			const dateDiff = da.localeCompare(db);
+			if (dateDiff !== 0) return dateDiff;
+			const na = Number(String(a.id || '').match(/(\d+)$/)?.[1] || 0);
+			const nb = Number(String(b.id || '').match(/(\d+)$/)?.[1] || 0);
+			return na - nb;
+		});
+	const idx = invoices.findIndex((inv) => String(inv.id) === String(invoice.id));
+	if (idx < 0) return String(invoice.id);
+	return `INV-${monthToken}-${String(idx + 1).padStart(3, '0')}`;
+}
+
 function getRecordUpdatedMs(record) {
 	if (!record || typeof record !== 'object') return 0;
 	const raw = record.updatedAt || record.modifiedAt || record.createdAt || '';
@@ -269,7 +291,8 @@ function mergeSalesMonthPayloads(localPayload, incomingPayload, month) {
 	incomingInv.forEach((inv) => {
 		if (!inv || !inv.id) return;
 		const id = String(inv.id);
-		if (!invById.has(id)) invById.set(id, inv);
+		const existing = invById.get(id);
+		invById.set(id, pickNewerRecord(existing, inv));
 	});
 
 	const ordById = new Map();
@@ -279,7 +302,8 @@ function mergeSalesMonthPayloads(localPayload, incomingPayload, month) {
 	incomingOrd.forEach((ord) => {
 		if (!ord || !ord.id) return;
 		const id = String(ord.id);
-		if (!ordById.has(id)) ordById.set(id, ord);
+		const existing = ordById.get(id);
+		ordById.set(id, pickNewerRecord(existing, ord));
 	});
 
 	const deletedInvoiceIds = normalizeIdArray([...(local.deletedInvoiceIds || []), ...(incoming.deletedInvoiceIds || [])]);
@@ -434,8 +458,9 @@ async function mergeSyncSalesMonth(month, localData) {
 					if (!ord) return '';
 					const src = String(ord.sourceInvoiceId || '').trim();
 					if (src) return src;
-					const m = String(ord.id || '').match(/^SO-(\d{4})-(\d{3})$/);
-					return m ? `INV-${m[1]}-${m[2]}` : '';
+					const m = String(ord.id || '').match(/^SO-(\d{4})(?:-(\d{2}))?-(\d{3})$/);
+					if (!m) return '';
+					return m[2] ? `INV-${m[1]}-${m[2]}-${m[3]}` : `INV-${m[1]}-${m[3]}`;
 				};
 
 				const activeInvoiceIds = new Set(mergedInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
@@ -748,8 +773,9 @@ function mergeServerSalesIntoMemory(serverData) {
 		if (!ord) return '';
 		const source = String(ord.sourceInvoiceId || '').trim();
 		if (source) return source;
-		const m = String(ord.id || '').match(/^SO-(\d{4})-(\d{3})$/);
-		return m ? `INV-${m[1]}-${m[2]}` : '';
+		const m = String(ord.id || '').match(/^SO-(\d{4})(?:-(\d{2}))?-(\d{3})$/);
+		if (!m) return '';
+		return m[2] ? `INV-${m[1]}-${m[2]}-${m[3]}` : `INV-${m[1]}-${m[3]}`;
 	};
 	const protectedPayload = getProtectedSalesPayload(currentSalesMonth);
 	if (protectedPayload) {
@@ -4115,8 +4141,9 @@ function runOneTimeSalesYearResequenceMigration() {
 		if (!ord) return '';
 		const source = String(ord.sourceInvoiceId || '').trim();
 		if (source) return source;
-		const m = String(ord.id || '').match(/^SO-(\d{4})-(\d{3})$/);
-		return m ? `INV-${m[1]}-${m[2]}` : '';
+		const m = String(ord.id || '').match(/^SO-(\d{4})(?:-(\d{2}))?-(\d{3})$/);
+		if (!m) return '';
+		return m[2] ? `INV-${m[1]}-${m[2]}-${m[3]}` : `INV-${m[1]}-${m[3]}`;
 	};
 	const getIdNum = (id) => {
 		const m = String(id || '').match(/(\d+)$/);
@@ -4510,7 +4537,7 @@ function resequenceSalesIdsForCurrentMonth() {
 	const orderedOrders = [...orders].sort((a, b) => byDateThenId(a, b, 'orderDate', 'orderDate'));
 	orderedOrders.forEach((ord) => {
 		if (!ord) return;
-		if (ord.sourceInvoiceId && /^SO-\d{4}-\d{3}$/.test(String(ord.id || '')) && usedOrderNums.has(getIdNum(ord.id))) return;
+		if (ord.sourceInvoiceId && /^SO-\d{4}(?:-\d{2})?-\d{3}$/.test(String(ord.id || '')) && usedOrderNums.has(getIdNum(ord.id))) return;
 		while (usedOrderNums.has(nextOrderNum)) nextOrderNum += 1;
 		ord.id = `SO-${year}-${String(nextOrderNum).padStart(3, '0')}`;
 		usedOrderNums.add(nextOrderNum);
@@ -4519,11 +4546,12 @@ function resequenceSalesIdsForCurrentMonth() {
 }
 
 function nextInvoiceId() {
-	// Invoice numbering is year-wide, so scan all sales months in the active year.
-	const year = String(currentSalesMonth || `${new Date().getFullYear()}-01`).slice(0, 4);
-	const yearInvoices = getSalesYearPayloads(year).flatMap((payload) => Array.isArray(payload.invoices) ? payload.invoices : []);
+	// Numbering resets each month.
+	const monthToken = /^\d{4}-\d{2}$/.test(String(currentSalesMonth || ''))
+		? String(currentSalesMonth)
+		: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
 	const used = new Set(
-		[...yearInvoices, ...salesModuleData.invoices]
+		salesModuleData.invoices
 			.map((inv) => {
 				const m = String(inv.id || '').match(/(\d+)$/);
 				return m ? Number(m[1]) : 0;
@@ -4532,12 +4560,14 @@ function nextInvoiceId() {
 	);
 	let next = 1;
 	while (used.has(next)) next += 1;
-	return `INV-${year}-${String(next).padStart(3, '0')}`;
+	return `INV-${monthToken}-${String(next).padStart(3, '0')}`;
 }
 
 function nextOrderId() {
 	// Numbering resets each month — choose the next missing number in this month
-	const year = String(currentSalesMonth || `${new Date().getFullYear()}-01`).slice(0, 4);
+	const monthToken = /^\d{4}-\d{2}$/.test(String(currentSalesMonth || ''))
+		? String(currentSalesMonth)
+		: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
 	const used = new Set(
 		salesModuleData.salesOrders
 			.map((o) => {
@@ -4548,7 +4578,7 @@ function nextOrderId() {
 	);
 	let next = 1;
 	while (used.has(next)) next += 1;
-	return `SO-${year}-${String(next).padStart(3, '0')}`;
+	return `SO-${monthToken}-${String(next).padStart(3, '0')}`;
 }
 
 function upsertSalesOrderFromInvoice(invoice) {
@@ -4596,7 +4626,7 @@ function renderInvoiceDetail(invoice) {
 	const subTotal = items.reduce((sum, it) => sum + (it.qty * it.unitPrice), 0);
 	const deliveryFee = Number(invoice.deliveryFee || 0);
 	const total = subTotal + deliveryFee;
-	const invNo = String(invoice.id || '').replace(/^INV-\d{4}-/, 'WWW');
+	const invNo = getInvoiceDisplayId(invoice).replace(/^INV-\d{4}(?:-\d{2})?-/, 'WWW');
 	const invIsApprover = canEditDelete(window.__wwUserRole || 'staff');
 	const pendingBanner = invoice.status === 'pending_approval'
 		? `<div class="approval-banner"><i class="fa-solid fa-hourglass-half"></i> Pending Approval${invIsApprover ? ' — <button class="btn-approve-inline inv-detail-approve-btn">Approve</button>' : ''}</div>`
@@ -5555,7 +5585,7 @@ async function initSalesInvoicesPage() {
 					: '';
 				return `
 					<tr class="selectable" data-invoice-id="${invoice.id}">
-						<td>${invoice.id}</td>
+						<td>${getInvoiceDisplayId(invoice)}</td>
 						<td>${invoice.customer}${invoice.entryTime ? `<small style="display:block;color:#6b7280">${invoice.entryTime}</small>` : ''}</td>
 						<td>${invoice.promo ? invoice.promo + (invoice.promoNote ? ' <small style="color:#6b7280">(' + invoice.promoNote + ')</small>' : '') : ''}</td>
 						<td>${invoice.items && invoice.items[0] ? invoice.items[0].qty : ''}</td>
@@ -5589,7 +5619,7 @@ async function initSalesInvoicesPage() {
 				detailContent.innerHTML = '<ul class="invoice-quick-list">' + invoiceRows.map((inv) => {
 					const statusLabel = inv.status === 'pending_approval' ? 'Pending Approval' : inv.status;
 					return `<li class="invoice-quick-item" data-qid="${inv.id}">
-						<span class="iq-id">${inv.id}</span>
+						<span class="iq-id">${getInvoiceDisplayId(inv)}</span>
 						<span class="iq-customer">${inv.customer}</span>
 						<span class="iq-amount">${formatCurrency(inv.amount)}</span>
 						<span class="status-pill ${statusPillClass(inv.status)}">${statusLabel}</span>
@@ -9042,42 +9072,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 				const remoteStamp = typeof json.data === 'string' ? json.data : '';
 				if (!remoteStamp) return;
 				const localStamp = window.__wwLastSeenDataUpdate || getLastDataUpdateStamp();
-				if (localStamp && new Date(remoteStamp).getTime() < new Date(localStamp).getTime()) return;
+				if (localStamp && String(remoteStamp) === String(localStamp)) return;
 				setLastDataUpdateStamp(remoteStamp);
 				window.__wwLastSeenDataUpdate = remoteStamp;
 				console.info('[Sync] Remote data changed — pulling latest data...');
-				// Flush any local unsynced changes first, then force-load server data,
-				// merge other devices' new entries into local memory, and re-render.
+				// Flush unsynced local changes, then pull latest keys and broadcast refresh
+				// so open pages update automatically without manual reload.
 				try {
-					if (currentSalesMonth) {
-						const month = currentSalesMonth;
-						if (!/^\d{4}-\d{2}$/.test(String(month || ''))) return;
-						if (!getSalesMonths().includes(month)) return;
-						const syncKey = monthStorageKey(month);
-						// Pull latest server state and merge additions into memory.
-						const serverData = await loadFromServerForceFresh(syncKey);
-						const hadNew = mergeServerSalesIntoMemory(serverData);
-						// Preserve tombstones when writing back to localStorage
-						const updatedPayload = buildSalesSyncPayload(month, salesModuleData);
-						localStorage.setItem(syncKey, JSON.stringify(updatedPayload));
-
-						// Only push back when this month has local pending changes.
-						// Avoid unconditional write-back here; it can create a 5s sync loop
-						// (remote stamp keeps changing) and causes UI blinking/re-renders.
-						if (hasPendingSalesSyncForKey(syncKey)) {
-							const snapshot = { invoices: [...salesModuleData.invoices], salesOrders: [...salesModuleData.salesOrders] };
-							const ok = await mergeSyncSalesMonth(month, snapshot);
-							if (ok) clearPendingSalesSync(month);
-						}
-
-						if (hadNew) {
-							// Re-render only when something actually changed locally.
-							document.dispatchEvent(new Event('ww-refresh-sales'));
-						}
+					await flushPendingSalesSyncToServer();
+					await pullRemoteDataAndRefreshUi();
+					if (currentSalesMonth && document.body.getAttribute('data-page') && ['invoices', 'sales'].includes(document.body.getAttribute('data-page'))) {
+						loadMonthData(currentSalesMonth);
+						document.dispatchEvent(new Event('ww-refresh-sales'));
 					}
 				} catch (_pullErr) { /* ignore */ }
 			} catch (_e) { /* keep polling */ }
-		}, 5000);
+		}, 2000);
 	}
 
 	initDashboardPage();
