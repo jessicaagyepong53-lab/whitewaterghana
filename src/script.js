@@ -1,6 +1,7 @@
 const API_BASE = '';
 const LAST_DATA_UPDATE_KEY = 'ww_last_data_update';
 const SALES_PENDING_SYNC_PREFIX = 'ww_pending_sales_sync_';
+const SALES_PENDING_SYNC_TS_PREFIX = 'ww_pending_sales_sync_ts_';
 const LOCKED_SALES_MONTHS = {};
 const SALES_PROTECTED_PREFIX = 'ww_sales_protected_';
 const SALES_VERSION_PREFIX = 'ww_sales_version_';
@@ -10,6 +11,10 @@ const LEGACY_MARCH_SALES_CLEANUP_KEY = 'ww_march2026_sales_cleanup_v2';
 
 function getPendingSalesSyncKey(month) {
 	return `${SALES_PENDING_SYNC_PREFIX}${month}`;
+}
+
+function getPendingSalesSyncTsKey(month) {
+	return `${SALES_PENDING_SYNC_TS_PREFIX}${month}`;
 }
 
 function getSalesMonthFromStorageKey(key) {
@@ -34,13 +39,25 @@ function isCanonicalExcelMarchMonth(monthOrKey) {
 function hasPendingSalesSyncForKey(key) {
 	const month = getSalesMonthFromStorageKey(key);
 	if (!month) return false;
-	return !!localStorage.getItem(getPendingSalesSyncKey(month));
+	const payloadRaw = localStorage.getItem(getPendingSalesSyncKey(month));
+	if (!payloadRaw) return false;
+	const tsRaw = localStorage.getItem(getPendingSalesSyncTsKey(month));
+	const ts = Number(tsRaw || '0');
+	if (!Number.isFinite(ts) || ts <= 0) return true;
+	const ageMs = Date.now() - ts;
+	const staleMs = 30000;
+	if (ageMs > staleMs) {
+		clearPendingSalesSync(month);
+		return false;
+	}
+	return true;
 }
 
 function queuePendingSalesSync(month, data) {
 	if (!month) return;
 	try {
 		localStorage.setItem(getPendingSalesSyncKey(month), JSON.stringify(data));
+		localStorage.setItem(getPendingSalesSyncTsKey(month), String(Date.now()));
 	} catch (_e) { /* ignore */ }
 }
 
@@ -48,6 +65,7 @@ function clearPendingSalesSync(month) {
 	if (!month) return;
 	try {
 		localStorage.removeItem(getPendingSalesSyncKey(month));
+		localStorage.removeItem(getPendingSalesSyncTsKey(month));
 	} catch (_e) { /* ignore */ }
 }
 
@@ -123,6 +141,32 @@ function invoiceSignature(inv) {
 	].join('|');
 }
 
+function invoiceContentFingerprint(inv) {
+	if (!inv || typeof inv !== 'object') return '';
+	const firstItem = Array.isArray(inv.items) && inv.items[0] ? inv.items[0] : null;
+	const itemName = String((firstItem && firstItem.name) || inv.product || '').trim().toLowerCase();
+	const qty = Number((firstItem && firstItem.qty) || 0);
+	const unitPrice = Number((firstItem && firstItem.unitPrice) || inv.rate || 0);
+	return [
+		String(inv.customer || '').trim().toLowerCase(),
+		String(inv.date || '').trim(),
+		String(inv.phone || '').trim(),
+		String(inv.address || '').trim(),
+		String(inv.paidDate || '').trim(),
+		Number(inv.amount || 0),
+		itemName,
+		qty,
+		unitPrice,
+		String(inv.paymentMode || '').trim().toLowerCase(),
+		String(inv.carType || '').trim().toLowerCase(),
+		String(inv.carNumber || '').trim().toLowerCase(),
+		Number(inv.promo || 0),
+		String(inv.promoNote || '').trim(),
+		String(inv.entryTime || '').trim(),
+		String(inv.createdAt || '').trim(),
+	].join('|');
+}
+
 function orderSignature(ord) {
 	if (!ord || typeof ord !== 'object') return '';
 	return [
@@ -135,6 +179,23 @@ function orderSignature(ord) {
 		String(ord.carType || '').trim().toLowerCase(),
 		String(ord.carNumber || '').trim().toLowerCase(),
 		String(ord.sourceInvoiceId || '').trim(),
+	].join('|');
+}
+
+function orderContentFingerprint(ord) {
+	if (!ord || typeof ord !== 'object') return '';
+	return [
+		String(ord.customer || '').trim().toLowerCase(),
+		String(ord.orderDate || ord.date || '').trim(),
+		Number(ord.amount || 0),
+		Number(ord.rate || 0),
+		Number(ord.bags || 0),
+		String(ord.paymentMode || '').trim().toLowerCase(),
+		String(ord.carType || '').trim().toLowerCase(),
+		String(ord.carNumber || '').trim().toLowerCase(),
+		Number(ord.promo || 0),
+		String(ord.promoNote || '').trim(),
+		String(ord.createdAt || '').trim(),
 	].join('|');
 }
 
@@ -335,7 +396,17 @@ function mergeSalesMonthPayloads(localPayload, incomingPayload, month) {
 		if (month && invMonth && invMonth !== month) return false;
 		return true;
 	});
-	const activeInvoiceIds = new Set(invoices.map((inv) => String(inv.id)).filter(Boolean));
+	const dedupedInvoicesByFingerprint = new Map();
+	invoices.forEach((inv) => {
+		const fp = invoiceContentFingerprint(inv);
+		if (!fp) {
+			dedupedInvoicesByFingerprint.set(`id:${String(inv.id)}`, pickNewerRecord(dedupedInvoicesByFingerprint.get(`id:${String(inv.id)}`), inv));
+			return;
+		}
+		dedupedInvoicesByFingerprint.set(fp, pickNewerRecord(dedupedInvoicesByFingerprint.get(fp), inv));
+	});
+	const dedupedInvoices = Array.from(dedupedInvoicesByFingerprint.values()).filter(Boolean);
+	const activeInvoiceIds = new Set(dedupedInvoices.map((inv) => String(inv.id)).filter(Boolean));
 	const salesOrders = Array.from(ordById.values()).filter((ord) => {
 		if (!ord || !ord.id) return false;
 		if (delOrd.has(String(ord.id))) return false;
@@ -345,11 +416,25 @@ function mergeSalesMonthPayloads(localPayload, incomingPayload, month) {
 		if (month && ordMonth && ordMonth !== month) return false;
 		return true;
 	});
+	const dedupedOrdersByFingerprint = new Map();
+	salesOrders.forEach((ord) => {
+		const fp = orderContentFingerprint(ord);
+		if (!fp) {
+			dedupedOrdersByFingerprint.set(`id:${String(ord.id)}`, pickNewerRecord(dedupedOrdersByFingerprint.get(`id:${String(ord.id)}`), ord));
+			return;
+		}
+		dedupedOrdersByFingerprint.set(fp, pickNewerRecord(dedupedOrdersByFingerprint.get(fp), ord));
+	});
+	const dedupedOrders = Array.from(dedupedOrdersByFingerprint.values()).filter((ord) => {
+		if (!ord || !ord.id) return false;
+		if (ord.sourceInvoiceId && !activeInvoiceIds.has(String(ord.sourceInvoiceId))) return false;
+		return true;
+	});
 
 	const localVersion = sanitizeSalesPayloadVersion(local);
 	const incomingVersion = sanitizeSalesPayloadVersion(incoming);
 	const mergedVersion = Math.max(localVersion, incomingVersion);
-	return { invoices, salesOrders, deletedInvoiceIds, deletedOrderIds, ...(mergedVersion > 0 ? { __wwLocalVersion: mergedVersion } : {}) };
+	return { invoices: dedupedInvoices, salesOrders: dedupedOrders, deletedInvoiceIds, deletedOrderIds, ...(mergedVersion > 0 ? { __wwLocalVersion: mergedVersion } : {}) };
 }
 
 function areSalesPayloadsEquivalent(localPayload, incomingPayload) {
@@ -641,7 +726,7 @@ async function clearSalesBrowserCacheIfServerEmpty() {
 				keysToRemove.push(key);
 				continue;
 			}
-			if (key.startsWith('ww_sales_') || key.startsWith('ww_pending_sales_sync_') || key.startsWith('ww_sales_protected_') || key.startsWith('ww_sales_version_')) {
+			if (key.startsWith('ww_sales_') || key.startsWith('ww_pending_sales_sync_') || key.startsWith('ww_pending_sales_sync_ts_') || key.startsWith('ww_sales_protected_') || key.startsWith('ww_sales_version_')) {
 				keysToRemove.push(key);
 			}
 		}
@@ -672,6 +757,7 @@ async function reloadSalesMonthsFromServerHard() {
 			if (match && match[1] && !monthSet.has(match[1])) {
 				keysToRemove.push(key);
 				keysToRemove.push(getPendingSalesSyncKey(match[1]));
+				keysToRemove.push(getPendingSalesSyncTsKey(match[1]));
 				keysToRemove.push(getSalesProtectedKey(match[1]));
 				keysToRemove.push(getSalesVersionKey(match[1]));
 			}
@@ -757,13 +843,6 @@ async function loadFromServer(key) {
 		if (res.ok) {
 			const json = await res.json();
 			if (json.data !== null && json.data !== undefined) {
-				if (hasPendingSalesSyncForKey(key)) {
-					try {
-						return JSON.parse(localStorage.getItem(key) || 'null');
-					} catch (_e) {
-						return json.data;
-					}
-				}
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
 					if (isCanonicalExcelMarchMonth(salesMonth)) {
@@ -906,8 +985,8 @@ function mergeServerSalesIntoMemory(serverData, targetMonth) {
 
 	const localInvIds = new Set(salesModuleData.invoices.map((inv) => String(inv.id)));
 	const localOrdIds = new Set(salesModuleData.salesOrders.map((ord) => String(ord.id)));
-	const localInvSignatures = new Set(salesModuleData.invoices.map((inv) => invoiceSignature(inv)).filter(Boolean));
-	const localOrdSignatures = new Set(salesModuleData.salesOrders.map((ord) => orderSignature(ord)).filter(Boolean));
+	const localInvSignatures = new Set(salesModuleData.invoices.map((inv) => invoiceContentFingerprint(inv)).filter(Boolean));
+	const localOrdSignatures = new Set(salesModuleData.salesOrders.map((ord) => orderContentFingerprint(ord)).filter(Boolean));
 	const localInvIndexById = new Map(salesModuleData.invoices.map((inv, idx) => [String(inv.id), idx]));
 	const localOrdIndexById = new Map(salesModuleData.salesOrders.map((ord, idx) => [String(ord.id), idx]));
 	let changed = false;
@@ -925,7 +1004,7 @@ function mergeServerSalesIntoMemory(serverData, targetMonth) {
 			}
 			return;
 		}
-		const sig = invoiceSignature(inv);
+		const sig = invoiceContentFingerprint(inv);
 		if (!localInvIds.has(invId) && !(sig && localInvSignatures.has(sig))) {
 			salesModuleData.invoices.push(inv);
 			localInvIds.add(invId);
@@ -953,7 +1032,7 @@ function mergeServerSalesIntoMemory(serverData, targetMonth) {
 			}
 			return;
 		}
-		const sig = orderSignature(ord);
+		const sig = orderContentFingerprint(ord);
 		if (!localOrdIds.has(ordId) && !(sig && localOrdSignatures.has(sig))) {
 			salesModuleData.salesOrders.push(ord);
 			localOrdIds.add(ordId);
@@ -3900,7 +3979,7 @@ function getInvoiceMonth(invoice) {
 function normalizeMonthInvoices(month, invoices) {
 	const keep = [];
 	const movedByMonth = {};
-	const seenSignatures = new Set();
+	const keepByFingerprint = new Map();
 	for (const inv of Array.isArray(invoices) ? invoices : []) {
 		if (!inv || !inv.id) continue;
 		const invMonth = getInvoiceMonth(inv);
@@ -3909,11 +3988,12 @@ function normalizeMonthInvoices(month, invoices) {
 			movedByMonth[invMonth].push(inv);
 			continue;
 		}
-		const sig = invoiceSignature(inv);
-		if (sig && seenSignatures.has(sig)) continue;
-		if (sig) seenSignatures.add(sig);
-		keep.push(inv);
+		const fp = invoiceContentFingerprint(inv);
+		const key = fp || `id:${String(inv.id)}`;
+		const existing = keepByFingerprint.get(key);
+		keepByFingerprint.set(key, pickNewerRecord(existing, inv));
 	}
+	keepByFingerprint.forEach((inv) => { if (inv) keep.push(inv); });
 	return { keep, movedByMonth };
 }
 
@@ -4372,6 +4452,9 @@ function loadMonthData(month) {
 			const rawInvoices = (Array.isArray(stored.invoices) ? stored.invoices : []).filter((inv) => inv && inv.id);
 			const rawOrders = (Array.isArray(stored.salesOrders) ? stored.salesOrders : []).filter((ord) => ord && ord.id);
 			const normalizedMonthRecords = normalizeMonthSalesRecords(month, rawInvoices, rawOrders);
+			if (normalizedMonthRecords.keepInvoices.length !== rawInvoices.length || normalizedMonthRecords.keepOrders.length !== rawOrders.length) {
+				dirty = true;
+			}
 			if (Object.keys(normalizedMonthRecords.movedByMonth || {}).length) {
 				for (const [targetMonth, movedRows] of Object.entries(normalizedMonthRecords.movedByMonth)) {
 					const movedInvoices = movedRows.map((row) => row.invoice).filter(Boolean);
@@ -4968,6 +5051,14 @@ async function initSalesInvoicesPage() {
 			const month = String(targetMonth || currentSalesMonth || '');
 			if (!/^\d{4}-\d{2}$/.test(month)) return false;
 			const syncKey = monthStorageKey(month);
+			if (hasPendingSalesSyncForKey(syncKey)) {
+				const snapshot = {
+					invoices: [...salesModuleData.invoices],
+					salesOrders: [...salesModuleData.salesOrders],
+				};
+				const flushed = await mergeSyncSalesMonth(month, snapshot);
+				if (flushed) clearPendingSalesSync(month);
+			}
 			const serverData = await loadFromServerForceFresh(syncKey);
 			if (month !== currentSalesMonth) return false;
 			const changed = mergeServerSalesIntoMemory(serverData, month);
