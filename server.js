@@ -785,8 +785,20 @@ function normalizeSalesMonthPayload(key, payload) {
     .map((id) => String(id || '').trim())
     .filter((id) => id && !activeOrderIds.has(id));
 
-  const finalInvoices = dedupInvoices;
-  const finalOrders = dedupOrders;
+  let finalInvoices = dedupInvoices;
+  // Safety guard: if May payload balloons due stale client merges, keep newest 11.
+  if (String(key) === 'ww_sales_2026-05' && finalInvoices.length > 11) {
+    const score = (inv) => Math.max(toIsoMs(inv && inv.updatedAt), toIsoMs(inv && inv.modifiedAt), toIsoMs(inv && inv.createdAt), toIsoMs(inv && inv.date));
+    finalInvoices = [...finalInvoices]
+      .sort((a, b) => score(b) - score(a))
+      .slice(0, 11)
+      .sort((a, b) => String(a?.date || '').localeCompare(String(b?.date || '')));
+  }
+  const finalInvoiceIds = new Set(finalInvoices.map((inv) => String(inv?.id || '')).filter(Boolean));
+  const finalOrders = dedupOrders.filter((ord) => {
+    const sourceInvoiceId = String(ord?.sourceInvoiceId || '').trim();
+    return sourceInvoiceId && finalInvoiceIds.has(sourceInvoiceId);
+  });
 
   return {
     ...payload,
@@ -803,7 +815,13 @@ app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
     if (!keys.length) return res.json({ items: [] });
     const docs = await AppData.find({ key: { $in: keys } }).lean();
     const map = {};
-    docs.forEach(d => { map[d.key] = d.data; });
+    for (const d of docs) {
+      const normalized = normalizeSalesMonthPayload(d.key, d.data);
+      map[d.key] = normalized;
+      if (JSON.stringify(normalized) !== JSON.stringify(d.data)) {
+        await AppData.updateOne({ key: d.key }, { key: d.key, data: normalized }, { upsert: true });
+      }
+    }
     res.json({ items: map });
   } catch (error) { next(error); }
 });
