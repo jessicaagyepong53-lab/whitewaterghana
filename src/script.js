@@ -13,6 +13,8 @@ const SALES_VERSION_PREFIX = 'ww_sales_version_';
 const SALES_MONTH_DEDUPE_MIGRATION_KEY = 'ww_sales_month_dedupe_v1';
 const SALES_YEAR_RESEQUENCE_MIGRATION_KEY = 'ww_sales_year_resequence_v1';
 const LEGACY_MARCH_SALES_CLEANUP_KEY = 'ww_march2026_sales_cleanup_v2';
+const MAY_RESET_MIGRATION_KEY = 'ww_sales_may2026_reset_v1';
+const SALES_SERVER_AUTHORITATIVE_MODE = true;
 
 function getPendingSalesSyncKey(month) {
 	return `${SALES_PENDING_SYNC_PREFIX}${month}`;
@@ -902,6 +904,12 @@ async function loadFromServer(key) {
 			if (json.data !== null && json.data !== undefined) {
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
+					if (SALES_SERVER_AUTHORITATIVE_MODE) {
+						localStorage.setItem(key, JSON.stringify(json.data));
+						setProtectedSalesPayload(salesMonth, json.data);
+						clearPendingSalesSync(salesMonth);
+						return json.data;
+					}
 					const hasPending = hasPendingSalesSyncForKey(key);
 					if (isCanonicalExcelMarchMonth(salesMonth)) {
 						localStorage.setItem(key, JSON.stringify(json.data));
@@ -1128,6 +1136,12 @@ async function loadBulkFromServer(keys) {
 					// For sales month keys, merge server+local by ID to avoid losing local entries.
 					const salesMonth = getSalesMonthFromStorageKey(k);
 					if (salesMonth) {
+						if (SALES_SERVER_AUTHORITATIVE_MODE) {
+							localStorage.setItem(k, JSON.stringify(v));
+							setProtectedSalesPayload(salesMonth, v);
+							clearPendingSalesSync(salesMonth);
+							continue;
+						}
 						if (isCanonicalExcelMarchMonth(salesMonth)) {
 							localStorage.setItem(k, JSON.stringify(v));
 							setProtectedSalesPayload(salesMonth, v);
@@ -4214,27 +4228,36 @@ function getAllSalesData() {
 	const allOrders = [];
 	const seenInvoiceIds = new Set();
 	const seenOrderIds = new Set();
+	const seenInvoiceSignatures = new Set();
+	const seenOrderSignatures = new Set();
 	for (const m of months) {
 		try {
-			const stored = JSON.parse(localStorage.getItem(monthStorageKey(m)) || 'null');
+			const stored = getSalesMonthPayload(m);
 			if (stored && typeof stored === 'object') {
 				if (Array.isArray(stored.invoices)) {
 					for (const inv of stored.invoices) {
 						if (!inv || !inv.id) continue;
-						if (getInvoiceMonth(inv) !== m) continue;
+						if (!isInvoiceInMonthBucket(inv, m)) continue;
 						const id = String(inv.id);
 						if (seenInvoiceIds.has(id)) continue;
+						const sig = invoiceSignature(inv);
+						if (sig && seenInvoiceSignatures.has(sig)) continue;
 						seenInvoiceIds.add(id);
+						if (sig) seenInvoiceSignatures.add(sig);
 						allInvoices.push(inv);
 					}
 				}
+				const monthInvoiceIds = new Set((Array.isArray(stored.invoices) ? stored.invoices : []).map((inv) => String(inv?.id || '')).filter(Boolean));
 				if (Array.isArray(stored.salesOrders)) {
 					for (const ord of stored.salesOrders) {
 						if (!ord || !ord.id) continue;
-						if (getInvoiceMonth(ord) !== m) continue;
+						if (ord.sourceInvoiceId && !monthInvoiceIds.has(String(ord.sourceInvoiceId))) continue;
 						const id = String(ord.id);
 						if (seenOrderIds.has(id)) continue;
+						const sig = orderSignature(ord);
+						if (sig && seenOrderSignatures.has(sig)) continue;
 						seenOrderIds.add(id);
+						if (sig) seenOrderSignatures.add(sig);
 						allOrders.push(ord);
 					}
 				}
@@ -4494,6 +4517,27 @@ function runOneTimeSalesYearResequenceMigration() {
 	localStorage.setItem(SALES_YEAR_RESEQUENCE_MIGRATION_KEY, '1');
 }
 
+function runOneTimeMayResetMigration() {
+	try {
+		if (localStorage.getItem(MAY_RESET_MIGRATION_KEY) === '1') return;
+		const may = '2026-05';
+		const keysToRemove = [
+			monthStorageKey(may),
+			getPendingSalesSyncKey(may),
+			getPendingSalesSyncTsKey(may),
+			getSalesProtectedKey(may),
+			getSalesVersionKey(may),
+			'ww_sales_locked_2026-05',
+		];
+		keysToRemove.forEach((key) => {
+			try { localStorage.removeItem(key); } catch (_e) { /* ignore */ }
+		});
+		const months = getSalesMonths().filter((m) => String(m) !== may);
+		saveSalesMonths(months);
+		localStorage.setItem(MAY_RESET_MIGRATION_KEY, '1');
+	} catch (_e) { /* ignore */ }
+}
+
 function loadSalesDataFromStorage() {
 	/* Clean up any old key */
 	try { localStorage.removeItem('ww_sales_data'); } catch(_e) {}
@@ -4503,6 +4547,7 @@ function loadSalesDataFromStorage() {
 	runOneTimeSalesMonthDedupeMigration();
 
 	/* March entries are editable and persistent; no automatic month cleanup here. */
+	runOneTimeMayResetMigration();
 
 	runOneTimeSalesYearResequenceMigration();
 
@@ -6066,22 +6111,15 @@ async function initSalesInvoicesPage() {
 				const month = String(currentSalesMonth || '');
 				if (!/^\d{4}-\d{2}$/.test(month)) return;
 				const syncKey = monthStorageKey(month);
-
-				// Best-effort flush of local pending changes before pulling latest server state.
-				if (hasPendingSalesSyncForKey(syncKey)) {
-					const pendingPayload = getPendingSalesSyncPayload(month);
-					const snapshot = pendingPayload && typeof pendingPayload === 'object'
-						? pendingPayload
-						: {
-							invoices: [...salesModuleData.invoices],
-							salesOrders: [...salesModuleData.salesOrders],
-						};
-					const ok = await mergeSyncSalesMonth(month, snapshot);
-					if (ok) clearPendingSalesSync(month);
-				}
+				if (SALES_SERVER_AUTHORITATIVE_MODE) clearPendingSalesSync(month);
 
 				const serverData = await loadFromServerForceFresh(syncKey);
 				if (month !== currentSalesMonth) return;
+				if (SALES_SERVER_AUTHORITATIVE_MODE) {
+					if (!serverData || typeof serverData !== 'object') return;
+					applySalesMonthPayloadToUi(month, serverData);
+					return;
+				}
 				const changed = mergeServerSalesIntoMemory(serverData, month);
 				if (!changed) return;
 
@@ -6106,13 +6144,14 @@ async function initSalesInvoicesPage() {
 			try {
 				const activePage = document.body.getAttribute('data-page');
 				if (activePage !== 'invoices' && activePage !== 'sales') return;
-				await flushPendingSalesSyncToServer();
+				if (!SALES_SERVER_AUTHORITATIVE_MODE) await flushPendingSalesSyncToServer();
 				const month = String(currentSalesMonth || '');
 				if (!/^\d{4}-\d{2}$/.test(month)) return;
 				const key = monthStorageKey(month);
 				const serverData = await loadFromServerForceFresh(key);
 				if (month !== currentSalesMonth) return;
 				if (!serverData || typeof serverData !== 'object') return;
+				if (SALES_SERVER_AUTHORITATIVE_MODE) clearPendingSalesSync(month);
 				applySalesMonthPayloadToUi(month, serverData);
 			} catch (_e) { /* keep retrying */ }
 		}, 3000);
