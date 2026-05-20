@@ -2,12 +2,7 @@ const API_BASE = '';
 const LAST_DATA_UPDATE_KEY = 'ww_last_data_update';
 const SALES_PENDING_SYNC_PREFIX = 'ww_pending_sales_sync_';
 const SALES_PENDING_SYNC_TS_PREFIX = 'ww_pending_sales_sync_ts_';
-const LOCKED_SALES_MONTHS = {
-	'2026-05': {
-		key: 'ww_sales_locked_2026-05',
-		count: 11,
-	},
-};
+const LOCKED_SALES_MONTHS = {};
 const SALES_PROTECTED_PREFIX = 'ww_sales_protected_';
 const SALES_VERSION_PREFIX = 'ww_sales_version_';
 const SALES_MONTH_DEDUPE_MIGRATION_KEY = 'ww_sales_month_dedupe_v1';
@@ -4519,22 +4514,10 @@ function runOneTimeSalesYearResequenceMigration() {
 
 function runOneTimeMayResetMigration() {
 	try {
-		if (localStorage.getItem(MAY_RESET_MIGRATION_KEY) === '1') return;
-		const may = '2026-05';
-		const keysToRemove = [
-			monthStorageKey(may),
-			getPendingSalesSyncKey(may),
-			getPendingSalesSyncTsKey(may),
-			getSalesProtectedKey(may),
-			getSalesVersionKey(may),
-			'ww_sales_locked_2026-05',
-		];
-		keysToRemove.forEach((key) => {
-			try { localStorage.removeItem(key); } catch (_e) { /* ignore */ }
-		});
-		const months = getSalesMonths().filter((m) => String(m) !== may);
-		saveSalesMonths(months);
-		localStorage.setItem(MAY_RESET_MIGRATION_KEY, '1');
+		// Historical migration intentionally disabled. Keep existing month data intact.
+		if (!localStorage.getItem(MAY_RESET_MIGRATION_KEY)) {
+			localStorage.setItem(MAY_RESET_MIGRATION_KEY, '1');
+		}
 	} catch (_e) { /* ignore */ }
 }
 
