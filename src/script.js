@@ -182,6 +182,7 @@ function invoiceContentFingerprint(inv) {
 		Number(inv.promo || 0),
 		String(inv.promoNote || '').trim(),
 		String(inv.entryTime || '').trim(),
+		String(inv.createdAt || '').trim(),
 	].join('|');
 }
 
@@ -213,6 +214,7 @@ function orderContentFingerprint(ord) {
 		String(ord.carNumber || '').trim().toLowerCase(),
 		Number(ord.promo || 0),
 		String(ord.promoNote || '').trim(),
+		String(ord.createdAt || '').trim(),
 	].join('|');
 }
 
@@ -909,31 +911,11 @@ async function loadFromServerForceFresh(key) {
 			if (json.data !== null && json.data !== undefined) {
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
-					const hasPending = hasPendingSalesSyncForKey(key);
-					if (hasPending) {
-						const localPendingPayload = getSalesMonthPayload(salesMonth);
-						if (areSalesPayloadsEquivalent(localPendingPayload, json.data)) {
-							clearPendingSalesSync(salesMonth);
-						}
-					}
-					if (isCanonicalExcelMarchMonth(salesMonth)) {
-						localStorage.setItem(key, JSON.stringify(json.data));
-						setProtectedSalesPayload(salesMonth, json.data);
-						clearPendingSalesSync(salesMonth);
-						return json.data;
-					}
-					if (!hasPending) {
-						localStorage.setItem(key, JSON.stringify(json.data));
-						setProtectedSalesPayload(salesMonth, json.data);
-						clearPendingSalesSync(salesMonth);
-						return json.data;
-					}
-					const localPayload = getSalesMonthPayload(salesMonth);
-					const merged = mergeSalesMonthPayloads(localPayload, json.data, salesMonth);
-					localStorage.setItem(key, JSON.stringify(merged));
-					if (areSalesPayloadsEquivalent(merged, json.data)) clearPendingSalesSync(salesMonth);
-					else queuePendingSalesSync(salesMonth, merged);
-					return merged;
+					// Server-authoritative month refresh to eliminate split-brain local state.
+					localStorage.setItem(key, JSON.stringify(json.data));
+					setProtectedSalesPayload(salesMonth, json.data);
+					clearPendingSalesSync(salesMonth);
+					return json.data;
 				}
 				localStorage.setItem(key, JSON.stringify(json.data));
 				return json.data;
@@ -4182,8 +4164,8 @@ function getAllSalesData() {
 	const months = recoverSalesMonthsFromStorage();
 	const allInvoices = [];
 	const allOrders = [];
-	const seenInvoiceContent = new Set();
-	const seenOrderContent = new Set();
+	const seenInvoiceIds = new Set();
+	const seenOrderIds = new Set();
 	for (const m of months) {
 		try {
 			const stored = JSON.parse(localStorage.getItem(monthStorageKey(m)) || 'null');
@@ -4192,9 +4174,9 @@ function getAllSalesData() {
 					for (const inv of stored.invoices) {
 						if (!inv || !inv.id) continue;
 						if (getInvoiceMonth(inv) !== m) continue;
-						const fp = invoiceContentFingerprint(inv) || invoiceSignature(inv);
-						if (fp && seenInvoiceContent.has(fp)) continue;
-						if (fp) seenInvoiceContent.add(fp);
+						const id = String(inv.id);
+						if (seenInvoiceIds.has(id)) continue;
+						seenInvoiceIds.add(id);
 						allInvoices.push(inv);
 					}
 				}
@@ -4202,9 +4184,9 @@ function getAllSalesData() {
 					for (const ord of stored.salesOrders) {
 						if (!ord || !ord.id) continue;
 						if (getInvoiceMonth(ord) !== m) continue;
-						const fp = orderContentFingerprint(ord) || orderSignature(ord);
-						if (fp && seenOrderContent.has(fp)) continue;
-						if (fp) seenOrderContent.add(fp);
+						const id = String(ord.id);
+						if (seenOrderIds.has(id)) continue;
+						seenOrderIds.add(id);
 						allOrders.push(ord);
 					}
 				}
@@ -4558,19 +4540,6 @@ function loadMonthData(month) {
 			const tb = Number.isNaN(db) ? Number.MAX_SAFE_INTEGER : db;
 			return ta - tb;
 		});
-	}
-
-	// Targeted dedupe: collapse duplicate invoice/order payload rows that have
-	// the same business content but different IDs (cross-device ID divergence).
-	const dedupedInvoices = dedupeSalesRecordsByContent(salesModuleData.invoices, invoiceContentFingerprint);
-	if (dedupedInvoices.length !== salesModuleData.invoices.length) {
-		salesModuleData.invoices = dedupedInvoices;
-		dirty = true;
-	}
-	const dedupedOrders = dedupeSalesRecordsByContent(salesModuleData.salesOrders, orderContentFingerprint);
-	if (dedupedOrders.length !== salesModuleData.salesOrders.length) {
-		salesModuleData.salesOrders = dedupedOrders;
-		dirty = true;
 	}
 
 	/* Keep Sales Orders strictly 1:1 with invoices (linked by sourceInvoiceId). */

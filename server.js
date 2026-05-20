@@ -746,6 +746,7 @@ function invoiceContentFingerprint(inv) {
     Number(inv.promo || 0),
     String(inv.promoNote || '').trim(),
     String(inv.entryTime || '').trim(),
+    String(inv.createdAt || '').trim(),
   ].join('|');
 }
 
@@ -789,11 +790,21 @@ function normalizeSalesMonthPayload(key, payload) {
   // Temporary safety guard: May 2026 should currently contain 11 invoices.
   // Keep the newest 11 to prevent runaway duplicate growth from stale clients.
   if (String(key) === 'ww_sales_2026-05' && finalInvoices.length > 11) {
-    const score = (inv) => Math.max(toIsoMs(inv && inv.updatedAt), toIsoMs(inv && inv.modifiedAt), toIsoMs(inv && inv.createdAt), toIsoMs(inv && inv.date));
-    finalInvoices = [...finalInvoices]
-      .sort((a, b) => score(b) - score(a))
-      .slice(0, 11)
-      .sort((a, b) => String(a?.date || '').localeCompare(String(b?.date || '')));
+    const canonicalMayIds = new Set([
+      'INV-2026-05-001', 'INV-2026-05-002', 'INV-2026-05-003', 'INV-2026-05-004', 'INV-2026-05-005',
+      'INV-2026-05-006', 'INV-2026-05-007', 'INV-2026-05-008', 'INV-2026-05-009', 'INV-2026-05-010',
+      'INV-2026-05-011',
+    ]);
+    const canonicalRows = finalInvoices.filter((inv) => canonicalMayIds.has(String(inv?.id || '')));
+    if (canonicalRows.length === 11) {
+      finalInvoices = canonicalRows.sort((a, b) => String(a?.id || '').localeCompare(String(b?.id || '')));
+    } else {
+      const score = (inv) => Math.max(toIsoMs(inv && inv.updatedAt), toIsoMs(inv && inv.modifiedAt), toIsoMs(inv && inv.createdAt), toIsoMs(inv && inv.date));
+      finalInvoices = [...finalInvoices]
+        .sort((a, b) => score(b) - score(a))
+        .slice(0, 11)
+        .sort((a, b) => String(a?.date || '').localeCompare(String(b?.date || '')));
+    }
     const keepIds = new Set(finalInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
     finalOrders = finalOrders.filter((ord) => keepIds.has(String(ord.sourceInvoiceId || '')));
   }
