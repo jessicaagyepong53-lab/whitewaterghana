@@ -836,7 +836,48 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
   try {
     const key = req.params.key;
     if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
-    const normalized = normalizeSalesMonthPayload(key, req.body.data);
+    let normalized = normalizeSalesMonthPayload(key, req.body.data);
+
+    // Guard against stale clients resurrecting previously deleted sales entries.
+    if (/^ww_sales_\d{4}-\d{2}$/.test(String(key))) {
+      const existingDoc = await AppData.findOne({ key }).lean();
+      const existing = normalizeSalesMonthPayload(key, existingDoc && existingDoc.data ? existingDoc.data : {});
+
+      const deletedInvoiceIds = new Set([
+        ...(Array.isArray(existing.deletedInvoiceIds) ? existing.deletedInvoiceIds : []),
+        ...(Array.isArray(normalized.deletedInvoiceIds) ? normalized.deletedInvoiceIds : []),
+      ].map((id) => String(id || '').trim()).filter(Boolean));
+
+      const deletedOrderIds = new Set([
+        ...(Array.isArray(existing.deletedOrderIds) ? existing.deletedOrderIds : []),
+        ...(Array.isArray(normalized.deletedOrderIds) ? normalized.deletedOrderIds : []),
+      ].map((id) => String(id || '').trim()).filter(Boolean));
+
+      const guardedInvoices = (Array.isArray(normalized.invoices) ? normalized.invoices : [])
+        .filter((inv) => inv && inv.id)
+        .filter((inv) => !deletedInvoiceIds.has(String(inv.id || '').trim()));
+
+      const activeInvoiceIds = new Set(guardedInvoices.map((inv) => String(inv.id || '').trim()).filter(Boolean));
+      const guardedOrders = (Array.isArray(normalized.salesOrders) ? normalized.salesOrders : [])
+        .filter((ord) => ord && ord.id)
+        .filter((ord) => {
+          const id = String(ord.id || '').trim();
+          const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
+          if (!id || !sourceInvoiceId) return false;
+          if (deletedOrderIds.has(id)) return false;
+          if (deletedInvoiceIds.has(sourceInvoiceId)) return false;
+          return activeInvoiceIds.has(sourceInvoiceId);
+        });
+
+      normalized = normalizeSalesMonthPayload(key, {
+        ...normalized,
+        invoices: guardedInvoices,
+        salesOrders: guardedOrders,
+        deletedInvoiceIds: Array.from(deletedInvoiceIds),
+        deletedOrderIds: Array.from(deletedOrderIds),
+      });
+    }
+
     await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
     res.json({ ok: true });
   } catch (error) { next(error); }
@@ -1151,12 +1192,23 @@ async function restoreTrashAppDataItem(trashItem) {
 
     if (meta.arrayPath) {
       const updatePath = `data.${meta.arrayPath}`;
+      const pullOps = {};
+      if (meta.arrayPath === 'invoices') {
+        const invoiceId = String((trashItem.record_data && trashItem.record_data.id) || '').trim();
+        if (invoiceId) pullOps['data.deletedInvoiceIds'] = invoiceId;
+      }
+      if (meta.arrayPath === 'salesOrders') {
+        const orderId = String((trashItem.record_data && trashItem.record_data.id) || '').trim();
+        if (orderId) pullOps['data.deletedOrderIds'] = orderId;
+      }
+      const updateDoc = {
+        $setOnInsert: { key, data: {} },
+        $push: { [updatePath]: trashItem.record_data },
+      };
+      if (Object.keys(pullOps).length) updateDoc.$pull = pullOps;
       await AppData.updateOne(
         { key },
-        {
-          $setOnInsert: { key, data: {} },
-          $push: { [updatePath]: trashItem.record_data },
-        },
+        updateDoc,
         { upsert: true }
       );
     } else {

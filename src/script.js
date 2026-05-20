@@ -899,13 +899,22 @@ async function loadFromServer(key) {
 			if (json.data !== null && json.data !== undefined) {
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
+					const hasPending = hasPendingSalesSyncForKey(key);
+					if (hasPending) {
+						const pendingPayload = getPendingSalesSyncPayload(salesMonth) || getSalesMonthPayload(salesMonth);
+						const mergedPending = mergeSalesMonthPayloads(pendingPayload, json.data, salesMonth);
+						localStorage.setItem(key, JSON.stringify(mergedPending));
+						setProtectedSalesPayload(salesMonth, mergedPending);
+						if (areSalesPayloadsEquivalent(mergedPending, json.data)) clearPendingSalesSync(salesMonth);
+						else queuePendingSalesSync(salesMonth, mergedPending);
+						return mergedPending;
+					}
 					if (SALES_SERVER_AUTHORITATIVE_MODE) {
 						localStorage.setItem(key, JSON.stringify(json.data));
 						setProtectedSalesPayload(salesMonth, json.data);
 						clearPendingSalesSync(salesMonth);
 						return json.data;
 					}
-					const hasPending = hasPendingSalesSyncForKey(key);
 					if (isCanonicalExcelMarchMonth(salesMonth)) {
 						localStorage.setItem(key, JSON.stringify(json.data));
 						setProtectedSalesPayload(salesMonth, json.data);
@@ -944,6 +953,16 @@ async function loadFromServerForceFresh(key) {
 			if (json.data !== null && json.data !== undefined) {
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
+					const hasPending = hasPendingSalesSyncForKey(key);
+					if (hasPending) {
+						const pendingPayload = getPendingSalesSyncPayload(salesMonth) || getSalesMonthPayload(salesMonth);
+						const mergedPending = mergeSalesMonthPayloads(pendingPayload, json.data, salesMonth);
+						localStorage.setItem(key, JSON.stringify(mergedPending));
+						setProtectedSalesPayload(salesMonth, mergedPending);
+						if (areSalesPayloadsEquivalent(mergedPending, json.data)) clearPendingSalesSync(salesMonth);
+						else queuePendingSalesSync(salesMonth, mergedPending);
+						return mergedPending;
+					}
 					// Server-authoritative month refresh to eliminate split-brain local state.
 					localStorage.setItem(key, JSON.stringify(json.data));
 					setProtectedSalesPayload(salesMonth, json.data);
@@ -6094,7 +6113,14 @@ async function initSalesInvoicesPage() {
 				const month = String(currentSalesMonth || '');
 				if (!/^\d{4}-\d{2}$/.test(month)) return;
 				const syncKey = monthStorageKey(month);
-				if (SALES_SERVER_AUTHORITATIVE_MODE) clearPendingSalesSync(month);
+				if (hasPendingSalesSyncForKey(syncKey)) {
+					const pendingPayload = getPendingSalesSyncPayload(month) || {
+						invoices: [...salesModuleData.invoices],
+						salesOrders: [...salesModuleData.salesOrders],
+					};
+					const flushed = await mergeSyncSalesMonth(month, pendingPayload);
+					if (flushed) clearPendingSalesSync(month);
+				}
 
 				const serverData = await loadFromServerForceFresh(syncKey);
 				if (month !== currentSalesMonth) return;
@@ -6127,14 +6153,22 @@ async function initSalesInvoicesPage() {
 			try {
 				const activePage = document.body.getAttribute('data-page');
 				if (activePage !== 'invoices' && activePage !== 'sales') return;
-				if (!SALES_SERVER_AUTHORITATIVE_MODE) await flushPendingSalesSyncToServer();
 				const month = String(currentSalesMonth || '');
 				if (!/^\d{4}-\d{2}$/.test(month)) return;
+				if (hasPendingSalesSyncForKey(monthStorageKey(month))) {
+					const pendingPayload = getPendingSalesSyncPayload(month) || {
+						invoices: [...salesModuleData.invoices],
+						salesOrders: [...salesModuleData.salesOrders],
+					};
+					const flushed = await mergeSyncSalesMonth(month, pendingPayload);
+					if (flushed) clearPendingSalesSync(month);
+				} else if (!SALES_SERVER_AUTHORITATIVE_MODE) {
+					await flushPendingSalesSyncToServer();
+				}
 				const key = monthStorageKey(month);
 				const serverData = await loadFromServerForceFresh(key);
 				if (month !== currentSalesMonth) return;
 				if (!serverData || typeof serverData !== 'object') return;
-				if (SALES_SERVER_AUTHORITATIVE_MODE) clearPendingSalesSync(month);
 				applySalesMonthPayloadToUi(month, serverData);
 			} catch (_e) { /* keep retrying */ }
 		}, 3000);
