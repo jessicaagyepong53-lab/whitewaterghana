@@ -786,9 +786,11 @@ async function loadFromServerForceFresh(key) {
 // Only ADDS records that are absent locally (other device's new entries).
 // Does NOT resurrect locally-deleted records.
 // Returns true if anything was added.
-function mergeServerSalesIntoMemory(serverData) {
-	if (!/^\d{4}-\d{2}$/.test(String(currentSalesMonth || ''))) return false;
-	if (isCanonicalExcelMarchMonth(currentSalesMonth)) {
+function mergeServerSalesIntoMemory(serverData, targetMonth) {
+	const month = String(targetMonth || currentSalesMonth || '');
+	if (!/^\d{4}-\d{2}$/.test(month)) return false;
+	if (month !== currentSalesMonth) return false;
+	if (isCanonicalExcelMarchMonth(month)) {
 		if (!serverData || typeof serverData !== 'object') return false;
 		salesModuleData.invoices = Array.isArray(serverData.invoices) ? [...serverData.invoices] : [];
 		salesModuleData.salesOrders = Array.isArray(serverData.salesOrders) ? [...serverData.salesOrders] : [];
@@ -802,7 +804,7 @@ function mergeServerSalesIntoMemory(serverData) {
 		if (!m) return '';
 		return m[2] ? `INV-${m[1]}-${m[2]}-${m[3]}` : `INV-${m[1]}-${m[3]}`;
 	};
-	const protectedPayload = getProtectedSalesPayload(currentSalesMonth);
+	const protectedPayload = getProtectedSalesPayload(month);
 	if (protectedPayload) {
 		const protectedVersion = sanitizeSalesPayloadVersion(protectedPayload);
 		const serverVersion = sanitizeSalesPayloadVersion(serverData);
@@ -818,7 +820,7 @@ function mergeServerSalesIntoMemory(serverData) {
 	const serverInvoices = serverInvoicesRaw.filter((inv) => {
 		if (!inv || !inv.id) return false;
 		const m = getInvoiceMonth(inv);
-		return !m || m === currentSalesMonth;
+		return !m || m === month;
 	});
 	const serverInvoiceIds = new Set(serverInvoices.map((inv) => String(inv.id)).filter(Boolean));
 	const serverOrders = serverOrdersRaw.filter((ord) => {
@@ -829,12 +831,12 @@ function mergeServerSalesIntoMemory(serverData) {
 			return true;
 		}
 		const ordMonth = getInvoiceMonth(ord);
-		return !ordMonth || ordMonth === currentSalesMonth;
+		return !ordMonth || ordMonth === month;
 	});
-	const monthPayload = getSalesMonthPayload(currentSalesMonth);
+	const monthPayload = getSalesMonthPayload(month);
 	const deletedInv = new Set(normalizeIdArray([...(monthPayload.deletedInvoiceIds || []), ...normalizeIdArray(serverData.deletedInvoiceIds)]));
 	const deletedOrd = new Set(normalizeIdArray([...(monthPayload.deletedOrderIds || []), ...normalizeIdArray(serverData.deletedOrderIds)]));
-	const hasLocalPending = hasPendingSalesSyncForKey(monthStorageKey(currentSalesMonth));
+	const hasLocalPending = hasPendingSalesSyncForKey(monthStorageKey(month));
 
 	// When there are no unsynced local changes, mirror server state so cross-device edits
 	// (same IDs with changed fields) appear automatically without manual refresh.
@@ -5834,11 +5836,13 @@ async function initSalesInvoicesPage() {
 				}
 
 				const serverData = await loadFromServerForceFresh(syncKey);
-				const changed = mergeServerSalesIntoMemory(serverData);
+				if (month !== currentSalesMonth) return;
+				const changed = mergeServerSalesIntoMemory(serverData, month);
 				if (!changed) return;
 
 				const updatedPayload = buildSalesSyncPayload(month, salesModuleData);
 				localStorage.setItem(syncKey, JSON.stringify(updatedPayload));
+				if (month !== currentSalesMonth) return;
 				loadMonthData(month);
 				renderSalesPage();
 				try {
@@ -9236,7 +9240,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 					await flushPendingSalesSyncToServer();
 					await pullRemoteDataAndRefreshUi();
 					if (currentSalesMonth && document.body.getAttribute('data-page') && ['invoices', 'sales'].includes(document.body.getAttribute('data-page'))) {
-						loadMonthData(currentSalesMonth);
+						const month = String(currentSalesMonth || '');
+						if (!/^\d{4}-\d{2}$/.test(month)) return;
+						loadMonthData(month);
 						renderSalesPage();
 					}
 				} catch (_pullErr) { /* ignore */ }
