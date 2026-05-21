@@ -111,13 +111,22 @@ function setProtectedSalesPayload(month, payload) {
 	const incomingVersion = sanitizeSalesPayloadVersion(payload);
 	const existing = getProtectedSalesPayload(month);
 	const existingVersion = sanitizeSalesPayloadVersion(existing);
-	if (existing && existingVersion > incomingVersion && !incomingIsLockedCanonical) return;
-	if (existing && existingVersion === incomingVersion) {
-		const existingInvCount = Array.isArray(existing.invoices) ? existing.invoices.length : 0;
-		const incomingInvCount = Array.isArray(payload.invoices) ? payload.invoices.length : 0;
-		const existingOrdCount = Array.isArray(existing.salesOrders) ? existing.salesOrders.length : 0;
-		const incomingOrdCount = Array.isArray(payload.salesOrders) ? payload.salesOrders.length : 0;
-		if (!incomingIsLockedCanonical && (existingInvCount > incomingInvCount || existingOrdCount > incomingOrdCount)) return;
+	// If the incoming payload has a higher version, always accept it — it reflects
+	// intentional edits (including deletions) and must not be blocked.
+	if (incomingVersion > existingVersion || incomingIsLockedCanonical) {
+		try { localStorage.setItem(getSalesProtectedKey(month), JSON.stringify(payload)); } catch (_e) { /* ignore */ }
+		return;
+	}
+	// Same version: only block if the incoming has fewer records AND those missing
+	// records are NOT covered by the incoming deletedInvoiceIds/deletedOrderIds.
+	// This allows deletions to update the protected copy while still protecting
+	// against accidental data loss from partial saves.
+	if (existing && existingVersion === incomingVersion && existingVersion > 0) {
+		const existingInvIds = new Set((Array.isArray(existing.invoices) ? existing.invoices : []).map((i) => String(i?.id || '')).filter(Boolean));
+		const incomingInvIds = new Set((Array.isArray(payload.invoices) ? payload.invoices : []).map((i) => String(i?.id || '')).filter(Boolean));
+		const incomingDelInv = new Set((Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : []).map((id) => String(id)));
+		const missingNotDeleted = [...existingInvIds].filter((id) => !incomingInvIds.has(id) && !incomingDelInv.has(id));
+		if (!incomingIsLockedCanonical && missingNotDeleted.length > 0) return;
 	}
 	try {
 		localStorage.setItem(getSalesProtectedKey(month), JSON.stringify(payload));
@@ -295,16 +304,10 @@ function pickNewerRecord(existing, incoming) {
 	if (!incoming) return existing;
 	const existingMs = getRecordUpdatedMs(existing);
 	const incomingMs = getRecordUpdatedMs(incoming);
-	if (existingMs > 0 && incomingMs > 0) {
-		const signaturesDiffer = getRecordSignature(existing) !== getRecordSignature(incoming);
-		const largeSkewMs = 6 * 60 * 60 * 1000;
-		if (signaturesDiffer && (existingMs - incomingMs) > largeSkewMs) {
-			// Device clocks can drift; if an existing record timestamp is far in the future,
-			// allow incoming remote edits to win so cross-device state can converge.
-			return incoming;
-		}
-	}
-	if (incomingMs >= existingMs) return incoming;
+	// Use strictly-greater-than so that records with equal or missing timestamps
+	// keep the existing copy. This prevents stale pushes from other tabs/devices
+	// from overwriting status edits or resurrecting deleted records.
+	if (incomingMs > existingMs) return incoming;
 	return existing;
 }
 
@@ -388,11 +391,14 @@ function getSalesMonthPayload(month) {
 			return protectedPayload;
 		}
 		if (protectedPayload && protectedVersion === payloadVersion && protectedVersion > 0) {
-			const protectedInvCount = Array.isArray(protectedPayload.invoices) ? protectedPayload.invoices.length : 0;
-			const payloadInvCount = Array.isArray(payload.invoices) ? payload.invoices.length : 0;
-			const protectedOrdCount = Array.isArray(protectedPayload.salesOrders) ? protectedPayload.salesOrders.length : 0;
-			const payloadOrdCount = Array.isArray(payload.salesOrders) ? payload.salesOrders.length : 0;
-			if (protectedInvCount > payloadInvCount || protectedOrdCount > payloadOrdCount) {
+			// Only restore from protected if the current payload is missing invoices that
+			// are NOT listed as deleted — meaning it looks like unintentional data loss,
+			// not a deliberate delete action.
+			const protectedInvIds = new Set((Array.isArray(protectedPayload.invoices) ? protectedPayload.invoices : []).map((i) => String(i?.id || '')).filter(Boolean));
+			const payloadInvIds = new Set((Array.isArray(payload.invoices) ? payload.invoices : []).map((i) => String(i?.id || '')).filter(Boolean));
+			const payloadDelInv = new Set((Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : []).map((id) => String(id)));
+			const unaccountedMissing = [...protectedInvIds].filter((id) => !payloadInvIds.has(id) && !payloadDelInv.has(id));
+			if (unaccountedMissing.length > 0) {
 				localStorage.setItem(monthStorageKey(month), JSON.stringify(protectedPayload));
 				queuePendingSalesSync(month, protectedPayload);
 				return protectedPayload;

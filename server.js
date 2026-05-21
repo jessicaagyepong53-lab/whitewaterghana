@@ -719,9 +719,13 @@ function toIsoMs(value) {
 function pickNewerRecord(existing, incoming) {
   if (!existing) return incoming;
   if (!incoming) return existing;
-  const existingMs = Math.max(toIsoMs(existing.updatedAt), toIsoMs(existing.modifiedAt), toIsoMs(existing.createdAt));
-  const incomingMs = Math.max(toIsoMs(incoming.updatedAt), toIsoMs(incoming.modifiedAt), toIsoMs(incoming.createdAt));
-  return incomingMs >= existingMs ? incoming : existing;
+  // Only use the incoming record if it has a strictly newer updatedAt/modifiedAt timestamp.
+  // This prevents stale clients from overwriting edits (e.g. status changes) made by others.
+  const existingMs = Math.max(toIsoMs(existing.updatedAt), toIsoMs(existing.modifiedAt));
+  const incomingMs = Math.max(toIsoMs(incoming.updatedAt), toIsoMs(incoming.modifiedAt));
+  // If the incoming record has a genuinely newer edit timestamp, prefer it.
+  // Otherwise always keep the server (existing) copy.
+  return incomingMs > existingMs ? incoming : existing;
 }
 
 function invoiceContentFingerprint(inv) {
@@ -761,7 +765,9 @@ function normalizeSalesMonthPayload(key, payload) {
     if (!id) continue;
     byId.set(id, pickNewerRecord(byId.get(id), inv));
   }
-  const dedupInvoices = [...byId.values()];
+  // Sort invoices by createdAt ascending so invoice #1 is always the oldest one,
+  // consistently on every device and for every user.
+  const dedupInvoices = [...byId.values()].sort((a, b) => toIsoMs(a.createdAt) - toIsoMs(b.createdAt));
   const activeInvoiceIds = new Set(dedupInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
 
   const orders = Array.isArray(payload.salesOrders) ? payload.salesOrders.filter((ord) => ord && ord.id) : [];
@@ -772,7 +778,8 @@ function normalizeSalesMonthPayload(key, payload) {
     if (!id || !sourceInvoiceId || !activeInvoiceIds.has(sourceInvoiceId)) continue;
     orderById.set(id, pickNewerRecord(orderById.get(id), ord));
   }
-  const dedupOrders = [...orderById.values()];
+  // Sort orders by createdAt ascending for stable, consistent ordering across all devices.
+  const dedupOrders = [...orderById.values()].sort((a, b) => toIsoMs(a.createdAt) - toIsoMs(b.createdAt));
 
   const nextDeletedInvoiceIds = (Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : [])
     .map((id) => String(id || '').trim())
@@ -836,11 +843,13 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
     if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
     let normalized = normalizeSalesMonthPayload(key, req.body.data);
 
-    // Guard against stale clients resurrecting previously deleted sales entries.
+    // Guard against stale clients resurrecting previously deleted entries,
+    // and prevent stale pushes from overwriting status edits made on other devices.
     if (/^ww_sales_\d{4}-\d{2}$/.test(String(key))) {
       const existingDoc = await AppData.findOne({ key }).lean();
       const existing = normalizeSalesMonthPayload(key, existingDoc && existingDoc.data ? existingDoc.data : {});
 
+      // Accumulate deleted IDs from both server and client — deletions are permanent.
       const deletedInvoiceIds = new Set([
         ...(Array.isArray(existing.deletedInvoiceIds) ? existing.deletedInvoiceIds : []),
         ...(Array.isArray(normalized.deletedInvoiceIds) ? normalized.deletedInvoiceIds : []),
@@ -851,11 +860,37 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
         ...(Array.isArray(normalized.deletedOrderIds) ? normalized.deletedOrderIds : []),
       ].map((id) => String(id || '').trim()).filter(Boolean));
 
-      const guardedInvoices = (Array.isArray(normalized.invoices) ? normalized.invoices : [])
-        .filter((inv) => inv && inv.id)
-        .filter((inv) => !deletedInvoiceIds.has(String(inv.id || '').trim()));
+      // Build a map of existing invoices for record-by-record merging.
+      // This prevents a status edit on one device from being clobbered by a stale push from another.
+      const existingInvoiceMap = new Map();
+      for (const inv of (Array.isArray(existing.invoices) ? existing.invoices : [])) {
+        if (inv && inv.id) existingInvoiceMap.set(String(inv.id).trim(), inv);
+      }
 
-      const activeInvoiceIds = new Set(guardedInvoices.map((inv) => String(inv.id || '').trim()).filter(Boolean));
+      // Merge incoming invoices with server copies, keeping whichever is newer.
+      const mergedInvoices = (Array.isArray(normalized.invoices) ? normalized.invoices : [])
+        .filter((inv) => inv && inv.id)
+        .filter((inv) => !deletedInvoiceIds.has(String(inv.id || '').trim()))
+        .map((inv) => {
+          const id = String(inv.id).trim();
+          return pickNewerRecord(existingInvoiceMap.get(id), inv);
+        });
+
+      // Preserve any server-side invoices not in the incoming payload (another device may own them).
+      const incomingInvoiceIds = new Set(mergedInvoices.map((inv) => String(inv.id).trim()));
+      for (const [id, inv] of existingInvoiceMap.entries()) {
+        if (!incomingInvoiceIds.has(id) && !deletedInvoiceIds.has(id)) {
+          mergedInvoices.push(inv);
+        }
+      }
+
+      // Same record-by-record merge for sales orders.
+      const existingOrderMap = new Map();
+      for (const ord of (Array.isArray(existing.salesOrders) ? existing.salesOrders : [])) {
+        if (ord && ord.id) existingOrderMap.set(String(ord.id).trim(), ord);
+      }
+
+      const activeInvoiceIds = new Set(mergedInvoices.map((inv) => String(inv.id || '').trim()).filter(Boolean));
       const guardedOrders = (Array.isArray(normalized.salesOrders) ? normalized.salesOrders : [])
         .filter((ord) => ord && ord.id)
         .filter((ord) => {
@@ -865,11 +900,21 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
           if (deletedOrderIds.has(id)) return false;
           if (deletedInvoiceIds.has(sourceInvoiceId)) return false;
           return activeInvoiceIds.has(sourceInvoiceId);
-        });
+        })
+        .map((ord) => pickNewerRecord(existingOrderMap.get(String(ord.id).trim()), ord));
+
+      // Preserve any server-side orders not in the incoming payload.
+      const incomingOrderIds = new Set(guardedOrders.map((o) => String(o.id).trim()));
+      for (const [id, ord] of existingOrderMap.entries()) {
+        const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
+        if (!incomingOrderIds.has(id) && !deletedOrderIds.has(id) && activeInvoiceIds.has(sourceInvoiceId)) {
+          guardedOrders.push(ord);
+        }
+      }
 
       normalized = normalizeSalesMonthPayload(key, {
         ...normalized,
-        invoices: guardedInvoices,
+        invoices: mergedInvoices,
         salesOrders: guardedOrders,
         deletedInvoiceIds: Array.from(deletedInvoiceIds),
         deletedOrderIds: Array.from(deletedOrderIds),
