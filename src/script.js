@@ -5,7 +5,7 @@ const SALES_PENDING_SYNC_TS_PREFIX = 'ww_pending_sales_sync_ts_';
 const LOCKED_SALES_MONTHS = {};
 const SALES_PROTECTED_PREFIX = 'ww_sales_protected_';
 const SALES_VERSION_PREFIX = 'ww_sales_version_';
-const SALES_MONTH_DEDUPE_MIGRATION_KEY = 'ww_sales_month_dedupe_v1';
+const SALES_MONTH_DEDUPE_MIGRATION_KEY = 'ww_sales_month_dedupe_v2';
 const SALES_YEAR_RESEQUENCE_MIGRATION_KEY = 'ww_sales_year_resequence_v1';
 const LEGACY_MARCH_SALES_CLEANUP_KEY = 'ww_march2026_sales_cleanup_v2';
 const MAY_RESET_MIGRATION_KEY = 'ww_sales_may2026_reset_v1';
@@ -111,22 +111,16 @@ function setProtectedSalesPayload(month, payload) {
 	const incomingVersion = sanitizeSalesPayloadVersion(payload);
 	const existing = getProtectedSalesPayload(month);
 	const existingVersion = sanitizeSalesPayloadVersion(existing);
-	// If the incoming payload has a higher version, always accept it — it reflects
-	// intentional edits (including deletions) and must not be blocked.
 	if (incomingVersion > existingVersion || incomingIsLockedCanonical) {
-		try { localStorage.setItem(getSalesProtectedKey(month), JSON.stringify(payload)); } catch (_e) { /* ignore */ }
+		try { localStorage.setItem(getSalesProtectedKey(month), JSON.stringify(payload)); } catch (_e) {}
 		return;
 	}
-	// Same version: only block if the incoming has fewer records AND those missing
-	// records are NOT covered by the incoming deletedInvoiceIds/deletedOrderIds.
-	// This allows deletions to update the protected copy while still protecting
-	// against accidental data loss from partial saves.
 	if (existing && existingVersion === incomingVersion && existingVersion > 0) {
-		const existingInvIds = new Set((Array.isArray(existing.invoices) ? existing.invoices : []).map((i) => String(i?.id || '')).filter(Boolean));
-		const incomingInvIds = new Set((Array.isArray(payload.invoices) ? payload.invoices : []).map((i) => String(i?.id || '')).filter(Boolean));
-		const incomingDelInv = new Set((Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : []).map((id) => String(id)));
-		const missingNotDeleted = [...existingInvIds].filter((id) => !incomingInvIds.has(id) && !incomingDelInv.has(id));
-		if (!incomingIsLockedCanonical && missingNotDeleted.length > 0) return;
+		const existingIds = new Set((Array.isArray(existing.invoices) ? existing.invoices : []).map((i) => String(i && i.id || '')).filter(Boolean));
+		const incomingIds = new Set((Array.isArray(payload.invoices) ? payload.invoices : []).map((i) => String(i && i.id || '')).filter(Boolean));
+		const deletedIds = new Set((Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : []).map(String));
+		const unaccounted = [...existingIds].filter((id) => !incomingIds.has(id) && !deletedIds.has(id));
+		if (!incomingIsLockedCanonical && unaccounted.length > 0) return;
 	}
 	try {
 		localStorage.setItem(getSalesProtectedKey(month), JSON.stringify(payload));
@@ -304,9 +298,6 @@ function pickNewerRecord(existing, incoming) {
 	if (!incoming) return existing;
 	const existingMs = getRecordUpdatedMs(existing);
 	const incomingMs = getRecordUpdatedMs(incoming);
-	// Use strictly-greater-than so that records with equal or missing timestamps
-	// keep the existing copy. This prevents stale pushes from other tabs/devices
-	// from overwriting status edits or resurrecting deleted records.
 	if (incomingMs > existingMs) return incoming;
 	return existing;
 }
@@ -391,14 +382,11 @@ function getSalesMonthPayload(month) {
 			return protectedPayload;
 		}
 		if (protectedPayload && protectedVersion === payloadVersion && protectedVersion > 0) {
-			// Only restore from protected if the current payload is missing invoices that
-			// are NOT listed as deleted — meaning it looks like unintentional data loss,
-			// not a deliberate delete action.
-			const protectedInvIds = new Set((Array.isArray(protectedPayload.invoices) ? protectedPayload.invoices : []).map((i) => String(i?.id || '')).filter(Boolean));
-			const payloadInvIds = new Set((Array.isArray(payload.invoices) ? payload.invoices : []).map((i) => String(i?.id || '')).filter(Boolean));
-			const payloadDelInv = new Set((Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : []).map((id) => String(id)));
-			const unaccountedMissing = [...protectedInvIds].filter((id) => !payloadInvIds.has(id) && !payloadDelInv.has(id));
-			if (unaccountedMissing.length > 0) {
+			const protectedIds = new Set((Array.isArray(protectedPayload.invoices) ? protectedPayload.invoices : []).map((i) => String(i && i.id || '')).filter(Boolean));
+			const payloadIds = new Set((Array.isArray(payload.invoices) ? payload.invoices : []).map((i) => String(i && i.id || '')).filter(Boolean));
+			const deletedIds = new Set((Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : []).map(String));
+			const unaccounted = [...protectedIds].filter((id) => !payloadIds.has(id) && !deletedIds.has(id));
+			if (unaccounted.length > 0) {
 				localStorage.setItem(monthStorageKey(month), JSON.stringify(protectedPayload));
 				queuePendingSalesSync(month, protectedPayload);
 				return protectedPayload;
@@ -4257,13 +4245,11 @@ function getAllSalesData() {
 				if (Array.isArray(stored.invoices)) {
 					for (const inv of stored.invoices) {
 						if (!inv || !inv.id) continue;
-						if (!isInvoiceInMonthBucket(inv, m)) continue;
+						// Do NOT filter by month bucket here — the invoices page shows all
+						// invoices in the payload regardless of date, so reports must match.
 						const id = String(inv.id);
 						if (seenInvoiceIds.has(id)) continue;
-						const sig = invoiceSignature(inv);
-						if (sig && seenInvoiceSignatures.has(sig)) continue;
 						seenInvoiceIds.add(id);
-						if (sig) seenInvoiceSignatures.add(sig);
 						allInvoices.push(inv);
 					}
 				}
@@ -4345,20 +4331,17 @@ function repairSalesMonthConsistency(month) {
 	if (!month) return { beforeInvoices: 0, afterInvoices: 0, beforeOrders: 0, afterOrders: 0 };
 	const current = getSalesMonthPayload(month);
 	const protectedPayload = getProtectedSalesPayload(month);
-	const candidates = [current, protectedPayload].filter((p) => p && typeof p === 'object');
-	const base = candidates.sort((a, b) => {
-		const ai = Array.isArray(a.invoices) ? a.invoices.length : 0;
-		const bi = Array.isArray(b.invoices) ? b.invoices.length : 0;
-		if (bi !== ai) return bi - ai;
-		const ao = Array.isArray(a.salesOrders) ? a.salesOrders.length : 0;
-		const bo = Array.isArray(b.salesOrders) ? b.salesOrders.length : 0;
-		return bo - ao;
-	})[0] || {};
+	const mergedDeletedInv = [...new Set([
+		...(Array.isArray(current && current.deletedInvoiceIds) ? current.deletedInvoiceIds : []),
+		...(Array.isArray(protectedPayload && protectedPayload.deletedInvoiceIds) ? protectedPayload.deletedInvoiceIds : []),
+	].map(String))];
+	const base = { ...(current && typeof current === 'object' ? current : {}), deletedInvoiceIds: mergedDeletedInv };
 
 	const beforeInvoices = Array.isArray(current.invoices) ? current.invoices.length : 0;
 	const beforeOrders = Array.isArray(current.salesOrders) ? current.salesOrders.length : 0;
 	const deduped = dedupeSalesMonthPayload(base);
-	const invoices = (Array.isArray(deduped.invoices) ? deduped.invoices : []).filter((inv) => inv && inv.id);
+	const repairedDeletedIds = new Set((Array.isArray(deduped.deletedInvoiceIds) ? deduped.deletedInvoiceIds : []).map(String));
+	const invoices = (Array.isArray(deduped.invoices) ? deduped.invoices : []).filter((inv) => inv && inv.id && !repairedDeletedIds.has(String(inv.id)));
 	const existingOrders = (Array.isArray(deduped.salesOrders) ? deduped.salesOrders : []).filter((ord) => ord && ord.id);
 
 	invoices.sort((a, b) => {
@@ -9156,13 +9139,19 @@ function renderReportsData() {
 	const salesSummary = document.getElementById('sales-summary-cards');
 	if (salesSummary) {
 		const allEntries = [];
+		let totalBags = 0, totalPromo = 0;
 		for (const inv of invoices) {
 			if (inv.status !== 'paid') continue;
 			const d = new Date(inv.date);
 			if (isNaN(d)) continue;
 			const amount = Number(inv.amount) || 0;
-			allEntries.push({ date: d, amount });
+			const bags = Number(inv.items && inv.items[0] ? inv.items[0].qty : 0) || 0;
+			const promo = Number(inv.promo) || 0;
+			allEntries.push({ date: d, amount, bags, promo });
+			totalBags += bags;
+			totalPromo += promo;
 		}
+		const totalNonPromo = Math.max(0, totalBags - totalPromo);
 
 		const totalSales = allEntries.reduce((s, e) => s + e.amount, 0);
 		const orderCount = allEntries.length;
@@ -9185,12 +9174,14 @@ function renderReportsData() {
 				<div class="stat-card"><p class="s-label">Quarter Sales</p><p class="s-value">${formatCurrency(quarterTotal)}</p><p class="s-meta">Last 3 months</p></div>
 				<div class="stat-card"><p class="s-label">Year Sales</p><p class="s-value">${formatCurrency(yearTotal)}</p><p class="s-meta">${now.getFullYear()} total</p></div>
 				<div class="stat-card"><p class="s-label">Avg Order</p><p class="s-value">${formatCurrency(avgOrder)}</p><p class="s-meta">${orderCount} orders total</p></div>
+				<div class="stat-card rep-bags-card"><div class="s-icon"><i class="fa-solid fa-bag-shopping"></i></div><p class="s-label">Bags Sold (All Time)</p><p class="s-value">${formatNumber(totalBags)}</p><p class="s-meta split-meta"><span>Non-promo: <strong>${formatNumber(totalNonPromo)}</strong> (${totalBags > 0 ? Math.round((totalNonPromo / totalBags) * 100) : 0}%)</span><span>Promo: <strong>${formatNumber(totalPromo)}</strong> (${totalBags > 0 ? Math.round((totalPromo / totalBags) * 100) : 0}%)</span></p></div>
 			`;
 		} else {
 			salesSummary.innerHTML = `
 				<div class="stat-card"><p class="s-label">Total Sales</p><p class="s-value">${formatCurrency(totalSales)}</p><p class="s-meta">${filterLabel}</p></div>
 				<div class="stat-card"><p class="s-label">Orders</p><p class="s-value">${orderCount}</p><p class="s-meta">${filterLabel}</p></div>
 				<div class="stat-card"><p class="s-label">Avg Order</p><p class="s-value">${formatCurrency(avgOrder)}</p><p class="s-meta">Per invoice/order</p></div>
+				<div class="stat-card rep-bags-card"><div class="s-icon"><i class="fa-solid fa-bag-shopping"></i></div><p class="s-label">Bags Sold (${filterLabel})</p><p class="s-value">${formatNumber(totalBags)}</p><p class="s-meta split-meta"><span>Non-promo: <strong>${formatNumber(totalNonPromo)}</strong> (${totalBags > 0 ? Math.round((totalNonPromo / totalBags) * 100) : 0}%)</span><span>Promo: <strong>${formatNumber(totalPromo)}</strong> (${totalBags > 0 ? Math.round((totalPromo / totalBags) * 100) : 0}%)</span></p></div>
 			`;
 		}
 	}
@@ -9504,59 +9495,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 		return;
 	}
 
-	if (authenticated) try {
-		await flushPendingSalesSyncToServer();
-		await loadFromServer('ww_seed_flags');
-		await loadFromServer('ww_sales_months');
-		const salesMonths = getSalesMonths();
-		const salesKeys = salesMonths.map((m) => 'ww_sales_' + m);
-		await loadBulkFromServer([
-			'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
-			'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
-			'ww_cost_centre_budgets', 'ww_bom_data',
-			'ww_equipment', 'ww_market_yearly_values', 'ww_last_data_update',
-			...salesKeys,
-		]);
-		// Re-load sales months in case server had more
-		const serverMonths = getSalesMonths();
-		if (serverMonths.length > salesMonths.length) {
-			const extraKeys = serverMonths.filter((m) => !salesMonths.includes(m)).map((m) => 'ww_sales_' + m);
-			if (extraKeys.length) await loadBulkFromServer(extraKeys);
-		}
-		console.log('[Init] Server hydration complete');
-	} catch (_e) { console.warn('[Init] Server hydration failed:', _e); }
-
-	if (authenticated && isOpsPage && !window.__wwRemoteSyncPolling) {
-		window.__wwRemoteSyncPolling = true;
-		window.__wwLastSeenDataUpdate = getLastDataUpdateStamp();
-		setInterval(async () => {
-			try {
-				const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(LAST_DATA_UPDATE_KEY), { credentials: 'include', cache: 'no-store' });
-				if (!res.ok) return;
-				const json = await res.json();
-				const remoteStamp = typeof json.data === 'string' ? json.data : '';
-				if (!remoteStamp) return;
-				const localStamp = window.__wwLastSeenDataUpdate || getLastDataUpdateStamp();
-				if (localStamp && String(remoteStamp) === String(localStamp)) return;
-				setLastDataUpdateStamp(remoteStamp);
-				window.__wwLastSeenDataUpdate = remoteStamp;
-				console.info('[Sync] Remote data changed — pulling latest data...');
-				// Flush unsynced local changes, then pull latest keys and broadcast refresh
-				// so open pages update automatically without manual reload.
-				try {
-					await flushPendingSalesSyncToServer();
-					await pullRemoteDataAndRefreshUi();
-					if (currentSalesMonth && document.body.getAttribute('data-page') && ['invoices', 'sales'].includes(document.body.getAttribute('data-page'))) {
-						const month = String(currentSalesMonth || '');
-						if (!/^\d{4}-\d{2}$/.test(month)) return;
-						loadMonthData(month);
-						renderSalesPage();
-					}
-				} catch (_pullErr) { /* ignore */ }
-			} catch (_e) { /* keep polling */ }
-		}, 2000);
-	}
-
+	// ── Phase 1: render immediately from localStorage — zero network wait ──
 	initDashboardPage();
 	initInventoryPage();
 	initSalesInvoicesPage();
@@ -9564,6 +9503,94 @@ document.addEventListener('DOMContentLoaded', async () => {
 	initAccountingPage();
 	initProductionPage();
 	initReportsPage();
+
+	// ── Phase 2: background sync — fetch fresh data then re-render ──
+	if (authenticated) {
+		(async () => {
+			try {
+				// Flush in background — don't block the data fetch
+				flushPendingSalesSyncToServer().catch(() => {});
+
+				const page = document.body.getAttribute('data-page');
+				const pageKeyMap = {
+					invoices:   ['ww_seed_flags', 'ww_sales_months'],
+					sales:      ['ww_seed_flags', 'ww_sales_months'],
+					dashboard:  ['ww_seed_flags', 'ww_sales_months', 'ww_raw_materials', 'ww_finished_products', 'ww_accounting_data_v2'],
+					inventory:  ['ww_raw_materials', 'ww_finished_products', 'ww_equipment', 'ww_bom_data'],
+					accounting: ['ww_accounting_data_v2', 'ww_cost_centre_budgets'],
+					purchase:   ['ww_purchase_data_v2'],
+					production: ['ww_production_batches', 'ww_daily_production', 'ww_raw_materials', 'ww_finished_products'],
+					reports:    ['ww_sales_months', 'ww_accounting_data_v2'],
+				};
+				const priorityKeys = pageKeyMap[page] || ['ww_seed_flags', 'ww_sales_months'];
+				await loadBulkFromServer(priorityKeys);
+
+				if (page === 'invoices' || page === 'sales') {
+					const salesMonths = getSalesMonths();
+					if (salesMonths.length) await loadBulkFromServer(salesMonths.map((m) => 'ww_sales_' + m));
+				}
+
+				// Re-render current page with fresh data
+				if ((page === 'invoices' || page === 'sales') && currentSalesMonth) {
+					loadMonthData(currentSalesMonth); renderSalesPage();
+				} else if (page === 'dashboard' && typeof refreshDashboardView === 'function') {
+					refreshDashboardView();
+				} else if (page === 'reports' && typeof renderReportsData === 'function') {
+					renderReportsData();
+				}
+				broadcastRemoteSyncRefresh();
+
+				// Load remaining keys for other pages in the background
+				const remainingKeys = ['ww_raw_materials','ww_finished_products','ww_production_batches',
+					'ww_daily_production','ww_purchase_data_v2','ww_accounting_data_v2',
+					'ww_cost_centre_budgets','ww_bom_data','ww_equipment','ww_market_yearly_values',
+				].filter((k) => !priorityKeys.includes(k));
+				if (remainingKeys.length) loadBulkFromServer(remainingKeys).catch(() => {});
+			} catch (_e) { console.warn('[Init] Background sync failed:', _e); }
+		})();
+	}
+
+	// ── SSE: instant cross-device sync ──
+	if (authenticated && isOpsPage && !window.__wwLiveSyncConnected) {
+		window.__wwLiveSyncConnected = true;
+		const connectSse = () => {
+			if (window.__wwSseSource) { try { window.__wwSseSource.close(); } catch (_e) {} }
+			const es = new EventSource(API_BASE + '/api/live-updates', { withCredentials: true });
+			window.__wwSseSource = es;
+			es.addEventListener('data_updated', async () => {
+				try {
+					flushPendingSalesSyncToServer().catch(() => {});
+					await pullRemoteDataAndRefreshUi();
+					const page = document.body.getAttribute('data-page');
+					if ((page === 'invoices' || page === 'sales') && currentSalesMonth) {
+						loadMonthData(currentSalesMonth); renderSalesPage();
+					} else if (page === 'dashboard' && typeof refreshDashboardView === 'function') {
+						refreshDashboardView();
+					} else if (page === 'reports' && typeof renderReportsData === 'function') {
+						renderReportsData();
+					}
+				} catch (_e) {}
+			});
+			es.onerror = () => {
+				try { es.close(); } catch (_e) {}
+				window.__wwSseSource = null;
+				window.__wwLiveSyncConnected = false;
+				setTimeout(() => { if (!window.__wwLiveSyncConnected) connectSse(); }, 5000);
+			};
+		};
+		connectSse();
+		document.addEventListener('visibilitychange', async () => {
+			if (!document.hidden) {
+				try {
+					await pullRemoteDataAndRefreshUi();
+					const page = document.body.getAttribute('data-page');
+					if ((page === 'invoices' || page === 'sales') && currentSalesMonth) {
+						loadMonthData(currentSalesMonth); renderSalesPage();
+					}
+				} catch (_e) {}
+			}
+		});
+	}
 
 	// After all pages render, hide edit/delete in dynamic content for restricted roles
 	if (document.body.classList.contains('role-restricted')) {

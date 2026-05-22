@@ -719,12 +719,10 @@ function toIsoMs(value) {
 function pickNewerRecord(existing, incoming) {
   if (!existing) return incoming;
   if (!incoming) return existing;
-  // Only use the incoming record if it has a strictly newer updatedAt/modifiedAt timestamp.
-  // This prevents stale clients from overwriting edits (e.g. status changes) made by others.
+  // Only updatedAt/modifiedAt — createdAt never changes so using it with >=
+  // always lets the incoming record win, resurrecting deleted invoices.
   const existingMs = Math.max(toIsoMs(existing.updatedAt), toIsoMs(existing.modifiedAt));
   const incomingMs = Math.max(toIsoMs(incoming.updatedAt), toIsoMs(incoming.modifiedAt));
-  // If the incoming record has a genuinely newer edit timestamp, prefer it.
-  // Otherwise always keep the server (existing) copy.
   return incomingMs > existingMs ? incoming : existing;
 }
 
@@ -765,9 +763,7 @@ function normalizeSalesMonthPayload(key, payload) {
     if (!id) continue;
     byId.set(id, pickNewerRecord(byId.get(id), inv));
   }
-  // Sort invoices by createdAt ascending so invoice #1 is always the oldest one,
-  // consistently on every device and for every user.
-  const dedupInvoices = [...byId.values()].sort((a, b) => toIsoMs(a.createdAt) - toIsoMs(b.createdAt));
+  const dedupInvoices = [...byId.values()];
   const activeInvoiceIds = new Set(dedupInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
 
   const orders = Array.isArray(payload.salesOrders) ? payload.salesOrders.filter((ord) => ord && ord.id) : [];
@@ -778,8 +774,7 @@ function normalizeSalesMonthPayload(key, payload) {
     if (!id || !sourceInvoiceId || !activeInvoiceIds.has(sourceInvoiceId)) continue;
     orderById.set(id, pickNewerRecord(orderById.get(id), ord));
   }
-  // Sort orders by createdAt ascending for stable, consistent ordering across all devices.
-  const dedupOrders = [...orderById.values()].sort((a, b) => toIsoMs(a.createdAt) - toIsoMs(b.createdAt));
+  const dedupOrders = [...orderById.values()];
 
   const nextDeletedInvoiceIds = (Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : [])
     .map((id) => String(id || '').trim())
@@ -841,87 +836,88 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
   try {
     const key = req.params.key;
     if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
-    let normalized = normalizeSalesMonthPayload(key, req.body.data);
 
-    // Guard against stale clients resurrecting previously deleted entries,
-    // and prevent stale pushes from overwriting status edits made on other devices.
     if (/^ww_sales_\d{4}-\d{2}$/.test(String(key))) {
+      // Apply deletion guard BEFORE normalizing. Normalizing first runs pickNewerRecord
+      // on raw incoming data and can revive deleted invoices before the guard runs.
+      const incoming = req.body.data && typeof req.body.data === 'object' ? req.body.data : {};
       const existingDoc = await AppData.findOne({ key }).lean();
-      const existing = normalizeSalesMonthPayload(key, existingDoc && existingDoc.data ? existingDoc.data : {});
+      const serverData = existingDoc && existingDoc.data && typeof existingDoc.data === 'object' ? existingDoc.data : {};
 
-      // Accumulate deleted IDs from both server and client — deletions are permanent.
+      // Merge deletedInvoiceIds from both sources — deletions are permanent.
       const deletedInvoiceIds = new Set([
-        ...(Array.isArray(existing.deletedInvoiceIds) ? existing.deletedInvoiceIds : []),
-        ...(Array.isArray(normalized.deletedInvoiceIds) ? normalized.deletedInvoiceIds : []),
+        ...(Array.isArray(serverData.deletedInvoiceIds) ? serverData.deletedInvoiceIds : []),
+        ...(Array.isArray(incoming.deletedInvoiceIds) ? incoming.deletedInvoiceIds : []),
       ].map((id) => String(id || '').trim()).filter(Boolean));
 
       const deletedOrderIds = new Set([
-        ...(Array.isArray(existing.deletedOrderIds) ? existing.deletedOrderIds : []),
-        ...(Array.isArray(normalized.deletedOrderIds) ? normalized.deletedOrderIds : []),
+        ...(Array.isArray(serverData.deletedOrderIds) ? serverData.deletedOrderIds : []),
+        ...(Array.isArray(incoming.deletedOrderIds) ? incoming.deletedOrderIds : []),
       ].map((id) => String(id || '').trim()).filter(Boolean));
 
-      // Build a map of existing invoices for record-by-record merging.
-      // This prevents a status edit on one device from being clobbered by a stale push from another.
-      const existingInvoiceMap = new Map();
-      for (const inv of (Array.isArray(existing.invoices) ? existing.invoices : [])) {
-        if (inv && inv.id) existingInvoiceMap.set(String(inv.id).trim(), inv);
+      // Build server invoice map for record-by-record merge.
+      const serverInvoiceMap = new Map();
+      for (const inv of (Array.isArray(serverData.invoices) ? serverData.invoices : [])) {
+        if (inv && inv.id && !deletedInvoiceIds.has(String(inv.id).trim()))
+          serverInvoiceMap.set(String(inv.id).trim(), inv);
       }
 
-      // Merge incoming invoices with server copies, keeping whichever is newer.
-      const mergedInvoices = (Array.isArray(normalized.invoices) ? normalized.invoices : [])
-        .filter((inv) => inv && inv.id)
-        .filter((inv) => !deletedInvoiceIds.has(String(inv.id || '').trim()))
-        .map((inv) => {
-          const id = String(inv.id).trim();
-          return pickNewerRecord(existingInvoiceMap.get(id), inv);
-        });
-
-      // Preserve any server-side invoices not in the incoming payload (another device may own them).
-      const incomingInvoiceIds = new Set(mergedInvoices.map((inv) => String(inv.id).trim()));
-      for (const [id, inv] of existingInvoiceMap.entries()) {
-        if (!incomingInvoiceIds.has(id) && !deletedInvoiceIds.has(id)) {
-          mergedInvoices.push(inv);
-        }
+      // Strip deleted from incoming, merge with server copies.
+      const seenIds = new Set();
+      const mergedInvoices = [];
+      for (const inv of (Array.isArray(incoming.invoices) ? incoming.invoices : [])) {
+        if (!inv || !inv.id) continue;
+        const id = String(inv.id).trim();
+        if (deletedInvoiceIds.has(id) || seenIds.has(id)) continue;
+        seenIds.add(id);
+        mergedInvoices.push(pickNewerRecord(serverInvoiceMap.get(id), inv));
+      }
+      for (const [id, inv] of serverInvoiceMap.entries()) {
+        if (!seenIds.has(id)) mergedInvoices.push(inv);
       }
 
-      // Same record-by-record merge for sales orders.
-      const existingOrderMap = new Map();
-      for (const ord of (Array.isArray(existing.salesOrders) ? existing.salesOrders : [])) {
-        if (ord && ord.id) existingOrderMap.set(String(ord.id).trim(), ord);
+      const activeInvoiceIds = new Set(mergedInvoices.map((inv) => String(inv.id).trim()));
+
+      // Same for orders.
+      const serverOrderMap = new Map();
+      for (const ord of (Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [])) {
+        if (!ord || !ord.id) continue;
+        const src = String(ord.sourceInvoiceId || '').trim();
+        if (!deletedOrderIds.has(String(ord.id).trim()) && activeInvoiceIds.has(src))
+          serverOrderMap.set(String(ord.id).trim(), ord);
       }
 
-      const activeInvoiceIds = new Set(mergedInvoices.map((inv) => String(inv.id || '').trim()).filter(Boolean));
-      const guardedOrders = (Array.isArray(normalized.salesOrders) ? normalized.salesOrders : [])
-        .filter((ord) => ord && ord.id)
-        .filter((ord) => {
-          const id = String(ord.id || '').trim();
-          const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
-          if (!id || !sourceInvoiceId) return false;
-          if (deletedOrderIds.has(id)) return false;
-          if (deletedInvoiceIds.has(sourceInvoiceId)) return false;
-          return activeInvoiceIds.has(sourceInvoiceId);
-        })
-        .map((ord) => pickNewerRecord(existingOrderMap.get(String(ord.id).trim()), ord));
-
-      // Preserve any server-side orders not in the incoming payload.
-      const incomingOrderIds = new Set(guardedOrders.map((o) => String(o.id).trim()));
-      for (const [id, ord] of existingOrderMap.entries()) {
-        const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
-        if (!incomingOrderIds.has(id) && !deletedOrderIds.has(id) && activeInvoiceIds.has(sourceInvoiceId)) {
-          guardedOrders.push(ord);
-        }
+      const seenOrdIds = new Set();
+      const mergedOrders = [];
+      for (const ord of (Array.isArray(incoming.salesOrders) ? incoming.salesOrders : [])) {
+        if (!ord || !ord.id) continue;
+        const id = String(ord.id).trim();
+        const src = String(ord.sourceInvoiceId || '').trim();
+        if (deletedOrderIds.has(id) || deletedInvoiceIds.has(src) || !activeInvoiceIds.has(src) || seenOrdIds.has(id)) continue;
+        seenOrdIds.add(id);
+        mergedOrders.push(pickNewerRecord(serverOrderMap.get(id), ord));
+      }
+      for (const [id, ord] of serverOrderMap.entries()) {
+        if (!seenOrdIds.has(id)) mergedOrders.push(ord);
       }
 
-      normalized = normalizeSalesMonthPayload(key, {
-        ...normalized,
+      const normalized = normalizeSalesMonthPayload(key, {
+        ...incoming,
         invoices: mergedInvoices,
-        salesOrders: guardedOrders,
+        salesOrders: mergedOrders,
         deletedInvoiceIds: Array.from(deletedInvoiceIds),
         deletedOrderIds: Array.from(deletedOrderIds),
       });
+
+      await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
+      if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key });
+      return res.json({ ok: true });
     }
 
+    // Non-sales keys: simple normalize and save.
+    const normalized = normalizeSalesMonthPayload(key, req.body.data);
     await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
+    if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key });
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -1244,16 +1240,18 @@ async function restoreTrashAppDataItem(trashItem) {
         const orderId = String((trashItem.record_data && trashItem.record_data.id) || '').trim();
         if (orderId) pullOps['data.deletedOrderIds'] = orderId;
       }
-      const updateDoc = {
-        $setOnInsert: { key, data: {} },
-        $push: { [updatePath]: trashItem.record_data },
-      };
-      if (Object.keys(pullOps).length) updateDoc.$pull = pullOps;
+      // $push and $pull cannot target different paths in the same updateOne in all
+      // MongoDB drivers. Do them as two operations: first ensure the doc exists and
+      // remove the deleted-ID marker, then push the record back in.
       await AppData.updateOne(
         { key },
-        updateDoc,
+        { $setOnInsert: { key, data: { invoices: [], salesOrders: [], deletedInvoiceIds: [], deletedOrderIds: [] } } },
         { upsert: true }
       );
+      if (Object.keys(pullOps).length) {
+        await AppData.updateOne({ key }, { $pull: pullOps });
+      }
+      await AppData.updateOne({ key }, { $push: { [updatePath]: trashItem.record_data } });
     } else {
       const doc = await AppData.findOne({ key }).lean();
       const current = Array.isArray(doc && doc.data) ? doc.data : [];

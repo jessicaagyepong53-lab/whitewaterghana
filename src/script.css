@@ -2464,3 +2464,11 @@ body {
 	.wb-detail-doc { padding: 16px 14px; }
 	.wb-detail-row-split { flex-direction: column; gap: 0; }
 }
+
+/* ── Reports page: bags summary card ── */
+.stat-card.rep-bags-card { border-color: #bfdbfe; background: linear-gradient(135deg,#eff6ff 0%,#fff 100%); }
+.stat-card.rep-bags-card .s-value { color: #1d4ed8; }
+.stat-card.rep-bags-card .s-icon  { background: rgba(29,78,216,.1); color: #1d4ed8; }
+.stat-card.rep-bags-card .split-meta { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+.stat-card.rep-bags-card .split-meta span { font-size: 0.82rem; color: #475569; }
+.stat-card.rep-bags-card .split-meta strong { color: #0f172a; }
