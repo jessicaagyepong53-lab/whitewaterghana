@@ -694,6 +694,63 @@ app.get('/api/reports', ensureAuthenticated, ensureRole('reports'), async (_req,
   try { res.json(await getReportData()); } catch (e) { next(e); }
 });
 
+// Aggregate invoice/sales totals from AppData (the source of truth for this system)
+app.get('/api/reports/sales-summary', ensureAuthenticated, ensureRole('reports'), async (req, res, next) => {
+  try {
+    const { month, year } = req.query;
+    // Find all sales month keys
+    let query = { key: /^ww_sales_\d{4}-\d{2}$/ };
+    if (month) {
+      // month param like "2026-05"
+      query = { key: 'ww_sales_' + month };
+    } else if (year) {
+      query = { key: new RegExp('^ww_sales_' + year + '-\\d{2}$') };
+    }
+
+    const docs = await AppData.find(query).lean();
+    let totalInvoices = 0;
+    let totalRevenue = 0;
+    let totalOrders = 0;
+    let paidCount = 0;
+    let unpaidCount = 0;
+    const monthBreakdown = [];
+
+    for (const doc of docs) {
+      const payload = (doc.data && typeof doc.data === 'object') ? doc.data : {};
+      const invoices = Array.isArray(payload.invoices) ? payload.invoices : [];
+      const orders = Array.isArray(payload.salesOrders) ? payload.salesOrders : [];
+      const monthRevenue = invoices.reduce((sum, inv) => sum + (Number(inv && inv.amount) || 0), 0);
+      const monthPaid = invoices.filter((inv) => inv && (inv.payment === 'Paid' || inv.status === 'Paid')).length;
+
+      totalInvoices += invoices.length;
+      totalOrders += orders.length;
+      totalRevenue += monthRevenue;
+      paidCount += monthPaid;
+      unpaidCount += (invoices.length - monthPaid);
+
+      monthBreakdown.push({
+        month: doc.key.replace('ww_sales_', ''),
+        invoices: invoices.length,
+        orders: orders.length,
+        revenue: monthRevenue,
+        paid: monthPaid,
+        unpaid: invoices.length - monthPaid,
+      });
+    }
+
+    monthBreakdown.sort((a, b) => a.month.localeCompare(b.month));
+
+    res.json({
+      totalInvoices,
+      totalOrders,
+      totalRevenue,
+      paidCount,
+      unpaidCount,
+      months: monthBreakdown,
+    });
+  } catch (error) { next(error); }
+});
+
 /* ═══════════════════════════════════════════════
    APP DATA (generic key-value persistence)
    ═══════════════════════════════════════════════ */
@@ -807,13 +864,22 @@ app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
     if (!keys.length) return res.json({ items: [] });
     const docs = await AppData.find({ key: { $in: keys } }).lean();
     const map = {};
+    const savePromises = [];
     for (const d of docs) {
-      const normalized = normalizeSalesMonthPayload(d.key, d.data);
-      map[d.key] = normalized;
-      if (JSON.stringify(normalized) !== JSON.stringify(d.data)) {
-        await AppData.updateOne({ key: d.key }, { key: d.key, data: normalized }, { upsert: true });
+      if (/^ww_sales_\d{4}-\d{2}$/.test(d.key)) {
+        const normalized = normalizeSalesMonthPayload(d.key, d.data);
+        map[d.key] = normalized;
+        // Only write back if invoice count changed — avoids pointless writes on every GET
+        const origCount = Array.isArray(d.data && d.data.invoices) ? d.data.invoices.length : -1;
+        const normCount = Array.isArray(normalized && normalized.invoices) ? normalized.invoices.length : -1;
+        if (origCount !== normCount) {
+          savePromises.push(AppData.updateOne({ key: d.key }, { key: d.key, data: normalized }, { upsert: true }));
+        }
+      } else {
+        map[d.key] = d.data;
       }
     }
+    if (savePromises.length) await Promise.all(savePromises);
     res.json({ items: map });
   } catch (error) { next(error); }
 });
@@ -824,11 +890,16 @@ app.get('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
     if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
     const doc = await AppData.findOne({ key }).lean();
     if (!doc) return res.json({ key, data: null });
-    const normalized = normalizeSalesMonthPayload(key, doc.data);
-    if (JSON.stringify(normalized) !== JSON.stringify(doc.data)) {
-      await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
+    if (/^ww_sales_\d{4}-\d{2}$/.test(key)) {
+      const normalized = normalizeSalesMonthPayload(key, doc.data);
+      const origCount = Array.isArray(doc.data && doc.data.invoices) ? doc.data.invoices.length : -1;
+      const normCount = Array.isArray(normalized && normalized.invoices) ? normalized.invoices.length : -1;
+      if (origCount !== normCount) {
+        await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
+      }
+      return res.json({ key, data: normalized });
     }
-    res.json({ key, data: normalized });
+    res.json({ key, data: doc.data });
   } catch (error) { next(error); }
 });
 
@@ -1230,28 +1301,40 @@ async function restoreTrashAppDataItem(trashItem) {
     if (!isAllowedDataKey(key)) throw createError(400, 'Cannot restore to invalid app-data key');
 
     if (meta.arrayPath) {
-      const updatePath = `data.${meta.arrayPath}`;
-      const pullOps = {};
-      if (meta.arrayPath === 'invoices') {
-        const invoiceId = String((trashItem.record_data && trashItem.record_data.id) || '').trim();
-        if (invoiceId) pullOps['data.deletedInvoiceIds'] = invoiceId;
+      // Safe read-modify-write: avoids $push/$pull race and ensures normalize
+      // sees the restored record alongside its linked invoice/order.
+      const existingDoc = await AppData.findOne({ key }).lean();
+      const payload = (existingDoc && existingDoc.data && typeof existingDoc.data === 'object' && !Array.isArray(existingDoc.data))
+        ? { ...existingDoc.data }
+        : { invoices: [], salesOrders: [], deletedInvoiceIds: [], deletedOrderIds: [] };
+
+      const restoredRecord = trashItem.record_data;
+      const restoredId = String((restoredRecord && restoredRecord.id) || '').trim();
+
+      // 1. Remove the ID from the deleted-IDs tombstone list FIRST
+      if (meta.arrayPath === 'invoices' && restoredId) {
+        payload.deletedInvoiceIds = (Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : [])
+          .filter((id) => String(id || '').trim() !== restoredId);
       }
-      if (meta.arrayPath === 'salesOrders') {
-        const orderId = String((trashItem.record_data && trashItem.record_data.id) || '').trim();
-        if (orderId) pullOps['data.deletedOrderIds'] = orderId;
+      if (meta.arrayPath === 'salesOrders' && restoredId) {
+        payload.deletedOrderIds = (Array.isArray(payload.deletedOrderIds) ? payload.deletedOrderIds : [])
+          .filter((id) => String(id || '').trim() !== restoredId);
       }
-      // $push and $pull cannot target different paths in the same updateOne in all
-      // MongoDB drivers. Do them as two operations: first ensure the doc exists and
-      // remove the deleted-ID marker, then push the record back in.
-      await AppData.updateOne(
-        { key },
-        { $setOnInsert: { key, data: { invoices: [], salesOrders: [], deletedInvoiceIds: [], deletedOrderIds: [] } } },
-        { upsert: true }
-      );
-      if (Object.keys(pullOps).length) {
-        await AppData.updateOne({ key }, { $pull: pullOps });
+
+      // 2. Add the record back into its array (replace if already present by id, else append)
+      const arr = Array.isArray(payload[meta.arrayPath]) ? payload[meta.arrayPath] : [];
+      const existingIdx = restoredId ? arr.findIndex((r) => String(r && r.id || '').trim() === restoredId) : -1;
+      if (existingIdx >= 0) {
+        arr[existingIdx] = restoredRecord;
+      } else {
+        arr.push(restoredRecord);
       }
-      await AppData.updateOne({ key }, { $push: { [updatePath]: trashItem.record_data } });
+      payload[meta.arrayPath] = arr;
+
+      // 3. Write back without running normalizeSalesMonthPayload yet — the caller
+      //    (restore endpoint) may push linked orders immediately after, so we do a
+      //    raw write here and let the next read normalize naturally.
+      await AppData.updateOne({ key }, { $set: { key, data: payload } }, { upsert: true });
     } else {
       const doc = await AppData.findOne({ key }).lean();
       const current = Array.isArray(doc && doc.data) ? doc.data : [];

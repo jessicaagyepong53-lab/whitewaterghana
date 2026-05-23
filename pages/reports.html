@@ -134,5 +134,86 @@
 </div>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="../src/script.js?v=20260517v2"></script>
+
+<script>
+// Reports KPI patch — uses AppData as source of truth for invoice counts
+// This runs after script.js and corrects figures that script.js reads from
+// the legacy SalesOrder/Invoice collections instead of AppData.
+(function patchReportsKpis() {
+  async function loadSalesSummary() {
+    try {
+      const filterType = document.getElementById('rep-filter-type');
+      const filterMonth = document.getElementById('rep-filter-month');
+      const filterYear = document.getElementById('rep-filter-year');
+
+      let url = '/api/reports/sales-summary';
+      if (filterType && filterType.value === 'month' && filterMonth && filterMonth.value) {
+        url += '?month=' + encodeURIComponent(filterMonth.value);
+      } else if (filterType && filterType.value === 'year' && filterYear && filterYear.value) {
+        url += '?year=' + encodeURIComponent(filterYear.value);
+      }
+
+      const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+
+      // Patch the KPI grid — update any card whose label mentions Invoice or Revenue
+      const grid = document.getElementById('rep-kpi-grid');
+      if (grid) {
+        const cards = grid.querySelectorAll('.kpi-card, .stat-card, [data-kpi]');
+        cards.forEach((card) => {
+          const label = (card.querySelector('.kpi-label, .stat-label, h4, p') || {}).textContent || '';
+          const valueEl = card.querySelector('.kpi-value, .stat-value, h3, span.value');
+          if (!valueEl) return;
+          const lc = label.toLowerCase();
+          if (lc.includes('invoice') && lc.includes('total') || lc === 'total invoices') {
+            valueEl.textContent = data.totalInvoices.toLocaleString();
+          } else if (lc.includes('revenue') || lc.includes('total sales')) {
+            valueEl.textContent = 'GH₵ ' + Number(data.totalRevenue).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+          }
+        });
+      }
+
+      // Also update the P&L table if it exists
+      const plTbody = document.getElementById('pl-tbody');
+      if (plTbody) {
+        const rows = plTbody.querySelectorAll('tr');
+        rows.forEach((row) => {
+          const cells = row.querySelectorAll('td');
+          if (cells.length >= 2) {
+            const label = cells[0].textContent.toLowerCase();
+            if (label.includes('revenue') || label.includes('sales')) {
+              // Update revenue cell with correct figure from AppData
+              cells[1].textContent = 'GH₵ ' + Number(data.totalRevenue).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+            }
+          }
+        });
+      }
+
+      // Expose for debugging
+      window._wwSalesSummary = data;
+    } catch (e) {
+      console.warn('[Reports patch] Could not load sales summary:', e);
+    }
+  }
+
+  // Run after script.js has had a chance to render
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(loadSalesSummary, 800));
+  } else {
+    setTimeout(loadSalesSummary, 800);
+  }
+
+  // Re-run when filter changes
+  ['rep-filter-type', 'rep-filter-month', 'rep-filter-year'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', () => setTimeout(loadSalesSummary, 400));
+  });
+
+  // Expose for manual refresh
+  window.refreshReportsSalesSummary = loadSalesSummary;
+})();
+</script>
+
 </body>
 </html>
