@@ -212,9 +212,9 @@ body {
 .ops-topbar {
 	height: 56px;
 	padding: 0 20px;
-	background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+	background: linear-gradient(135deg, #0f2044 0%, #080f1e 100%);
 	color: #fff;
-	box-shadow: 0 4px 14px rgba(29,78,216,0.3);
+	box-shadow: 0 4px 14px rgba(8,15,30,0.55);
 	position: sticky;
 	top: 0;
 	z-index: 20;
@@ -239,12 +239,12 @@ body {
 	left: 0;
 	width: 300px;
 	height: 100vh;
-	background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
+	background: linear-gradient(180deg, #0f2044 0%, #080f1e 100%);
 	z-index: 29;
 	overflow-y: auto;
 	display: flex;
 	flex-direction: column;
-	box-shadow: 4px 0 28px rgba(29,78,216,0.32);
+	box-shadow: 4px 0 28px rgba(8,15,30,0.55);
 	transition: width 0.3s ease, transform 0.3s ease;
 }
 
@@ -2087,17 +2087,17 @@ body {
 	height: 40px;
 	border-radius: 10px;
 	border: none;
-	background: #2563eb;
+	background: #0f2044;
 	color: #fff;
 	font-size: 1.1rem;
 	cursor: pointer;
-	box-shadow: 0 4px 14px rgba(29,78,216,0.35);
+	box-shadow: 0 4px 14px rgba(8,15,30,0.55);
 	display: none;
 	align-items: center;
 	justify-content: center;
 	transition: background 0.15s, transform 0.15s;
 }
-.sidebar-expand-btn:hover { background: #1d4ed8; transform: scale(1.05); }
+.sidebar-expand-btn:hover { background: #080f1e; transform: scale(1.05); }
 .sidebar-collapsed .sidebar-expand-btn { display: flex; }
 
 /* ---- Responsive ---- */

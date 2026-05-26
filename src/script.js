@@ -1,4 +1,4 @@
-const API_BASE = '';
+﻿const API_BASE = '';
 const LAST_DATA_UPDATE_KEY = 'ww_last_data_update';
 const SALES_PENDING_SYNC_PREFIX = 'ww_pending_sales_sync_';
 const SALES_PENDING_SYNC_TS_PREFIX = 'ww_pending_sales_sync_ts_';
@@ -5025,7 +5025,7 @@ function renderInvoiceDetail(invoice) {
 		<div class="inv-doc" id="inv-document">
 			<div class="inv-doc-header">
 				<div class="inv-doc-logo-area">
-					<img src="../images/Final%20Logo.jpg" alt="Logo" class="inv-doc-logo">
+					<img src="../images/New%20Logo.jpeg" alt="Logo" class="inv-doc-logo">
 				</div>
 				<div class="inv-doc-company">
 					<h2 class="inv-doc-company-name">White Water Wells LTD</h2>
