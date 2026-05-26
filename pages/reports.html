@@ -169,7 +169,7 @@
           if (lc.includes('invoice') && lc.includes('total') || lc === 'total invoices') {
             valueEl.textContent = data.totalInvoices.toLocaleString();
           } else if (lc.includes('revenue') || lc.includes('total sales')) {
-            valueEl.textContent = 'GH₵ ' + Number(data.totalRevenue).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+            valueEl.textContent = 'GH₵ ' + Number(data.paidRevenue).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
           }
         });
       }
@@ -183,8 +183,8 @@
           if (cells.length >= 2) {
             const label = cells[0].textContent.toLowerCase();
             if (label.includes('revenue') || label.includes('sales')) {
-              // Update revenue cell with correct figure from AppData
-              cells[1].textContent = 'GH₵ ' + Number(data.totalRevenue).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+              // Update revenue cell with correct paid-only figure from AppData
+              cells[1].textContent = 'GH₵ ' + Number(data.paidRevenue).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
             }
           }
         });

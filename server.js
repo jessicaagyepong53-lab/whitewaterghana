@@ -513,6 +513,16 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, timestamp: nowIso() });
 });
 
+// ── SSE: real-time cross-device sync ──
+const sseClients = new Set();
+
+function broadcastSseEvent(event, data) {
+  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const res of sseClients) {
+    try { res.write(msg); } catch (_e) { sseClients.delete(res); }
+  }
+}
+
 // GET handlers for auth routes — silences browser/extension prefetch probes
 app.get('/api/auth/register', (_req, res) => { res.json({ message: 'Use POST.' }); });
 app.get('/api/auth/login', (_req, res) => { res.json({ message: 'Use POST.' }); });
@@ -710,6 +720,7 @@ app.get('/api/reports/sales-summary', ensureAuthenticated, ensureRole('reports')
     const docs = await AppData.find(query).lean();
     let totalInvoices = 0;
     let totalRevenue = 0;
+    let paidRevenue = 0;
     let totalOrders = 0;
     let paidCount = 0;
     let unpaidCount = 0;
@@ -720,11 +731,14 @@ app.get('/api/reports/sales-summary', ensureAuthenticated, ensureRole('reports')
       const invoices = Array.isArray(payload.invoices) ? payload.invoices : [];
       const orders = Array.isArray(payload.salesOrders) ? payload.salesOrders : [];
       const monthRevenue = invoices.reduce((sum, inv) => sum + (Number(inv && inv.amount) || 0), 0);
-      const monthPaid = invoices.filter((inv) => inv && (inv.payment === 'Paid' || inv.status === 'Paid')).length;
+      const isPaid = (inv) => inv && (inv.status === 'paid' || inv.payment === 'paid');
+      const monthPaid = invoices.filter(isPaid).length;
+      const monthPaidRevenue = invoices.filter(isPaid).reduce((sum, inv) => sum + (Number(inv.amount) || 0), 0);
 
       totalInvoices += invoices.length;
       totalOrders += orders.length;
       totalRevenue += monthRevenue;
+      paidRevenue += monthPaidRevenue;
       paidCount += monthPaid;
       unpaidCount += (invoices.length - monthPaid);
 
@@ -733,6 +747,7 @@ app.get('/api/reports/sales-summary', ensureAuthenticated, ensureRole('reports')
         invoices: invoices.length,
         orders: orders.length,
         revenue: monthRevenue,
+        paidRevenue: monthPaidRevenue,
         paid: monthPaid,
         unpaid: invoices.length - monthPaid,
       });
@@ -744,6 +759,7 @@ app.get('/api/reports/sales-summary', ensureAuthenticated, ensureRole('reports')
       totalInvoices,
       totalOrders,
       totalRevenue,
+      paidRevenue,
       paidCount,
       unpaidCount,
       months: monthBreakdown,
@@ -991,6 +1007,20 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
     if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key });
     res.json({ ok: true });
   } catch (error) { next(error); }
+});
+
+app.get('/api/live-updates', ensureAuthenticated, (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+  res.write(': connected\n\n');
+  sseClients.add(res);
+  const heartbeat = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch (_e) { clearInterval(heartbeat); sseClients.delete(res); }
+  }, 25000);
+  req.on('close', () => { clearInterval(heartbeat); sseClients.delete(res); });
 });
 
 /* Generic resource GET (must be AFTER specific /api/* routes) */

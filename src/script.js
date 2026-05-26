@@ -1145,9 +1145,22 @@ async function loadBulkFromServer(keys) {
 					const salesMonth = getSalesMonthFromStorageKey(k);
 					if (salesMonth) {
 						if (SALES_SERVER_AUTHORITATIVE_MODE) {
-							localStorage.setItem(k, JSON.stringify(v));
-							setProtectedSalesPayload(salesMonth, v);
-							clearPendingSalesSync(salesMonth);
+							if (hasPendingSalesSyncForKey(k)) {
+								// Unsent local edits exist — merge instead of blindly overwriting.
+								// Mirrors the hasPending branch in reloadSalesMonthsFromServerHard.
+								try {
+									const localRaw = localStorage.getItem(k);
+									const localData = localRaw ? JSON.parse(localRaw) : {};
+									const merged = mergeSalesMonthPayloads(localData, v, salesMonth);
+									localStorage.setItem(k, JSON.stringify(merged));
+									setProtectedSalesPayload(salesMonth, merged);
+									queuePendingSalesSync(salesMonth, merged);
+								} catch (_mergeErr) { /* keep local data on merge failure */ }
+							} else {
+								localStorage.setItem(k, JSON.stringify(v));
+								setProtectedSalesPayload(salesMonth, v);
+								clearPendingSalesSync(salesMonth);
+							}
 							continue;
 						}
 						if (isCanonicalExcelMarchMonth(salesMonth)) {
@@ -2946,6 +2959,7 @@ async function initDashboardPage() {
 			if (!document.hidden) refreshOnFocus();
 		});
 	}
+	document.addEventListener('ww-refresh-page', refreshDashboardView);
 }
 
 async function initInventoryPage() {
@@ -3969,6 +3983,7 @@ async function initInventoryPage() {
 		new BroadcastChannel('ww_finished_products_sync').onmessage = () => reloadAndRerender().catch(() => {});
 		new BroadcastChannel('ww_equipment_sync').onmessage = () => reloadAndRerender().catch(() => {});
 	} catch (_e) { /* BroadcastChannel not supported */ }
+	document.addEventListener('ww-refresh-page', rerenderInventory);
 }
 
 const salesModuleData = {
@@ -4234,22 +4249,23 @@ function getAllSalesData() {
 	const months = recoverSalesMonthsFromStorage();
 	const allInvoices = [];
 	const allOrders = [];
-	const seenInvoiceIds = new Set();
 	const seenOrderIds = new Set();
-	const seenInvoiceSignatures = new Set();
 	const seenOrderSignatures = new Set();
 	for (const m of months) {
 		try {
 			const stored = getSalesMonthPayload(m);
 			if (stored && typeof stored === 'object') {
 				if (Array.isArray(stored.invoices)) {
+					// Dedup within this month only — do NOT skip invoices whose ID
+					// appeared in an earlier month bucket, because the year-resequence
+					// migration can assign the same INV-YEAR-NNN number to different
+					// invoices in different months (they are distinct records).
+					const seenInMonthIds = new Set();
 					for (const inv of stored.invoices) {
 						if (!inv || !inv.id) continue;
-						// Do NOT filter by month bucket here — the invoices page shows all
-						// invoices in the payload regardless of date, so reports must match.
 						const id = String(inv.id);
-						if (seenInvoiceIds.has(id)) continue;
-						seenInvoiceIds.add(id);
+						if (seenInMonthIds.has(id)) continue;
+						seenInMonthIds.add(id);
 						allInvoices.push(inv);
 					}
 				}
@@ -6126,6 +6142,7 @@ async function initSalesInvoicesPage() {
 	renderSalesPage();
 
 	document.addEventListener('ww-refresh-sales', () => renderSalesPage());
+	document.addEventListener('ww-refresh-page', () => { loadMonthData(currentSalesMonth); renderSalesPage(); });
 
 	// ── Cross-device live sync for current sales month ──
 	// Pull and apply latest month state continuously so Device B updates automatically
@@ -6795,6 +6812,7 @@ function initPurchasePage() {
 			window.__wwPurchaseChannel.onmessage = reloadPurchasePage;
 		} catch (_e) { /* ignore */ }
 	}
+	document.addEventListener('ww-refresh-page', renderPurchasePage);
 }
 
 /* ---- Accounting Data Persistence ---- */
@@ -8090,6 +8108,7 @@ function initAccountingPage() {
 			} catch (_e) { /* ignore */ }
 		}
 	}
+	document.addEventListener('ww-refresh-page', renderAccountingPage);
 }
 
 function initProductionPage() {
@@ -8646,6 +8665,7 @@ function initProductionPage() {
 	try {
 		new BroadcastChannel('ww_finished_products_sync').onmessage = reloadProductionData;
 	} catch (_e) { /* BroadcastChannel not supported */ }
+	document.addEventListener('ww-refresh-page', renderProductionPage);
 }
 
 function initReportsPage() {
@@ -8706,6 +8726,7 @@ function initReportsPage() {
 			} catch (_e) { /* ignore */ }
 		}
 	}
+	document.addEventListener('ww-refresh-page', renderReportsData);
 }
 
 window.exportReports = function () {
@@ -8826,6 +8847,17 @@ function renderReportsData() {
 	const cashbook = accData.cashbook.filter((e) => inRange(e.date));
 	const batches = allBatches.filter((b) => inRange(b.date));
 	const purchaseOrders = (purchaseData.purchaseOrders || []).filter((po) => inRange(po.date));
+
+	// For the invoice count KPI: when filtering by month also count bucket invoices
+	// with no date (they are invisible to inRange but do belong to the month bucket).
+	let filteredInvoiceCount = invoices.length;
+	if (filterType === 'month' && filterStart) {
+		const bucketKey = `${filterStart.getFullYear()}-${String(filterStart.getMonth() + 1).padStart(2, '0')}`;
+		const bucketPayload = getSalesMonthPayload(bucketKey);
+		const bucketInvs = Array.isArray(bucketPayload && bucketPayload.invoices) ? bucketPayload.invoices : [];
+		const dateFilteredIds = new Set(invoices.map((i) => String(i.id)));
+		filteredInvoiceCount += bucketInvs.filter((i) => i && i.id && !dateFilteredIds.has(String(i.id))).length;
+	}
 
 	// ── Sales Trends: aggregate invoices by month (revenue + bags + promo, paid only) ──
 	const salesByMonth = {};
@@ -8996,7 +9028,7 @@ function renderReportsData() {
 		{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Forecast', value: formatCurrency(projected), meta: salesTrends.length >= 2 ? 'Trend-based projection' : 'Need more months', color: 'green' },
 		{ icon: '<i class="fa-solid fa-coins"></i>', label: 'Net Profit', value: formatCurrency(netProfit), meta: 'Revenue − COGS − Expenses', color: 'yellow' },
 		{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Market Growth Rate', value: mgLabel, meta: mgMeta, color: mgColor },
-		{ icon: '<i class="fa-solid fa-file-invoice"></i>', label: filterType === 'all' ? 'Total Invoices (All Time)' : `Total Invoices (${filterLabel})`, value: filterType === 'all' ? totalInvoicesAllTime.toLocaleString() : invoices.length.toLocaleString(), meta: filterType === 'all' ? `${totalInvoicesAllTime} invoices overall` : `${invoices.length} invoices in ${filterLabel}`, color: 'purple' },
+		{ icon: '<i class="fa-solid fa-file-invoice"></i>', label: filterType === 'all' ? 'Total Invoices (All Time)' : `Total Invoices (${filterLabel})`, value: filterType === 'all' ? totalInvoicesAllTime.toLocaleString() : filteredInvoiceCount.toLocaleString(), meta: filterType === 'all' ? `${totalInvoicesAllTime} invoices overall` : `${filteredInvoiceCount} invoices in ${filterLabel}`, color: 'purple' },
 		{ icon: '<i class="fa-solid fa-industry"></i>', label: 'Ops Health', value: `${opsHealth}%`, meta: totalEquip > 0 ? `${operationalEquip}/${totalEquip} equipment up` : 'No equipment tracked', color: '' },
 	];
 
@@ -9138,8 +9170,32 @@ function renderReportsData() {
 	// ── Sales summary cards (from filtered sales data) ──
 	const salesSummary = document.getElementById('sales-summary-cards');
 	if (salesSummary) {
-		const allEntries = [];
+		// For order count and bags: use ALL invoices in the period (all statuses),
+		// matching the invoices page which counts everything in the month bucket.
+		// For month filter also include no-date invoices from that bucket so counts
+		// align with the invoices page (which reads from the bucket, not by date).
+		let allPeriodInvoices = invoices; // already date-filtered
+		if (filterType === 'month' && filterStart) {
+			// Also pull in invoices from the month bucket that have no date
+			const bucketKey = `${filterStart.getFullYear()}-${String(filterStart.getMonth() + 1).padStart(2, '0')}`;
+			const bucketPayload = getSalesMonthPayload(bucketKey);
+			const bucketInvs = Array.isArray(bucketPayload && bucketPayload.invoices) ? bucketPayload.invoices : [];
+			const dateFilteredIds = new Set(invoices.map((i) => String(i.id)));
+			const extras = bucketInvs.filter((i) => i && i.id && !dateFilteredIds.has(String(i.id)));
+			if (extras.length > 0) allPeriodInvoices = invoices.concat(extras);
+		}
+
 		let totalBags = 0, totalPromo = 0;
+		const orderCount = allPeriodInvoices.filter((inv) => inv && inv.id).length;
+		for (const inv of allPeriodInvoices) {
+			if (!inv || !inv.id) continue;
+			totalBags += Number(inv.items && inv.items[0] ? inv.items[0].qty : 0) || 0;
+			totalPromo += Number(inv.promo) || 0;
+		}
+		const totalNonPromo = Math.max(0, totalBags - totalPromo);
+
+		// Financial totals remain paid-only (use original date-filtered + paid subset)
+		const allEntries = [];
 		for (const inv of invoices) {
 			if (inv.status !== 'paid') continue;
 			const d = new Date(inv.date);
@@ -9148,14 +9204,11 @@ function renderReportsData() {
 			const bags = Number(inv.items && inv.items[0] ? inv.items[0].qty : 0) || 0;
 			const promo = Number(inv.promo) || 0;
 			allEntries.push({ date: d, amount, bags, promo });
-			totalBags += bags;
-			totalPromo += promo;
 		}
-		const totalNonPromo = Math.max(0, totalBags - totalPromo);
 
 		const totalSales = allEntries.reduce((s, e) => s + e.amount, 0);
-		const orderCount = allEntries.length;
-		const avgOrder = orderCount > 0 ? Math.round(totalSales / orderCount) : 0;
+		const paidCount = allEntries.length;
+		const avgOrder = paidCount > 0 ? Math.round(totalSales / paidCount) : 0;
 
 		if (filterType === 'all') {
 			const now = new Date();
@@ -9561,14 +9614,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 				try {
 					flushPendingSalesSyncToServer().catch(() => {});
 					await pullRemoteDataAndRefreshUi();
-					const page = document.body.getAttribute('data-page');
-					if ((page === 'invoices' || page === 'sales') && currentSalesMonth) {
-						loadMonthData(currentSalesMonth); renderSalesPage();
-					} else if (page === 'dashboard' && typeof refreshDashboardView === 'function') {
-						refreshDashboardView();
-					} else if (page === 'reports' && typeof renderReportsData === 'function') {
-						renderReportsData();
-					}
+					document.dispatchEvent(new Event('ww-refresh-page'));
 				} catch (_e) {}
 			});
 			es.onerror = () => {
@@ -9583,10 +9629,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 			if (!document.hidden) {
 				try {
 					await pullRemoteDataAndRefreshUi();
-					const page = document.body.getAttribute('data-page');
-					if ((page === 'invoices' || page === 'sales') && currentSalesMonth) {
-						loadMonthData(currentSalesMonth); renderSalesPage();
-					}
+					document.dispatchEvent(new Event('ww-refresh-page'));
 				} catch (_e) {}
 			}
 		});
