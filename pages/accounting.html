@@ -217,6 +217,115 @@
     }
     .slip-dd-add-btn:hover { background: #1447c0; }
 
+    /* ── Responsive ────────────────────────────────────────── */
+
+    /* Slip toolbar wraps on small screens */
+    .month-selector-bar {
+      flex-wrap: wrap; row-gap: 8px;
+    }
+    @media (max-width: 600px) {
+      .month-selector-bar { flex-direction: column; align-items: flex-start; }
+      .month-selector-bar label[for="salary-print-employee-select"] { margin-left: 0 !important; }
+      .month-selector-bar select,
+      .month-selector-bar .btn-print { max-width: 100% !important; width: 100%; }
+    }
+
+    /* Slip gen header stacks on small screens */
+    @media (max-width: 600px) {
+      .slip-gen-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .slip-gen-actions { width: 100%; }
+      .slip-gen-actions .slip-btn { flex: 1; justify-content: center; }
+    }
+
+    /* Tablet (481px–768px): single-col employee grid, reduced padding */
+    @media (max-width: 768px) {
+      #payslip-preview { max-width: 100%; border-radius: 6px; }
+
+      .slip-header { padding: 16px 18px 14px; gap: 14px; }
+      .slip-logo-block img { width: 46px; height: 46px; }
+      .slip-company-name { font-size: 15px; }
+      .slip-title { font-size: 20px; }
+      .slip-meta-line { font-size: 11px; }
+
+      .slip-emp-row {
+        grid-template-columns: 1fr;
+        padding: 12px 18px;
+        gap: 0;
+      }
+      .slip-emp-col + .slip-emp-col { margin-top: 6px; }
+
+      .slip-sec-hdr td  { padding: 7px 18px; }
+      .slip-col-hdr td  { padding: 5px 18px; }
+      .slip-col-hdr .col-rate { width: 80px; }
+      .slip-col-hdr .col-amt  { width: 100px; }
+      .slip-data-row td  { padding: 8px 18px; }
+      .slip-total-row td { padding: 8px 18px; }
+      .slip-add-row td   { padding: 5px 18px 7px; }
+
+      .amt-input { width: 88px; }
+      .slip-netpay { padding: 14px 18px; }
+      .slip-footer { padding: 9px 18px 10px; font-size: 10.5px; }
+    }
+
+    /* Mobile (≤ 480px): stack header, tighten everything */
+    @media (max-width: 480px) {
+      #payslip-preview { border-radius: 4px; }
+
+      /* Header: logo + title stacked */
+      .slip-header {
+        flex-direction: column;
+        padding: 14px 14px 12px;
+        gap: 10px;
+      }
+      .slip-title-block { text-align: left; }
+      .slip-title { font-size: 18px; }
+      .slip-meta-line { font-size: 10.5px; margin-top: 4px; line-height: 1.6; }
+
+      /* Employee fields */
+      .slip-emp-row { padding: 10px 14px; }
+      .slip-field { flex-wrap: wrap; gap: 4px; }
+      .slip-field label { min-width: 78px; font-size: 12px; }
+      .slip-input { min-width: 0; width: 100%; font-size: 12.5px; }
+      select.slip-input { min-width: 0; width: 100%; }
+      .period-selects { flex-wrap: wrap; gap: 4px; }
+      .slip-select { font-size: 12.5px; }
+
+      /* Section tables */
+      .slip-sec-hdr td  { padding: 6px 14px; font-size: 11px; }
+      .slip-col-hdr td  { padding: 5px 14px; }
+      .slip-col-hdr .col-rate { width: 60px; font-size: 10px; }
+      .slip-col-hdr .col-amt  { width: 82px; font-size: 10px; }
+      .slip-data-row td  { padding: 7px 14px; font-size: 12.5px; }
+      .slip-total-row td { padding: 8px 14px; font-size: 13px; }
+      .slip-add-row td   { padding: 5px 14px 7px; }
+
+      /* Inputs inside table cells */
+      .amt-input  { width: 72px; font-size: 12px; }
+      .rate-input { width: 38px; font-size: 12px; }
+      .desc-input { font-size: 12px; min-width: 80px; }
+      .rate-text-input { width: 36px; font-size: 12px; }
+
+      /* Net pay bar: stack label above amount */
+      .slip-netpay {
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 12px 14px;
+        gap: 6px;
+      }
+      .slip-netpay-amount { font-size: 19px; }
+      .netpay-value { min-width: 0; text-align: left; }
+
+      /* Footer */
+      .slip-footer { padding: 8px 14px 10px; font-size: 10px; line-height: 1.6; }
+
+      /* Dropdown menu: full width on mobile */
+      .slip-add-menu { min-width: 185px; }
+
+      /* Print bar */
+      .slip-print-bar { padding: 10px 0 4px; }
+      .slip-print-bar .slip-btn { width: 100%; justify-content: center; }
+    }
+
     /* Print */
     @media print {
       body { background: #fff !important; }

