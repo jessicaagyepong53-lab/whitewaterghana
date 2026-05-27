@@ -6,6 +6,247 @@
   <title>Accounting & Finance</title>
   <link rel="stylesheet" href="../src/script.css?v=20260519b">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+  <style>
+    /* ── Salary Slip Generator ──────────────────────────────── */
+    .slip-toggle-btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 9px 20px; border-radius: 6px; font-size: 14px;
+      font-weight: 600; cursor: pointer; border: 1.5px solid #1a56db;
+      background: #fff; color: #1a56db; transition: background .15s, color .15s;
+      margin-top: 18px;
+    }
+    .slip-toggle-btn:hover { background: #1a56db; color: #fff; }
+    .slip-generator-wrap {
+      display: none; margin-top: 22px;
+      border-top: 2px solid #e2e8f0; padding-top: 22px;
+    }
+    .slip-generator-wrap.open { display: block; }
+    .slip-gen-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px;
+    }
+    .slip-gen-header h3 { font-size: 16px; font-weight: 700; color: #1e293b; margin: 0; }
+    .slip-gen-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .slip-btn-save { background: #16a34a; color: #fff; }
+    .slip-btn-save:hover { background: #15803d; }
+    /* Save toast */
+    #slip-save-toast {
+      display: none; position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+      background: #1e293b; color: #fff; border-radius: 8px;
+      padding: 12px 22px; font-size: 13.5px; font-weight: 500;
+      box-shadow: 0 4px 20px rgba(0,0,0,.25); z-index: 9999;
+      align-items: center; gap: 10px; white-space: nowrap;
+    }
+    #slip-save-toast.show { display: flex; }
+    #slip-save-toast i { color: #4ade80; font-size: 16px; }
+    .slip-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 18px; border-radius: 6px; font-size: 13.5px;
+      font-weight: 600; cursor: pointer; border: none; transition: opacity .15s;
+    }
+    .slip-btn:hover { opacity: .85; }
+    .slip-btn-primary { background: #1a56db; color: #fff; }
+    .slip-btn-reset   { background: #fff; color: #6b7280; border: 1.5px solid #d1d5db; }
+
+    /* Payslip card */
+    #payslip-preview {
+      background: #fff; border: 1px solid #d1dbe8;
+      border-radius: 10px; box-shadow: 0 2px 16px rgba(26,86,219,.07);
+      overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif;
+      max-width: 820px;
+    }
+    .slip-header {
+      background: #1a56db; color: #fff;
+      display: flex; justify-content: space-between; align-items: flex-start;
+      padding: 20px 26px 18px; gap: 20px;
+    }
+    .slip-logo-block { display: flex; align-items: center; gap: 14px; }
+    .slip-logo-block img {
+      width: 58px; height: 58px; object-fit: contain;
+      border-radius: 8px; background: #fff; padding: 3px;
+    }
+    .slip-company-name { font-size: 17px; font-weight: 700; letter-spacing: .4px; line-height: 1.2; }
+    .slip-company-sub  { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; opacity: .8; margin-top: 3px; }
+    .slip-title-block  { text-align: right; }
+    .slip-title        { font-size: 24px; font-weight: 800; letter-spacing: 1px; line-height: 1; }
+    .slip-meta-line    { font-size: 12px; opacity: .88; margin-top: 5px; line-height: 1.7; }
+
+    .slip-emp-row {
+      display: grid; grid-template-columns: 1fr 1fr;
+      padding: 16px 26px; border-bottom: 2px solid #e2e8f0;
+    }
+    .slip-emp-col { display: flex; flex-direction: column; gap: 8px; }
+    .slip-field   { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+    .slip-field label { color: #6b7280; min-width: 90px; font-size: 12.5px; }
+    .slip-input {
+      border: none; border-bottom: 1.5px solid #c7d2e0; outline: none;
+      font-size: 13px; font-weight: 600; color: #1e293b;
+      background: transparent; min-width: 130px; padding: 1px 4px;
+      font-family: inherit;
+    }
+    .slip-input:focus { border-bottom-color: #1a56db; }
+    select.slip-input  { min-width: 145px; }
+    .period-selects { display: flex; gap: 6px; align-items: center; }
+    .slip-select {
+      border: none; border-bottom: 1.5px solid #c7d2e0; outline: none;
+      font-size: 13px; font-weight: 600; color: #1e293b;
+      background: transparent; padding: 1px 2px; font-family: inherit; cursor: pointer;
+    }
+    .slip-select:focus { border-bottom-color: #1a56db; }
+    .period-print-span { display: none; font-size: 13px; font-weight: 600; color: #1e293b; }
+
+    .slip-section     { width: 100%; border-collapse: collapse; }
+    .slip-sec-hdr td  {
+      padding: 8px 26px; font-size: 11.5px; font-weight: 700;
+      letter-spacing: 1.2px; text-transform: uppercase;
+      color: #fff; background: #1a56db;
+    }
+    .slip-col-hdr td  {
+      padding: 6px 26px; font-size: 11px; font-weight: 700;
+      letter-spacing: .4px; text-transform: uppercase;
+      color: #6b7280; border-bottom: 1px solid #e2e8f0;
+    }
+    .slip-col-hdr .col-rate { text-align: center; width: 110px; }
+    .slip-col-hdr .col-amt  { text-align: right;  width: 130px; }
+    .slip-data-row td {
+      padding: 9px 26px; font-size: 13px; color: #1e293b;
+      border-bottom: 1px solid #f0f4f8;
+    }
+    .slip-data-row:hover td { background: #f8fafd; }
+    .slip-data-row .col-rate { text-align: center; color: #6b7280; }
+    .slip-data-row .col-amt  { text-align: right; }
+    .slip-total-row td {
+      padding: 10px 26px; font-size: 13.5px; font-weight: 700;
+      border-top: 2px solid #e2e8f0; color: #1a56db;
+    }
+    .slip-total-row .col-rate { text-align: center; color: #94a3b8; }
+    .slip-total-row .col-amt  { text-align: right; }
+    .deduct-amt  { color: #e53e3e !important; }
+    .amt-input {
+      border: none; border-bottom: 1.5px solid #c7d2e0; outline: none;
+      width: 105px; text-align: right; font-size: 13px; font-weight: 500;
+      color: #1e293b; background: transparent; padding: 1px 4px; font-family: inherit;
+    }
+    .amt-input:focus  { border-bottom-color: #1a56db; }
+    .rate-input {
+      border: none; border-bottom: 1.5px solid #c7d2e0; outline: none;
+      width: 48px; text-align: center; font-size: 13px;
+      color: #1e293b; background: transparent; padding: 1px 4px; font-family: inherit;
+    }
+    .rate-input:focus { border-bottom-color: #1a56db; }
+    .slip-calc { font-weight: 600; font-size: 13px; }
+    .slip-netpay {
+      background: #1a56db; color: #fff; padding: 16px 26px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .slip-netpay-label { font-size: 13.5px; font-weight: 700; }
+    .slip-netpay-sub   { font-size: 11px; opacity: .75; margin-top: 3px; }
+    .slip-netpay-amount { font-size: 22px; font-weight: 800; display: flex; align-items: center; gap: 8px; }
+    .netpay-value { min-width: 150px; text-align: right; }
+    .slip-footer {
+      text-align: center; font-size: 11px; color: #94a3b8;
+      padding: 10px 26px 12px; border-top: 1px solid #e2e8f0; line-height: 1.7;
+    }
+    .slip-print-bar {
+      display: flex; justify-content: center; padding: 14px 0 6px;
+    }
+
+    /* Custom rows */
+    .custom-row-desc-wrap { display: flex; align-items: center; gap: 6px; }
+    .desc-input {
+      border: none; border-bottom: 1.5px solid #c7d2e0; outline: none;
+      font-size: 13px; color: #1e293b; background: transparent;
+      flex: 1; min-width: 120px; padding: 1px 4px; font-family: inherit;
+    }
+    .desc-input:focus { border-bottom-color: #1a56db; }
+    .rate-text-input {
+      border: none; border-bottom: 1.5px solid #c7d2e0; outline: none;
+      font-size: 13px; color: #6b7280; background: transparent;
+      width: 46px; text-align: center; padding: 1px 4px; font-family: inherit;
+    }
+    .rate-text-input:focus { border-bottom-color: #1a56db; }
+    .rate-text-input::-webkit-inner-spin-button,
+    .rate-text-input::-webkit-outer-spin-button { -webkit-appearance: none; }
+    .amt-input[readonly] { color: #6b7280; cursor: default; }
+    .deduct-amt.amt-input[readonly] { color: #e53e3e; }
+    .slip-row-remove {
+      border: none; background: none; cursor: pointer; color: #e53e3e;
+      font-size: 15px; font-weight: 700; padding: 0 2px; line-height: 1; opacity: .55;
+    }
+    .slip-row-remove:hover { opacity: 1; }
+    .slip-add-row td { padding: 5px 26px 8px; }
+    .slip-add-row-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 12px; border: 1.5px dashed #1a56db;
+      background: transparent; color: #1a56db; border-radius: 5px;
+      font-size: 12px; cursor: pointer; font-weight: 600;
+    }
+    .slip-add-row-btn:hover { background: #eff6ff; }
+    /* Add-row dropdown */
+    .slip-add-wrap { position: relative; display: inline-block; }
+    .slip-add-menu {
+      display: none; position: absolute; left: 0; top: calc(100% + 4px);
+      background: #fff; border: 1px solid #d1dbe8; border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(26,86,219,.13); min-width: 210px;
+      z-index: 999; overflow: hidden;
+    }
+    .slip-add-menu.open { display: block; }
+    .slip-dd-label {
+      padding: 7px 14px 5px; font-size: 10.5px; font-weight: 700;
+      letter-spacing: .8px; text-transform: uppercase; color: #94a3b8;
+    }
+    .slip-dd-item {
+      padding: 8px 14px; font-size: 13px; color: #1e293b;
+      cursor: pointer; transition: background .1s;
+    }
+    .slip-dd-item:hover { background: #eff6ff; color: #1a56db; }
+    .slip-dd-sep { border-top: 1px solid #e2e8f0; margin: 4px 0; }
+    .slip-dd-custom {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 10px 8px;
+    }
+    .slip-dd-custom-input {
+      flex: 1; border: 1px solid #c7d2e0; border-radius: 5px;
+      padding: 5px 8px; font-size: 12.5px; outline: none; font-family: inherit;
+    }
+    .slip-dd-custom-input:focus { border-color: #1a56db; }
+    .slip-dd-add-btn {
+      padding: 5px 10px; background: #1a56db; color: #fff;
+      border: none; border-radius: 5px; font-size: 12px;
+      font-weight: 600; cursor: pointer; white-space: nowrap;
+    }
+    .slip-dd-add-btn:hover { background: #1447c0; }
+
+    /* Print */
+    @media print {
+      body { background: #fff !important; }
+      .ops-sidebar, .ops-topbar, .page-header, .panel .tab-bar,
+      #acc-tab-ledger, #acc-tab-cashbook, #acc-tab-assets,
+      #acc-tab-summary, #acc-tab-currency,
+      .slip-gen-header, .slip-toggle-btn, .sidebar-expand-btn,
+      .slip-gen-actions, [class*="table-tools"],
+      #acc-stats-row, .info-box, .month-selector-bar,
+      .data-table, #salaries-summary-cards, #slip-save-toast { display: none !important; }
+      #emp-dept { display: none !important; }
+      .dept-print-span { display: inline !important; }
+      #emp-period-month, #emp-period-year { display: none !important; }
+      .period-print-span { display: inline !important; }
+      .ops-main  { margin: 0 !important; padding: 0 !important; }
+      .panel     { border: none !important; box-shadow: none !important; padding: 0 !important; }
+      #acc-tab-salaries { display: block !important; padding: 0 !important; }
+      .slip-generator-wrap { display: block !important; border: none !important; padding: 0 !important; margin: 0 !important; }
+      #payslip-preview { box-shadow: none !important; border: none !important; border-radius: 0 !important; max-width: 100% !important; }
+      .slip-input, .amt-input, .rate-input { border-bottom: 1px solid #888 !important; }
+      .slip-zero-row { display: none !important; }
+      .slip-add-row, .slip-row-remove, .slip-add-menu, .slip-print-bar { display: none !important; }
+      .desc-input, .rate-text-input { border-bottom: 1px solid #888 !important; }
+      .slip-header, .slip-sec-hdr td, .slip-netpay {
+        background: #1a56db !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+    }
+  </style>
 </head>
 <body class="ops-page" data-page="accounting">
 <aside class="ops-sidebar" id="ops-sidebar">
@@ -28,6 +269,7 @@
   </nav>
   <div class="sidebar-footer">
     <hr>
+    <span class="sidebar-slogan">Pure. Safe. Reliable Drinking Water.</span>
     <span>&copy; 2026 White Water Factory</span>
   </div>
 </aside>
@@ -93,15 +335,257 @@
         <select id="salary-print-employee-select" class="form-control" style="max-width:260px;">
           <option value="__all_workers__">All workers</option>
         </select>
-        <button type="button" id="salary-week-print-btn" class="btn-print" style="margin-left:8px;"><i class="fa-solid fa-print"></i> Print Salaries</button>
+        <button type="button" id="salary-week-slip-btn" class="btn-print" style="margin-left:8px;" onclick="openSlipGenerator()"><i class="fa-solid fa-file-lines"></i> Salary Slip</button>
+        <button type="button" id="salary-week-print-btn" class="btn-print" style="margin-left:8px;"><i class="fa-solid fa-print"></i> Print</button>
       </div>
       <table class="data-table">
         <thead><tr><th>Date Paid</th><th>Employee</th><th>Month</th><th>Amount (GH)</th><th>Notes</th><th>Actions</th></tr></thead>
         <tbody id="salaries-tbody"></tbody>
       </table>
       <div id="salaries-summary-cards" style="margin-top:14px;"></div>
-      <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="salary">Add Salary <i class="fa-solid fa-plus"></i></button></div>
+      <div class="table-tools table-tools-bottom">
+        <button type="button" id="salary-add-btn" class="btn-secondary acc-add-btn" data-add-entity="salary" style="display:none;">Add Salary <i class="fa-solid fa-plus"></i></button>
+        <button id="salary-slip-toggle-btn" class="slip-toggle-btn" style="margin:0;" onclick="toggleSlipGenerator(this)">
+          <i class="fa-solid fa-money-check-dollar"></i> Generate Salary Slip
+        </button>
+      </div>
+
+      <div class="slip-generator-wrap" id="slip-generator-wrap">
+        <div class="slip-gen-header">
+          <h3><i class="fa-solid fa-file-lines" style="color:#1a56db;margin-right:6px;"></i>Salary Slip</h3>
+          <div class="slip-gen-actions">
+            <button class="slip-btn slip-btn-save" onclick="saveSlipToRecords()">
+              <i class="fa-solid fa-floppy-disk"></i> Save to Records
+            </button>
+            <button class="slip-btn slip-btn-reset" onclick="resetSlip()">
+              <i class="fa-solid fa-rotate-left"></i> Reset
+            </button>
+          </div>
+        </div>
+
+        <div id="payslip-preview">
+          <!-- Header -->
+          <div class="slip-header">
+            <div class="slip-logo-block">
+              <img src="../images/New%20Logo.jpeg" alt="White Water Wells logo">
+              <div>
+                <div class="slip-company-name">WHITE WATER WELLS LTD</div>
+                <div class="slip-company-sub">Water Factory</div>
+                <div style="font-size:10.5px;font-style:italic;opacity:.75;margin-top:4px;letter-spacing:.3px;">Pure. Safe. Reliable Drinking Water</div>
+              </div>
+            </div>
+            <div class="slip-title-block">
+              <div class="slip-title">SALARY SLIP</div>
+              <div class="slip-meta-line">
+                Pay Period: <strong id="hdr-period-display">&mdash;</strong><br>
+                Date Issued: <strong id="hdr-date-display">&mdash;</strong>
+              </div>
+            </div>
+          </div>
+
+          <!-- Employee info -->
+          <div class="slip-emp-row">
+            <div class="slip-emp-col">
+              <div class="slip-field">
+                <label>Name:</label>
+                <input class="slip-input" id="emp-name" type="text" placeholder="Employee Name">
+              </div>
+              <div class="slip-field">
+                <label>Employee ID:</label>
+                <input class="slip-input" id="emp-id" type="text" placeholder="e.g. WWW-001">
+              </div>
+              <div class="slip-field">
+                <label>Position:</label>
+                <input class="slip-input" id="emp-position" type="text" placeholder="Job Title">
+              </div>
+            </div>
+            <div class="slip-emp-col">
+              <div class="slip-field">
+                <label>Department:</label>
+                <select class="slip-input" id="emp-dept">
+                  <option value="">— Select —</option>
+                  <option>Production</option>
+                  <option>Sales</option>
+                  <option>Accounts</option>
+                  <option>Logistics</option>
+                  <option>Administration</option>
+                  <option>Management</option>
+                </select>
+              </div>
+              <div class="slip-field">
+                <label>Pay Period:</label>
+                <div class="period-selects">
+                  <select id="emp-period-month" class="slip-select" onchange="syncPeriodFromSelects()">
+                    <option>January</option><option>February</option><option>March</option>
+                    <option>April</option><option>May</option><option>June</option>
+                    <option>July</option><option>August</option><option>September</option>
+                    <option>October</option><option>November</option><option>December</option>
+                  </select>
+                  <select id="emp-period-year" class="slip-select" onchange="syncPeriodFromSelects()">
+                    <option>2024</option><option>2025</option><option>2026</option>
+                    <option>2027</option><option>2028</option><option>2029</option><option>2030</option>
+                  </select>
+                  <input type="hidden" id="emp-period">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- EARNINGS -->
+          <table class="slip-section" id="slip-table-earnings">
+            <tr class="slip-sec-hdr"><td colspan="3">Earnings</td></tr>
+            <tr class="slip-col-hdr"><td>Description</td><td class="col-rate">Rate</td><td class="col-amt">Amount (GHS)</td></tr>
+            <tr class="slip-data-row">
+              <td>Basic Salary</td>
+              <td class="col-rate">&mdash;</td>
+              <td class="col-amt"><input class="amt-input" id="e-basic" type="number" min="0" step="0.01" placeholder="0.00" oninput="slipRecalc()"></td>
+            </tr>
+            <tr class="slip-data-row">
+              <td>Overtime Pay</td>
+              <td class="col-rate">&mdash;</td>
+              <td class="col-amt"><input class="amt-input" id="e-overtime" type="number" min="0" step="0.01" placeholder="0.00" oninput="slipRecalc()"></td>
+            </tr>
+            <tr class="slip-add-row">
+              <td colspan="3">
+                <div class="slip-add-wrap">
+                  <button class="slip-add-row-btn" onclick="toggleSlipMenu(this)"><i class="fa-solid fa-plus"></i> Add row</button>
+                  <div class="slip-add-menu">
+                    <div class="slip-dd-label">Earnings</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('earnings','Bonus')">&nbsp;Bonus</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('earnings','Commission')">&nbsp;Commission</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('earnings','13th Month Salary')">&nbsp;13th Month Salary</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('earnings','Back Pay')">&nbsp;Back Pay</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('earnings','Night Shift Premium')">&nbsp;Night Shift Premium</div>
+                    <div class="slip-dd-sep"></div>
+                    <div class="slip-dd-custom">
+                      <input class="slip-dd-custom-input" placeholder="Type custom..." onkeydown="slipCustomKey(event,'earnings')">
+                      <button class="slip-dd-add-btn" onclick="slipCustomAdd(this,'earnings')">Add</button>
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr class="slip-total-row">
+              <td>Total Gross Pay</td>
+              <td class="col-rate">&mdash;</td>
+              <td class="col-amt slip-calc" id="t-gross">0.00</td>
+            </tr>
+          </table>
+
+          <!-- ALLOWANCES -->
+          <table class="slip-section" id="slip-table-allowances">
+            <tr class="slip-sec-hdr"><td colspan="3">Allowances</td></tr>
+            <tr class="slip-col-hdr"><td>Description</td><td class="col-rate">Rate</td><td class="col-amt">Amount (GHS)</td></tr>
+            <tr class="slip-data-row">
+              <td>Transport Allowance</td>
+              <td class="col-rate">&mdash;</td>
+              <td class="col-amt"><input class="amt-input" id="a-transport" type="number" min="0" step="0.01" placeholder="0.00" oninput="slipRecalc()"></td>
+            </tr>
+            <tr class="slip-data-row">
+              <td>Housing Allowance</td>
+              <td class="col-rate">&mdash;</td>
+              <td class="col-amt"><input class="amt-input" id="a-housing" type="number" min="0" step="0.01" placeholder="0.00" oninput="slipRecalc()"></td>
+            </tr>
+            <tr class="slip-data-row">
+              <td>Professional Allowance</td>
+              <td class="col-rate">&mdash;</td>
+              <td class="col-amt"><input class="amt-input" id="a-professional" type="number" min="0" step="0.01" placeholder="0.00" oninput="slipRecalc()"></td>
+            </tr>
+            <tr class="slip-add-row">
+              <td colspan="3">
+                <div class="slip-add-wrap">
+                  <button class="slip-add-row-btn" onclick="toggleSlipMenu(this)"><i class="fa-solid fa-plus"></i> Add row</button>
+                  <div class="slip-add-menu">
+                    <div class="slip-dd-label">Allowances</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('allowances','Meal Allowance')">&nbsp;Meal Allowance</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('allowances','Fuel Allowance')">&nbsp;Fuel Allowance</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('allowances','Medical Allowance')">&nbsp;Medical Allowance</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('allowances','Weekend Allowance')">&nbsp;Weekend Allowance</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('allowances','Performance Bonus')">&nbsp;Performance Bonus</div>
+                    <div class="slip-dd-sep"></div>
+                    <div class="slip-dd-custom">
+                      <input class="slip-dd-custom-input" placeholder="Type custom..." onkeydown="slipCustomKey(event,'allowances')">
+                      <button class="slip-dd-add-btn" onclick="slipCustomAdd(this,'allowances')">Add</button>
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr class="slip-total-row">
+              <td>Total Allowances</td>
+              <td class="col-rate">&mdash;</td>
+              <td class="col-amt slip-calc" id="t-allowances">0.00</td>
+            </tr>
+          </table>
+
+          <!-- DEDUCTIONS -->
+          <table class="slip-section" id="slip-table-deductions">
+            <tr class="slip-sec-hdr"><td colspan="3">Deductions</td></tr>
+            <tr class="slip-col-hdr"><td>Description</td><td class="col-rate">Rate</td><td class="col-amt">Amount (GHS)</td></tr>
+            <tr class="slip-data-row" data-ssnit="1">
+              <td>SSNIT Contribution</td>
+              <td class="col-rate"><input class="rate-input" id="d-ssnit-rate" type="number" min="0" max="100" step="0.01" value="5.5" oninput="slipRecalc()">%</td>
+              <td class="col-amt slip-calc deduct-amt" id="d-ssnit-amt">0.00</td>
+            </tr>
+            <tr class="slip-data-row">
+              <td>Loan Repayment</td>
+              <td class="col-rate">&mdash;</td>
+              <td class="col-amt"><input class="amt-input deduct-amt" id="d-loan" type="number" min="0" step="0.01" placeholder="0.00" oninput="slipRecalc()"></td>
+            </tr>
+            <tr class="slip-add-row">
+              <td colspan="3">
+                <div class="slip-add-wrap">
+                  <button class="slip-add-row-btn" onclick="toggleSlipMenu(this)"><i class="fa-solid fa-plus"></i> Add row</button>
+                  <div class="slip-add-menu">
+                    <div class="slip-dd-label">Deductions</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('deductions','Income Tax')">&nbsp;Income Tax</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('deductions','Union Fee')">&nbsp;Union Fee</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('deductions','Advance Recovery')">&nbsp;Advance Recovery</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('deductions','Absence / Late Deduction')">&nbsp;Absence / Late Deduction</div>
+                    <div class="slip-dd-item" onclick="pickSlipRow('deductions','Health Insurance')">&nbsp;Health Insurance</div>
+                    <div class="slip-dd-sep"></div>
+                    <div class="slip-dd-custom">
+                      <input class="slip-dd-custom-input" placeholder="Type custom..." onkeydown="slipCustomKey(event,'deductions')">
+                      <button class="slip-dd-add-btn" onclick="slipCustomAdd(this,'deductions')">Add</button>
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr class="slip-total-row">
+              <td>Total Deductions</td>
+              <td class="col-rate">&mdash;</td>
+              <td class="col-amt slip-calc deduct-amt" id="t-deductions">0.00</td>
+            </tr>
+          </table>
+
+          <!-- Net Pay -->
+          <div class="slip-netpay">
+            <div>
+              <div class="slip-netpay-label">NET PAY / TAKE HOME</div>
+              <div class="slip-netpay-sub">Gross Pay + Allowances &minus; Deductions</div>
+            </div>
+            <div class="slip-netpay-amount">GHS <span class="netpay-value" id="t-netpay">0.00</span></div>
+          </div>
+
+          <!-- Footer -->
+          <div class="slip-footer">
+            White Water Wells Ltd &nbsp;&middot;&nbsp; Comm 25 Peace B Down Accra-Prampram Road, P.O. Box 18204, Accra &nbsp;&middot;&nbsp;
+            Tel: 0243108878 / 0244483793 &nbsp;&middot;&nbsp; whitewaterwellscompanyltd@gmail.com<br>
+            Generated: <span id="slip-footer-date"></span>
+            <div style="margin-top:6px;font-size:10.5px;color:#b0bec5;letter-spacing:.5px;">Page 1 of 1</div>
+          </div>
+          <div class="slip-print-bar">
+            <button class="slip-btn slip-btn-primary" onclick="window.print()">
+              <i class="fa-solid fa-print"></i> Print / Save PDF
+            </button>
+          </div>
+        </div><!-- /#payslip-preview -->
+      </div><!-- /.slip-generator-wrap -->
     </div>
+
+    <!-- Save toast -->
+    <div id="slip-save-toast"><i class="fa-solid fa-circle-check"></i><span id="slip-save-toast-msg">Saved.</span></div>
     <div id="acc-tab-assets" class="tab-panel">
       <div class="info-box" style="margin-bottom:14px;">
         <p><strong>Assets</strong> — Track company-owned assets such as equipment, vehicles, property, and other valuables. Each entry records the asset name, date acquired, value, and any notes.</p>
@@ -154,5 +638,537 @@
   </div>
 </main>
 <script src="../src/script.js?v=20260519c"></script>
+<script>
+  // ── Salary Slip Generator ────────────────────────────────────
+  (function initSlip() {
+    const now = new Date();
+    const months = ['January','February','March','April','May','June',
+                    'July','August','September','October','November','December'];
+    const pad = n => String(n).padStart(2, '0');
+    const dateStr   = `${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()}`;
+    const periodStr = `${months[now.getMonth()]} ${now.getFullYear()}`;
+    // Set date display (always current date)
+    const hdrDate  = document.getElementById('hdr-date-display');
+    const footDate = document.getElementById('slip-footer-date');
+    if (hdrDate)  hdrDate.textContent  = dateStr;
+    if (footDate) footDate.textContent = dateStr;
+    // Try restoring saved state; fall back to defaults
+    if (!loadSlipState()) {
+      const moSel = document.getElementById('emp-period-month');
+      const yrSel = document.getElementById('emp-period-year');
+      if (moSel) moSel.value = months[now.getMonth()];
+      if (yrSel) yrSel.value = String(now.getFullYear());
+      syncPeriodFromSelects();
+    }
+  })();
+
+  // ── Save slip to salary records ──────────────────────────────────
+  function parsePeriodToYYYYMM(str) {
+    if (!str) return null;
+    const months = ['january','february','march','april','may','june',
+                    'july','august','september','october','november','december'];
+    const parts = str.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      const idx = months.indexOf(parts[0].toLowerCase());
+      if (idx >= 0) return `${parts[1]}-${String(idx + 1).padStart(2, '0')}`;
+    }
+    if (/^\d{4}-\d{2}$/.test(str.trim())) return str.trim();
+    return null;
+  }
+
+  function saveSlipToRecords() {
+    const empName = (document.getElementById('emp-name') || {}).value?.trim();
+    if (!empName) { alert('Please enter the employee name before saving.'); return; }
+
+    const periodStr = (document.getElementById('emp-period') || {}).value?.trim();
+    const monthVal  = parsePeriodToYYYYMM(periodStr);
+    if (!monthVal)  { alert('Please enter a valid Pay Period (e.g. May 2026) before saving.'); return; }
+    if (monthVal < '2026-05') { alert('Salary slips can only be saved from May 2026 onwards.'); return; }
+
+    const fv = id => parseFloat((document.getElementById(id) || {}).value) || 0;
+    const sumAmt = tId => {
+      let t = 0;
+      document.querySelectorAll('#' + tId + ' .slip-data-row .amt-input').forEach(i => { t += parseFloat(i.value) || 0; });
+      return t;
+    };
+    const fmt = n => Number(n).toLocaleString('en-GH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    const gross      = sumAmt('slip-table-earnings');
+    const allowances = sumAmt('slip-table-allowances');
+    const ssnit      = gross * fv('d-ssnit-rate') / 100;
+    const deductions = ssnit + sumAmt('slip-table-deductions');
+    const net        = Math.max(0, gross + allowances - deductions);
+
+    if (net === 0) { alert('Net pay is zero — please fill in the salary values before saving.'); return; }
+
+    const dept     = (document.getElementById('emp-dept')     || {}).value     || '';
+    const position = (document.getElementById('emp-position') || {}).value?.trim() || '';
+    const empId    = (document.getElementById('emp-id')       || {}).value?.trim() || '';
+
+    const notes = [
+      dept     ? `Dept: ${dept}`         : null,
+      position ? `Position: ${position}` : null,
+      empId    ? `ID: ${empId}`          : null,
+      `Gross: GHS ${fmt(gross)}`,
+      allowances > 0 ? `Allowances: GHS ${fmt(allowances)}` : null,
+      `Deductions: GHS ${fmt(deductions)}`,
+    ].filter(Boolean);
+
+    // Capture individual rows so the Print button can show the full slip
+    const collectSlipRows = (tableId) => {
+      const items = [];
+      document.querySelectorAll('#' + tableId + ' .slip-data-row').forEach(row => {
+        const descInput = row.querySelector('.desc-input');
+        const firstTd   = row.querySelector('td');
+        const desc = descInput ? descInput.value.trim() : (firstTd ? firstTd.textContent.trim() : '');
+        let amt = 0;
+        const amtInput = row.querySelector('.amt-input');
+        if (amtInput) {
+          amt = parseFloat(amtInput.value) || 0;
+        } else {
+          const calcTd = row.querySelector('.slip-calc');
+          if (calcTd) amt = parseFloat(calcTd.textContent.replace(/,/g, '')) || 0;
+        }
+        const rateInput   = row.querySelector('.rate-input');
+        const rateTextInp = row.querySelector('.rate-text-input');
+        const rate = rateInput && rateInput.value
+          ? rateInput.value + '%'
+          : (rateTextInp && rateTextInp.value ? rateTextInp.value + '%' : '\u2014');
+        if (desc) items.push({ desc, amt, rate });
+      });
+      return items;
+    };
+    const slipData = {
+      id: empId, position, dept, period: periodStr,
+      earnings:   collectSlipRows('slip-table-earnings'),
+      allowances: collectSlipRows('slip-table-allowances'),
+      deductions: collectSlipRows('slip-table-deductions'),
+      gross, totalAllowances: allowances, totalDeductions: deductions, net,
+    };
+
+    const today = new Date();
+    const pad   = n => String(n).padStart(2, '0');
+    const todayStr = `${today.getFullYear()}-${pad(today.getMonth()+1)}-${pad(today.getDate())}`;
+
+    // Check for duplicate (same employee + same month already saved)
+    if (typeof accountingData !== 'undefined') {
+      const dup = accountingData.salaries.find(s => s.employee === empName && s.month === monthVal && s._fromSlip);
+      if (dup) {
+        if (!confirm(`A salary slip for ${empName} (${periodStr}) is already saved. Save again anyway?`)) return;
+      }
+    }
+
+    const data = {
+      date: todayStr, employee: empName, month: monthVal,
+      amount: net, notes, note: notes.join(' \u00b7 '),
+      _fromSlip: true, slipData,
+    };
+
+    if (typeof accountingData !== 'undefined' && typeof saveAccountingDataToStorage === 'function') {
+      accountingData.salaries.push(data);
+      accountingData.ledger.push({
+        date: todayStr, desc: `Salary — ${empName}`,
+        account: 'Salaries', type: 'expense', debit: net, credit: 0,
+      });
+      saveAccountingDataToStorage();
+      document.dispatchEvent(new Event('ww-refresh-page'));
+      showSlipToast(`\u2713 Saved: ${empName} — ${periodStr} — GHS ${fmt(net)}`);
+    } else {
+      alert('Could not save: accounting system not ready. Please reload the page and try again.');
+    }
+  }
+
+  function showSlipToast(msg) {
+    const toast = document.getElementById('slip-save-toast');
+    const msgEl = document.getElementById('slip-save-toast-msg');
+    if (!toast || !msgEl) return;
+    msgEl.textContent = msg;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 4000);
+  }
+
+  // ── Toolbar: toggle Add Salary vs Generate Salary Slip by month ──
+  function updateSalaryToolbar() {
+    const sel     = document.getElementById('salary-week-select');
+    const month   = sel ? sel.value : '';
+    const isOld   = month && month !== '__all__' && month < '2026-05';
+    const addBtn  = document.getElementById('salary-add-btn');
+    const slipBtn = document.getElementById('salary-slip-toggle-btn');
+    if (addBtn)  addBtn.style.display  = isOld ? '' : 'none';
+    if (slipBtn) slipBtn.style.display = isOld ? 'none' : '';
+    // Collapse the slip generator when switching to an older month
+    if (isOld) {
+      const wrap = document.getElementById('slip-generator-wrap');
+      if (wrap && wrap.classList.contains('open')) {
+        wrap.classList.remove('open');
+        if (slipBtn) slipBtn.innerHTML = '<i class="fa-solid fa-money-check-dollar"></i> Generate Salary Slip';
+      }
+    }
+  }
+
+  // Re-check toolbar whenever month select options change (after renderAccountingPage)
+  // and whenever user picks a different month
+  (function bindSalaryToolbarUpdater() {
+    const sel = document.getElementById('salary-week-select');
+    if (!sel) return;
+    sel.addEventListener('change', updateSalaryToolbar);
+    new MutationObserver(updateSalaryToolbar).observe(sel, { childList: true });
+    updateSalaryToolbar(); // run once immediately
+  })();
+
+  // ── Period selects sync ────────────────────────────────────────
+  function syncPeriodFromSelects() {
+    const mo = (document.getElementById('emp-period-month') || {}).value || '';
+    const yr = (document.getElementById('emp-period-year')  || {}).value || '';
+    const hidden = document.getElementById('emp-period');
+    if (hidden) hidden.value = (mo && yr) ? `${mo} ${yr}` : '';
+    syncSlipHeader();
+  }
+
+  // ── localStorage persistence ─────────────────────────────────
+  const SLIP_KEY = 'wwg-payslip-state';
+
+  function saveSlipState() {
+    const state = { fields: {}, customRows: [] };
+    ['emp-name','emp-id','emp-position','emp-period-month','emp-period-year',
+     'e-basic','e-overtime','a-transport','a-housing',
+     'a-professional','d-ssnit-rate','d-loan'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) state.fields[id] = el.value;
+    });
+    const dept = document.getElementById('emp-dept');
+    if (dept) state.fields['emp-dept'] = dept.value;
+    document.querySelectorAll('#payslip-preview .slip-custom-row').forEach(row => {
+      const tbl = row.closest('table');
+      const section = tbl.id === 'slip-table-earnings'   ? 'earnings'
+                    : tbl.id === 'slip-table-allowances' ? 'allowances' : 'deductions';
+      state.customRows.push({
+        section,
+        desc: (row.querySelector('.desc-input')      || {}).value || '',
+        rate: (row.querySelector('.rate-text-input') || {}).value || '',
+        amt:  (row.querySelector('.amt-input')       || {}).value || ''
+      });
+    });
+    try { localStorage.setItem(SLIP_KEY, JSON.stringify(state)); } catch(e) {}
+  }
+
+  function loadSlipState() {
+    let state;
+    try { state = JSON.parse(localStorage.getItem(SLIP_KEY)); } catch(e) {}
+    if (!state) return false;
+    Object.entries(state.fields || {}).forEach(([id, val]) => {
+      const el = document.getElementById(id);
+      if (el) el.value = val;
+    });
+    (state.customRows || []).forEach(row => {
+      addSlipRow(row.section, true);
+      const tbl = document.getElementById(
+        row.section === 'earnings'   ? 'slip-table-earnings'
+        : row.section === 'allowances' ? 'slip-table-allowances' : 'slip-table-deductions'
+      );
+      const rows = tbl.querySelectorAll('.slip-custom-row');
+      const last = rows[rows.length - 1];
+      if (last) {
+        const d = last.querySelector('.desc-input');      if (d) d.value = row.desc;
+        const r = last.querySelector('.rate-text-input'); if (r) r.value = row.rate;
+        const a = last.querySelector('.amt-input');       if (a) a.value = row.amt;
+      }
+    });
+    syncPeriodFromSelects();
+    slipRecalc();
+    return true;
+  }
+
+  // Auto-save on any input or select change inside the payslip
+  document.getElementById('payslip-preview').addEventListener('input',  saveSlipState);
+  document.getElementById('payslip-preview').addEventListener('change', saveSlipState);
+
+  function syncSlipHeader() {
+    const p = (document.getElementById('emp-period') || {}).value || '';
+    const el = document.getElementById('hdr-period-display');
+    if (el) el.textContent = p.trim() || '—';
+  }
+
+  function slipRecalc() {
+    const fmt  = n => Number(n).toLocaleString('en-GH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fv   = id => parseFloat((document.getElementById(id)||{}).value) || 0;
+    const sumAmtInputs = tableId => {
+      let t = 0;
+      document.querySelectorAll('#' + tableId + ' .slip-data-row .amt-input').forEach(i => { t += parseFloat(i.value)||0; });
+      return t;
+    };
+
+    // Helper: apply rate-calc to custom rows in a table; returns sum of rate-calc amounts
+    const applyRates = (tableId, base, isDeduct) => {
+      let rateSum = 0;
+      document.querySelectorAll('#' + tableId + ' .slip-custom-row').forEach(row => {
+        const rInp = row.querySelector('.rate-text-input');
+        const aInp = row.querySelector('.amt-input');
+        if (!aInp) return;
+        if (rInp && rInp.value !== '' && parseFloat(rInp.value) > 0) {
+          const calc = base * (parseFloat(rInp.value)||0) / 100;
+          aInp.value    = calc.toFixed(2);
+          aInp.readOnly = true;
+          rateSum += calc;
+        } else {
+          aInp.readOnly = false;
+        }
+      });
+      return rateSum;
+    };
+
+    // ── Earnings ────────────────────────────────────────────────
+    const fixedGross = fv('e-basic') + fv('e-overtime');
+    applyRates('slip-table-earnings', fixedGross, false);
+    const gross = sumAmtInputs('slip-table-earnings');
+
+    // ── Allowances ──────────────────────────────────────────────
+    applyRates('slip-table-allowances', gross, false);
+    const allowances = sumAmtInputs('slip-table-allowances');
+
+    // ── Deductions ──────────────────────────────────────────────
+    const ssnitRate  = fv('d-ssnit-rate');
+    const ssnit      = gross * ssnitRate / 100;
+    applyRates('slip-table-deductions', gross, true);
+    const manualDed  = sumAmtInputs('slip-table-deductions');
+    const deductions = ssnit + manualDed;
+
+    const net = gross + allowances - deductions;
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = fmt(val); };
+    set('t-gross',      gross);
+    set('t-allowances', allowances);
+    set('d-ssnit-amt',  ssnit);
+    set('t-deductions', deductions);
+    set('t-netpay',     net < 0 ? 0 : net);
+  }
+
+  function addSlipRow(section, noFocus, description) {
+    const tableId  = section === 'earnings'   ? 'slip-table-earnings'
+                   : section === 'allowances' ? 'slip-table-allowances'
+                   :                            'slip-table-deductions';
+    const table    = document.getElementById(tableId);
+    const addRow   = table.querySelector('.slip-add-row');
+    const isDeduct = section === 'deductions';
+    const tr = document.createElement('tr');
+    tr.className = 'slip-data-row slip-custom-row';
+    tr.innerHTML = `
+      <td>
+        <span class="custom-row-desc-wrap">
+          <input class="desc-input" type="text" placeholder="Description" value="${(description||'').replace(/"/g,'&quot;')}">
+          <button class="slip-row-remove" onclick="removeSlipRow(this)" title="Remove">&times;</button>
+        </span>
+      </td>
+      <td class="col-rate"><input class="rate-text-input" type="number" min="0" max="100" step="0.01" placeholder="%" oninput="slipRecalc()">%</td>
+      <td class="col-amt ${isDeduct ? 'deduct-amt' : ''}">
+        <input class="amt-input ${isDeduct ? 'deduct-amt' : ''}" type="number" min="0" step="0.01" placeholder="0.00" oninput="slipRecalc()">
+      </td>`;
+    addRow.parentNode.insertBefore(tr, addRow);
+    if (!noFocus) tr.querySelector('.amt-input').focus();
+    saveSlipState();
+  }
+
+  function toggleSlipMenu(btn) {
+    const menu = btn.nextElementSibling;
+    const isOpen = menu.classList.contains('open');
+    closeAllSlipMenus();
+    if (!isOpen) {
+      menu.classList.add('open');
+      // focus the custom input
+      const inp = menu.querySelector('.slip-dd-custom-input');
+      if (inp) setTimeout(() => inp.focus(), 50);
+    }
+  }
+
+  function closeAllSlipMenus() {
+    document.querySelectorAll('.slip-add-menu.open').forEach(m => m.classList.remove('open'));
+  }
+
+  function pickSlipRow(section, description) {
+    closeAllSlipMenus();
+    addSlipRow(section, false, description);
+  }
+
+  function slipCustomKey(e, section) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      slipCustomAdd(e.target.nextElementSibling, section);
+    }
+  }
+
+  function slipCustomAdd(btn, section) {
+    const inp  = btn.previousElementSibling;
+    const desc = inp.value.trim();
+    closeAllSlipMenus();
+    addSlipRow(section, false, desc);
+    inp.value = '';
+  }
+
+  // Close menus when clicking outside
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('.slip-add-wrap')) closeAllSlipMenus();
+  });
+
+  function removeSlipRow(btn) {
+    const row = btn.closest('tr');
+    if (row) { row.remove(); slipRecalc(); saveSlipState(); }
+  }
+
+  function toggleSlipGenerator(btn) {
+    const wrap = document.getElementById('slip-generator-wrap');
+    const open = wrap.classList.toggle('open');
+    btn.innerHTML = open
+      ? '<i class="fa-solid fa-chevron-up"></i> Hide Salary Slip'
+      : '<i class="fa-solid fa-money-check-dollar"></i> Generate Salary Slip';
+    if (open) wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function openSlipGenerator() {
+    const wrap    = document.getElementById('slip-generator-wrap');
+    const toggler = document.getElementById('salary-slip-toggle-btn');
+    if (!wrap.classList.contains('open')) toggleSlipGenerator(toggler);
+    else wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // Hide zero-value rows before printing, restore after
+  window.addEventListener('beforeprint', function () {
+    // Swap dept select for plain text
+    const deptSel = document.getElementById('emp-dept');
+    if (deptSel && !document.querySelector('.dept-print-span')) {
+      const span = document.createElement('span');
+      span.className = 'dept-print-span';
+      span.style.display = 'none';
+      span.style.fontWeight = '600';
+      span.style.fontSize = '13px';
+      span.style.color = '#1e293b';
+      span.textContent = deptSel.value || '—';
+      deptSel.parentNode.insertBefore(span, deptSel.nextSibling);
+    }
+    // Swap period selects for plain text
+    const periodWrap = document.querySelector('.period-selects');
+    if (periodWrap && !periodWrap.querySelector('.period-print-span')) {
+      const pspan = document.createElement('span');
+      pspan.className = 'period-print-span';
+      pspan.style.display = 'none';
+      pspan.textContent = (document.getElementById('emp-period') || {}).value || '—';
+      periodWrap.appendChild(pspan);
+    }
+    // Data rows: hide if their amt-input is 0 or empty
+    document.querySelectorAll('#payslip-preview .slip-data-row').forEach(row => {
+      const input = row.querySelector('.amt-input');
+      if (input && (parseFloat(input.value) || 0) === 0) {
+        row.classList.add('slip-zero-row');
+      }
+    });
+    // Section tables: hide entire section (header + col-header + total) if all data rows are hidden
+    document.querySelectorAll('#payslip-preview .slip-section').forEach(table => {
+      const dataRows  = table.querySelectorAll('.slip-data-row');
+      const allHidden = Array.from(dataRows).every(r => r.classList.contains('slip-zero-row'));
+      if (allHidden) table.classList.add('slip-zero-row');
+    });
+  });
+
+  window.addEventListener('afterprint', function () {
+    document.querySelectorAll('#payslip-preview .slip-zero-row').forEach(el => {
+      el.classList.remove('slip-zero-row');
+    });
+    document.querySelectorAll('.dept-print-span, .period-print-span').forEach(s => s.remove());
+  });
+
+  function resetSlip() {
+    const now = new Date();
+    const months = ['January','February','March','April','May','June',
+                    'July','August','September','October','November','December'];
+    document.querySelectorAll('#payslip-preview .slip-custom-row').forEach(r => r.remove());
+    ['emp-name','emp-id','emp-position','e-basic','e-overtime',
+     'a-transport','a-housing','a-professional','d-loan'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    const dept = document.getElementById('emp-dept');
+    if (dept) dept.selectedIndex = 0;
+    const ssnit = document.getElementById('d-ssnit-rate');
+    if (ssnit) ssnit.value = '5.5';
+    const moSel = document.getElementById('emp-period-month');
+    const yrSel = document.getElementById('emp-period-year');
+    if (moSel) moSel.value = months[now.getMonth()];
+    if (yrSel) yrSel.value = String(now.getFullYear());
+    syncPeriodFromSelects();
+    slipRecalc();
+    try { localStorage.removeItem(SLIP_KEY); } catch(e) {}
+  }
+
+  // ── Format YYYY-MM → 'Month YYYY' for display ──
+  function formatMonthToDisplay(yyyymm) {
+    if (!yyyymm) return '';
+    const months = ['January','February','March','April','May','June',
+                    'July','August','September','October','November','December'];
+    const [yr, mo] = yyyymm.split('-');
+    const idx = parseInt(mo, 10) - 1;
+    return (months[idx] && yr) ? `${months[idx]} ${yr}` : yyyymm;
+  }
+
+  // ── Open slip generator pre-filled from a saved salary record ──
+  function openSlipFromRecord(record) {
+    // Ensure slip generator is open
+    const wrap    = document.getElementById('slip-generator-wrap');
+    const toggler = document.getElementById('salary-slip-toggle-btn');
+    if (!wrap.classList.contains('open')) toggleSlipGenerator(toggler);
+
+    // Clear the form first
+    resetSlip();
+
+    // Fill employee info
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
+    setVal('emp-name', record.employee);
+    const periodDisplay = formatMonthToDisplay(record.month);
+    const periodParts   = periodDisplay.split(' ');
+    const moSel = document.getElementById('emp-period-month');
+    const yrSel = document.getElementById('emp-period-year');
+    if (moSel && periodParts[0]) moSel.value = periodParts[0];
+    if (yrSel && periodParts[1]) yrSel.value = periodParts[1];
+    syncPeriodFromSelects();
+
+    // Parse notes for position, dept, ID and financial totals
+    let gross = 0, allowances = 0, deductions = 0;
+    (record.notes || []).forEach(note => {
+      if (note.startsWith('Dept: ')) {
+        const dept = document.getElementById('emp-dept');
+        if (dept) {
+          const val = note.slice(6);
+          // Try to match an existing option, otherwise leave as-is
+          const opt = Array.from(dept.options).find(o => o.value === val);
+          if (opt) dept.value = val;
+        }
+      } else if (note.startsWith('Position: ')) setVal('emp-position', note.slice(10));
+      else if (note.startsWith('ID: '))         setVal('emp-id',       note.slice(4));
+      else if (note.startsWith('Gross: GHS '))  gross       = parseFloat(note.slice(11).replace(/,/g,'')) || 0;
+      else if (note.startsWith('Allowances: GHS ')) allowances = parseFloat(note.slice(16).replace(/,/g,'')) || 0;
+      else if (note.startsWith('Deductions: GHS '))  deductions = parseFloat(note.slice(16).replace(/,/g,'')) || 0;
+    });
+
+    // Populate Basic Salary with gross total; leave overtime/allowances blank for user to adjust
+    if (gross > 0) setVal('e-basic', gross);
+    else if (record.amount > 0) setVal('e-basic', record.amount); // fallback: net as basic
+
+    syncSlipHeader();
+    slipRecalc();
+    saveSlipState();
+    wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // ── Intercept salary edit clicks for May 2026+ records ──
+  document.addEventListener('click', function(e) {
+    const editBtn = e.target.closest('.acc-edit-btn');
+    if (!editBtn) return;
+    if (editBtn.getAttribute('data-edit-entity') !== 'salary') return;
+    const idx    = Number(editBtn.getAttribute('data-edit-idx'));
+    const record = (typeof accountingData !== 'undefined') ? accountingData.salaries[idx] : null;
+    if (!record) return;
+    const month  = record.month || '';
+    if (month < '2026-05') return; // let script.js handle old records normally
+    e.stopPropagation();
+    openSlipFromRecord(record);
+  }, { capture: true });
+</script>
 </body>
 </html>

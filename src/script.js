@@ -7994,18 +7994,191 @@ function initAccountingPage() {
 			return String(a.employee || '').localeCompare(String(b.employee || ''));
 		});
 
-		const title = 'White Water Wells - Salary Payments';
 		const generatedAt = new Date().toLocaleString('en-GB');
 		const monthText = groupLabel(currentSalaryMonth);
-		const printCss = `${window.location.origin}/src/script.css?v=20260504`;
+		const isSlipMonth = currentSalaryMonth >= '2026-05';
 
-		const sectionsHtml = selectedWorkers.sort((a, b) => a.localeCompare(b)).map((worker, workerIndex) => {
-			const workerRows = selectedRows.filter((r) => r.employee === worker);
-			const workerTotal = workerRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
-			const bodyRows = workerRows.map((r) => {
-				return `<tr><td>${escapeHtml(r.date || '')}</td><td>${escapeHtml(groupLabel(r._grp))}</td><td style="text-align:right;">${formatCurrency(r.amount || 0)}</td><td>${escapeHtml(r.note || '—')}</td></tr>`;
+		let printHtml;
+
+		if (isSlipMonth) {
+			// ── Full salary-slip printout (May 2026+) ───────────────────
+			const origin = window.location.origin;
+			const logoUrl = `${origin}/images/New%20Logo.jpeg`;
+			const fmtGHS = (n) => 'GHS ' + Number(n).toLocaleString('en-GH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+			const slipSections = [...selectedWorkers].sort((a, b) => a.localeCompare(b)).map((worker, idx) => {
+				const rec = selectedRows.find((r) => r.employee === worker) || {};
+				const sd = rec.slipData; // full line-item data saved with the record
+				const notesArr = Array.isArray(rec.notes) ? rec.notes : [];
+				const getNoteVal = (prefix) => {
+					const found = notesArr.find((n) => n.startsWith(prefix));
+					return found ? found.slice(prefix.length).trim() : '';
+				};
+				// Prefer slipData fields; fall back to notes for older records
+				const dept     = (sd && sd.dept)     || getNoteVal('Dept: ');
+				const position = (sd && sd.position) || getNoteVal('Position: ');
+				const empId    = (sd && sd.id)       || getNoteVal('ID: ');
+				const net      = rec.amount || 0;
+
+				// Build data rows for a section (filter out zero-amount rows)
+				const buildRows = (rows, isDeduct) => rows
+					.filter((r) => r.amt !== 0)
+					.map((r) => `<tr class="sp-row">
+						<td>${escapeHtml(r.desc)}</td>
+						<td class="sp-rate">${escapeHtml(r.rate && r.rate !== '\u2014' && r.rate !== '%' ? r.rate : '\u2014')}</td>
+						<td class="sp-r${isDeduct ? ' sp-deduct' : ''}">${fmtGHS(r.amt)}</td>
+					</tr>`).join('');
+
+				let earningsHtml, allowHtml, deductHtml, grossTotal, allowTotal, dedTotal;
+
+				if (sd) {
+					grossTotal = sd.gross;
+					allowTotal = sd.totalAllowances;
+					dedTotal   = sd.totalDeductions;
+					earningsHtml = buildRows(sd.earnings   || [], false);
+					deductHtml   = buildRows(sd.deductions || [], true);
+					allowHtml = (sd.allowances && sd.allowances.length > 0 && allowTotal > 0) ? `
+						<table class="sp-table">
+							<tr class="sp-sec-hdr"><td colspan="3">Allowances</td></tr>
+							<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GHS)</td></tr>
+							${buildRows(sd.allowances, false)}
+							<tr class="sp-total"><td colspan="2">Total Allowances</td><td class="sp-r">${fmtGHS(allowTotal)}</td></tr>
+						</table>` : '';
+				} else {
+					// Older records saved without slipData — fall back to summary totals
+					const grossStr = getNoteVal('Gross: GHS ');
+					const allowStr = getNoteVal('Allowances: GHS ');
+					const dedStr   = getNoteVal('Deductions: GHS ');
+					grossTotal = parseFloat((grossStr || '0').replace(/,/g, '')) || 0;
+					allowTotal = parseFloat((allowStr || '0').replace(/,/g, '')) || 0;
+					dedTotal   = parseFloat((dedStr   || '0').replace(/,/g, '')) || 0;
+					earningsHtml = `<tr class="sp-row"><td>Gross Pay</td><td class="sp-rate">\u2014</td><td class="sp-r">${fmtGHS(grossTotal)}</td></tr>`;
+					deductHtml   = `<tr class="sp-row"><td>Total Deductions</td><td class="sp-rate">\u2014</td><td class="sp-r sp-deduct">${fmtGHS(dedTotal)}</td></tr>`;
+					allowHtml = allowTotal > 0 ? `
+						<table class="sp-table">
+							<tr class="sp-sec-hdr"><td colspan="3">Allowances</td></tr>
+							<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GHS)</td></tr>
+							<tr class="sp-row"><td>Total Allowances</td><td class="sp-rate">\u2014</td><td class="sp-r">${fmtGHS(allowTotal)}</td></tr>
+							<tr class="sp-total"><td colspan="2">Total Allowances</td><td class="sp-r">${fmtGHS(allowTotal)}</td></tr>
+						</table>` : '';
+				}
+
+				return `
+				<div class="sp-wrap${idx > 0 ? ' page-break' : ''}">
+					<div class="sp-header">
+						<div class="sp-logo-block">
+							<img src="${logoUrl}" onerror="this.style.display='none'" alt="logo">
+							<div>
+								<div class="sp-company-name">WHITE WATER WELLS LTD</div>
+								<div class="sp-company-sub">Water Factory</div>
+								<div class="sp-company-slogan">Pure. Safe. Reliable Drinking Water</div>
+							</div>
+						</div>
+						<div class="sp-title-block">
+							<div class="sp-title">SALARY SLIP</div>
+							<div class="sp-meta">Pay Period: <strong>${escapeHtml(monthText)}</strong></div>
+							<div class="sp-meta">Date Issued: <strong>${escapeHtml(rec.date || generatedAt)}</strong></div>
+						</div>
+					</div>
+					<div class="sp-emp-row">
+						<div class="sp-emp-col">
+							<div class="sp-ef"><span class="sp-lbl">Name:</span><strong>${escapeHtml(worker)}</strong></div>
+							${empId    ? `<div class="sp-ef"><span class="sp-lbl">Employee ID:</span><strong>${escapeHtml(empId)}</strong></div>` : ''}
+							${position ? `<div class="sp-ef"><span class="sp-lbl">Position:</span><strong>${escapeHtml(position)}</strong></div>` : ''}
+						</div>
+						<div class="sp-emp-col">
+							${dept ? `<div class="sp-ef"><span class="sp-lbl">Department:</span><strong>${escapeHtml(dept)}</strong></div>` : ''}
+						</div>
+					</div>
+					<table class="sp-table">
+						<tr class="sp-sec-hdr"><td colspan="3">Earnings</td></tr>
+						<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GHS)</td></tr>
+						${earningsHtml}
+						<tr class="sp-total"><td colspan="2">Total Gross Pay</td><td class="sp-r">${fmtGHS(grossTotal)}</td></tr>
+					</table>
+					${allowHtml}
+					<table class="sp-table">
+						<tr class="sp-sec-hdr"><td colspan="3">Deductions</td></tr>
+						<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GHS)</td></tr>
+						${deductHtml}
+						<tr class="sp-total"><td colspan="2">Total Deductions</td><td class="sp-r sp-deduct">${fmtGHS(dedTotal)}</td></tr>
+					</table>
+					<div class="sp-netpay">
+						<div>
+							<div class="sp-netlabel">NET PAY / TAKE HOME</div>
+							<div class="sp-netsub">Gross Pay + Allowances &minus; Deductions</div>
+						</div>
+						<div class="sp-netamt">${fmtGHS(net)}</div>
+					</div>
+					<div class="sp-footer">
+						White Water Wells Ltd &nbsp;&middot;&nbsp; Comm 25 Peace B Down Accra-Prampram Road, P.O. Box 18204, Accra &nbsp;&middot;&nbsp; Tel: 0243108878 / 0244483793 &nbsp;&middot;&nbsp; whitewaterwellscompanyltd@gmail.com<br>
+						Generated: ${escapeHtml(generatedAt)}
+						<div style="margin-top:6px;font-size:10.5px;color:#b0bec5;letter-spacing:.5px;">Page 1 of 1</div>
+					</div>
+				</div>`;
 			}).join('');
-			return `
+
+			printHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Salary Slips \u2014 ${escapeHtml(monthText)}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f1f5f9; color: #0f172a; }
+    .sp-wrap { background: #fff; border: 1px solid #d1dbe8; border-radius: 10px; max-width: 820px; margin: 24px auto; overflow: hidden; }
+    .page-break { page-break-before: always; break-before: page; margin-top: 0; border-radius: 0; }
+    .sp-header { background: #1a56db; color: #fff; display: flex; justify-content: space-between; align-items: flex-start; padding: 20px 26px 18px; gap: 20px; }
+    .sp-logo-block { display: flex; align-items: center; gap: 14px; }
+    .sp-logo-block img { width: 58px; height: 58px; object-fit: contain; border-radius: 8px; background: #fff; padding: 3px; }
+    .sp-company-name   { font-size: 17px; font-weight: 700; letter-spacing: .4px; line-height: 1.2; }
+    .sp-company-sub    { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; opacity: .8; margin-top: 3px; }
+    .sp-company-slogan { font-size: 10.5px; font-style: italic; opacity: .75; margin-top: 4px; letter-spacing: .3px; }
+    .sp-title-block { text-align: right; }
+    .sp-title { font-size: 24px; font-weight: 800; letter-spacing: 1px; line-height: 1; }
+    .sp-meta  { font-size: 12px; opacity: .88; margin-top: 5px; line-height: 1.7; }
+    .sp-emp-row { display: grid; grid-template-columns: 1fr 1fr; padding: 16px 26px; border-bottom: 2px solid #e2e8f0; gap: 8px; }
+    .sp-emp-col { display: flex; flex-direction: column; gap: 8px; }
+    .sp-ef  { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+    .sp-lbl { color: #6b7280; min-width: 90px; font-size: 12.5px; }
+    .sp-table { width: 100%; border-collapse: collapse; }
+    .sp-sec-hdr td { padding: 8px 26px; font-size: 11.5px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: #fff; background: #1a56db; }
+    .sp-col-hdr td { padding: 6px 26px; font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: #6b7280; border-bottom: 1px solid #e2e8f0; }
+    .sp-rate { text-align: center; width: 110px; }
+    .sp-r    { text-align: right;  width: 130px; }
+    .sp-row td   { padding: 9px 26px; font-size: 13px; color: #1e293b; border-bottom: 1px solid #f0f4f8; }
+    .sp-row:hover td { background: #f8fafd; }
+    .sp-total td { padding: 10px 26px; font-size: 13.5px; font-weight: 700; border-top: 2px solid #e2e8f0; color: #1a56db; }
+    .sp-deduct { color: #e53e3e !important; }
+    .sp-netpay   { background: #1a56db; color: #fff; padding: 16px 26px; display: flex; justify-content: space-between; align-items: center; }
+    .sp-netlabel { font-size: 13.5px; font-weight: 700; }
+    .sp-netsub   { font-size: 11px; opacity: .75; margin-top: 3px; }
+    .sp-netamt   { font-size: 22px; font-weight: 800; }
+    .sp-footer   { text-align: center; font-size: 11px; color: #94a3b8; padding: 10px 26px 12px; border-top: 1px solid #e2e8f0; line-height: 1.7; }
+    @media print {
+      body { background: #fff !important; }
+      .sp-wrap { border: none; border-radius: 0; max-width: 100%; margin: 0; }
+      .sp-header, .sp-sec-hdr td, .sp-netpay { -webkit-print-color-adjust: exact; print-color-adjust: exact; background: #1a56db !important; }
+    }
+  </style>
+</head>
+<body>
+  ${slipSections}
+</body>
+</html>`;
+
+		} else {
+			// ── Simple table printout (pre-May 2026) ────────────────────
+			const title = 'White Water Wells - Salary Payments';
+			const printCss = `${window.location.origin}/src/script.css?v=20260504`;
+
+			const sectionsHtml = selectedWorkers.sort((a, b) => a.localeCompare(b)).map((worker, workerIndex) => {
+				const workerRows = selectedRows.filter((r) => r.employee === worker);
+				const workerTotal = workerRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+				const bodyRows = workerRows.map((r) => {
+					return `<tr><td>${escapeHtml(r.date || '')}</td><td>${escapeHtml(groupLabel(r._grp))}</td><td style="text-align:right;">${formatCurrency(r.amount || 0)}</td><td>${escapeHtml(r.note || '—')}</td></tr>`;
+				}).join('');
+				return `
 				<section class="worker-section${workerIndex > 0 ? ' page-break' : ''}">
 					<div class="worker-head">
 						<div>
@@ -8019,10 +8192,10 @@ function initAccountingPage() {
 						<tbody>${bodyRows}<tr><td colspan="2" style="text-align:right;font-weight:700;">Total</td><td style="text-align:right;font-weight:700;">${formatCurrency(workerTotal)}</td><td></td></tr></tbody>
 					</table>
 				</section>
-			`;
-		}).join('');
+				`;
+			}).join('');
 
-		const printHtml = `<!DOCTYPE html>
+			printHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -8035,12 +8208,12 @@ function initAccountingPage() {
     .print-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-bottom: 1px solid #e2e8f0; margin-bottom: 12px; padding-bottom: 8px; }
     .print-head h1 { font-size: 1.1rem; margin: 0; }
     .print-head p { font-size: 0.85rem; color: #64748b; margin: 0; }
-	    .worker-section { margin-top: 14px; }
-	    .worker-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
-	    .worker-section h2 { margin: 0; font-size: 1rem; }
-	    .worker-week { margin: 4px 0 0; font-size: 0.86rem; color: #64748b; }
-	    .worker-total { font-size: 0.95rem; font-weight: 700; white-space: nowrap; }
-	    .page-break { page-break-before: always; break-before: page; }
+    .worker-section { margin-top: 14px; }
+    .worker-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+    .worker-section h2 { margin: 0; font-size: 1rem; }
+    .worker-week { margin: 4px 0 0; font-size: 0.86rem; color: #64748b; }
+    .worker-total { font-size: 0.95rem; font-weight: 700; white-space: nowrap; }
+    .page-break { page-break-before: always; break-before: page; }
     table { width: 100%; border-collapse: collapse; }
     th, td { border: 1px solid #e2e8f0; padding: 8px 10px; font-size: 0.9rem; vertical-align: top; }
     thead th { background: #f8fafc; text-align: left; }
@@ -8053,10 +8226,11 @@ function initAccountingPage() {
       <h1>${title}</h1>
       <p>Generated: ${generatedAt}</p>
     </div>
-	    ${sectionsHtml}
+    ${sectionsHtml}
   </div>
 </body>
 </html>`;
+		} // end else (pre-slip months)
 
 		try {
 			const printWin = window.open('', '_blank', 'width=1100,height=900');
