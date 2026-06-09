@@ -7327,6 +7327,129 @@ function initAccountingPage() {
 	};
 	window.addEventListener('beforeunload', () => { if (editingAccIdx < 0 && currentEntity) saveModalDraft(currentEntity); });
 
+	/* ── Salary slip breakdown editor (shared by Add + Edit) ───────── */
+	const SLIP_SECTIONS = [
+		{ key: 'earnings', title: 'Earnings', sign: 1 },
+		{ key: 'allowances', title: 'Allowances', sign: 1 },
+		{ key: 'deductions', title: 'Deductions', sign: -1 },
+	];
+	let modalSlipMeta = null; // { id, position, dept, period } for the record open in the modal
+
+	/* A blank breakdown with the standard line items pre-listed. */
+	const buildDefaultSlipData = () => ({
+		id: '', position: '', dept: '', period: '',
+		earnings: [
+			{ desc: 'Basic Salary', amt: 0, rate: '\u2014' },
+			{ desc: 'Overtime Pay', amt: 0, rate: '\u2014' },
+		],
+		allowances: [
+			{ desc: 'Transport Allowance', amt: 0, rate: '\u2014' },
+			{ desc: 'Housing Allowance', amt: 0, rate: '\u2014' },
+			{ desc: 'Professional Allowance', amt: 0, rate: '\u2014' },
+		],
+		deductions: [
+			{ desc: 'SSNIT Contribution', amt: 0, rate: '\u2014' },
+			{ desc: 'Loan Repayment', amt: 0, rate: '\u2014' },
+		],
+		gross: 0, totalAllowances: 0, totalDeductions: 0, net: 0,
+	});
+
+	/* Recalculate the modal's Amount field (net pay) from the breakdown rows. */
+	const recomputeModalNet = () => {
+		if (!modalFieldsEl) return;
+		let net = 0;
+		let anyValue = false;
+		SLIP_SECTIONS.forEach(({ key, sign }) => {
+			modalFieldsEl.querySelectorAll(`input[data-slip-section="${key}"][data-slip-amt]`).forEach((inp) => {
+				const v = Number(inp.value) || 0;
+				if (v) anyValue = true;
+				net += sign * v;
+			});
+		});
+		// Only take over the Amount field once a breakdown value exists, so the
+		// quick "just type an amount" path still works when no breakdown is entered.
+		const amtEl = document.getElementById('acc-field-amount');
+		if (amtEl && anyValue) amtEl.value = net < 0 ? 0 : net;
+	};
+
+	/* Build a single editable breakdown row (description + amount + remove). */
+	const makeSlipRow = (key, desc, amt, rate) => {
+		const wrap = document.createElement('div');
+		wrap.className = 'slip-edit-row';
+		wrap.dataset.slipRow = key;
+		wrap.innerHTML = `
+			<input class="slip-edit-desc" type="text" data-slip-section="${key}" data-slip-desc placeholder="Description" value="${escapeHtml(desc || '')}">
+			<input class="slip-edit-amt" type="number" step="0.01" min="0" data-slip-section="${key}" data-slip-amt placeholder="0.00" value="${Number(amt) || 0}">
+			<input type="hidden" data-slip-section="${key}" data-slip-rate value="${escapeHtml(rate || '\u2014')}">
+			<button type="button" class="slip-edit-remove" title="Remove row" aria-label="Remove row"><i class="fa-solid fa-xmark"></i></button>
+		`;
+		wrap.querySelector('.slip-edit-amt').addEventListener('input', recomputeModalNet);
+		wrap.querySelector('.slip-edit-remove').addEventListener('click', () => { wrap.remove(); recomputeModalNet(); });
+		return wrap;
+	};
+
+	/* Append the editable breakdown section to the modal (uses default template when none given). */
+	const injectSalarySlipFields = (slipData) => {
+		if (!modalFieldsEl) return;
+		const sd = slipData || buildDefaultSlipData();
+		modalSlipMeta = { id: sd.id || '', position: sd.position || '', dept: sd.dept || '', period: sd.period || '' };
+		const section = document.createElement('div');
+		section.className = 'slip-edit-section';
+		section.innerHTML = `<p class="slip-edit-heading">Salary Slip Breakdown</p>`;
+		SLIP_SECTIONS.forEach(({ key, title }) => {
+			const group = document.createElement('div');
+			group.className = 'slip-edit-group';
+			group.innerHTML = `<div class="slip-edit-group-head"><p class="slip-edit-title">${title}</p><button type="button" class="slip-edit-add"><i class="fa-solid fa-plus"></i> Add row</button></div>`;
+			const rowsHost = document.createElement('div');
+			rowsHost.className = 'slip-edit-rows';
+			(Array.isArray(sd[key]) ? sd[key] : []).forEach((it) => rowsHost.appendChild(makeSlipRow(key, it.desc, it.amt, it.rate)));
+			group.appendChild(rowsHost);
+			group.querySelector('.slip-edit-add').addEventListener('click', () => {
+				rowsHost.appendChild(makeSlipRow(key, '', 0, '\u2014'));
+				recomputeModalNet();
+			});
+			section.appendChild(group);
+		});
+		modalFieldsEl.appendChild(section);
+		recomputeModalNet();
+	};
+
+	/* Read the breakdown rows back into a slipData object with recomputed totals. */
+	const collectSlipDataFromModal = () => {
+		if (!modalFieldsEl || !modalFieldsEl.querySelector('[data-slip-row]')) return null;
+		const meta = modalSlipMeta || { id: '', position: '', dept: '', period: '' };
+		const sd = { ...meta, earnings: [], allowances: [], deductions: [] };
+		modalFieldsEl.querySelectorAll('[data-slip-row]').forEach((row) => {
+			const key = row.dataset.slipRow;
+			const desc = (row.querySelector('[data-slip-desc]')?.value || '').trim();
+			const amt = Number(row.querySelector('[data-slip-amt]')?.value) || 0;
+			const rate = (row.querySelector('[data-slip-rate]')?.value || '\u2014').trim() || '\u2014';
+			if (!desc && !amt) return; // skip blank rows
+			if (sd[key]) sd[key].push({ desc: desc || 'Item', amt, rate });
+		});
+		const sum = (arr) => arr.reduce((s, it) => s + (Number(it.amt) || 0), 0);
+		sd.gross = sum(sd.earnings);
+		sd.totalAllowances = sum(sd.allowances);
+		sd.totalDeductions = sum(sd.deductions);
+		sd.net = Math.max(0, sd.gross + sd.totalAllowances - sd.totalDeductions);
+		return sd;
+	};
+
+	/* Build the Notes array from a slip breakdown so the table/notes stay in sync after edits. */
+	const buildSalaryNotesFromSlip = (sd, extraNotes) => {
+		const fmt2 = (n) => Number(n).toLocaleString('en-GH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+		const autoNotes = [
+			sd.dept ? `Dept: ${sd.dept}` : null,
+			sd.position ? `Position: ${sd.position}` : null,
+			sd.id ? `ID: ${sd.id}` : null,
+			`Gross: GHS ${fmt2(sd.gross)}`,
+			sd.totalAllowances > 0 ? `Allowances: GHS ${fmt2(sd.totalAllowances)}` : null,
+			`Deductions: GHS ${fmt2(sd.totalDeductions)}`,
+		].filter(Boolean);
+		const userExtra = (extraNotes || []).filter((n) => n && !/^(Dept:|Position:|ID:|Gross:|Allowances:|Deductions:)/.test(n));
+		return [...autoNotes, ...userExtra];
+	};
+
 	const openModal = (entity, editIdx, resumeDraft = false) => {
 		const config = ACC_MODAL_CONFIGS[entity];
 		if (!config || !addModal) return;
@@ -7364,6 +7487,17 @@ function initAccountingPage() {
 					row.notes.forEach((n, i) => setVal('note' + (i + 1), n));
 				}
 			}
+		}
+		/* Salary slip breakdown — editable for both Add and Edit. */
+		if (entity === 'salary' && modalFieldsEl) {
+			const rec = editingAccIdx >= 0 ? accountingData.salaries[editingAccIdx] : null;
+			let seed = rec && rec.slipData ? rec.slipData : null;
+			if (!seed && rec && Number(rec.amount) > 0) {
+				// Existing record without a breakdown: seed Basic Salary with its current total.
+				seed = buildDefaultSlipData();
+				seed.earnings[0].amt = Number(rec.amount) || 0;
+			}
+			injectSalarySlipFields(seed);
 		}
 		addModal.style.display = 'flex';
 		const firstInput = modalFieldsEl && modalFieldsEl.querySelector('input, select');
@@ -7452,16 +7586,27 @@ function initAccountingPage() {
 				const monthVal = getValue('month') || String(dateVal).slice(0, 7);
 				const weekStart = getWeekStart(dateVal);
 				const keepMarchWeekly = monthVal === '2026-03' && isMarchWeeklyWindow(weekStart);
-				const notes = [getValue('note1'), getValue('note2'), getValue('note3'), getValue('note4'), getValue('note5')].filter(Boolean);
+				const userNotes = [getValue('note1'), getValue('note2'), getValue('note3'), getValue('note4'), getValue('note5')].filter(Boolean);
+
+				// Pull the breakdown the user entered/edited; recompute net + notes from it.
+				const slipData = collectSlipDataFromModal();
+				const hasBreakdown = !!(slipData && (slipData.gross > 0 || slipData.totalAllowances > 0 || slipData.totalDeductions > 0));
+				const amount = hasBreakdown ? slipData.net : getNum('amount');
+				const notes = hasBreakdown ? buildSalaryNotesFromSlip(slipData, userNotes) : userNotes;
+
 				const data = {
 					date: dateVal,
 					employee,
 					month: monthVal,
 					week: keepMarchWeekly ? weekStart : undefined,
-					amount: getNum('amount'),
+					amount,
 					notes,
 					note: notes.join(' · ') || '',
 				};
+				if (hasBreakdown) {
+					data.slipData = slipData;
+					data._fromSlip = true;
+				}
 				if (editingAccIdx >= 0 && accountingData.salaries[editingAccIdx]) {
 					const old = accountingData.salaries[editingAccIdx];
 					const li = accountingData.ledger.findIndex(e => e.account === 'Salaries' && e.desc === `Salary — ${old.employee}` && e.date === old.date);

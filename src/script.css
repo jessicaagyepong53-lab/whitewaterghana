@@ -2071,16 +2071,109 @@ body {
 
 /* ---- Clickable salary employee name (opens salary slip) ---- */
 .salary-name-link {
-	color: #1a56db;
+	color: inherit;
 	cursor: pointer;
 	text-decoration: none;
 	border-bottom: 1px dashed transparent;
-	transition: border-color 0.15s ease, color 0.15s ease;
+	transition: border-color 0.15s ease;
 }
 .salary-name-link:hover {
-	color: #1239a3;
-	border-bottom-color: #1a56db;
+	border-bottom-color: currentColor;
 }
+
+/* ---- Salary slip breakdown editor (inside Add/Edit Salary modal) ---- */
+.slip-edit-section {
+	margin-top: 14px;
+	padding-top: 12px;
+	border-top: 1px solid #e2e8f0;
+}
+.slip-edit-heading {
+	font-size: 0.82rem;
+	font-weight: 800;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: #1a56db;
+	margin: 0 0 10px;
+}
+.slip-edit-group {
+	margin-bottom: 14px;
+}
+.slip-edit-group-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+.slip-edit-title {
+	font-size: 0.78rem;
+	font-weight: 700;
+	color: #475569;
+	margin: 0;
+}
+.slip-edit-add {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 3px 9px;
+	border: 1px solid #bfdbfe;
+	border-radius: 6px;
+	background: #eff6ff;
+	color: #1d4ed8;
+	font-size: 0.74rem;
+	font-weight: 600;
+	cursor: pointer;
+	transition: background 0.15s ease;
+}
+.slip-edit-add:hover { background: #dbeafe; }
+.slip-edit-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.slip-edit-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.slip-edit-row .slip-edit-desc {
+	flex: 1 1 auto;
+	min-width: 0;
+	padding: 6px 9px;
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	font-size: 0.84rem;
+}
+.slip-edit-row .slip-edit-amt {
+	flex: 0 0 110px;
+	width: 110px;
+	padding: 6px 9px;
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	font-size: 0.84rem;
+	text-align: right;
+}
+.slip-edit-row .slip-edit-desc:focus,
+.slip-edit-row .slip-edit-amt:focus {
+	outline: none;
+	border-color: #1a56db;
+	box-shadow: 0 0 0 2px #bfdbfe;
+}
+.slip-edit-remove {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	border: 1px solid #fecaca;
+	border-radius: 6px;
+	background: #fef2f2;
+	color: #dc2626;
+	cursor: pointer;
+	transition: background 0.15s ease;
+}
+.slip-edit-remove:hover { background: #fee2e2; }
 
 /* ---- Print button ---- */
 .panel button.print-btn,

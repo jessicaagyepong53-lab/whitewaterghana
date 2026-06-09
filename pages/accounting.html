@@ -903,7 +903,7 @@
     const isOld   = month && month !== '__all__' && month < '2026-05';
     const addBtn  = document.getElementById('salary-add-btn');
     const slipBtn = document.getElementById('salary-slip-toggle-btn');
-    if (addBtn)  addBtn.style.display  = isOld ? '' : 'none';
+    if (addBtn)  addBtn.style.display  = '';
     if (slipBtn) slipBtn.style.display = isOld ? 'none' : '';
     // Collapse the slip generator when switching to an older month
     if (isOld) {
