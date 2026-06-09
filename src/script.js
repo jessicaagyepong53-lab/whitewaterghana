@@ -2109,8 +2109,18 @@ async function fetchEquipmentFromServer() {
 		if (res.ok) {
 			const rows = await res.json();
 			if (Array.isArray(rows) && rows.length) {
-				localStorage.setItem('ww_equipment', JSON.stringify(rows));
-				return rows;
+				// Merge: server provides IDs and metadata; local localStorage provides the most
+				// recently set statuses (which may be newer than the server when a PUT is in-flight).
+				// Match by id first, fall back to code so that items without local IDs are enriched.
+				const local = (() => {
+					try { return JSON.parse(localStorage.getItem('ww_equipment') || '[]'); } catch (_e) { return []; }
+				})();
+				const merged = rows.map((r) => {
+					const l = local.find((x) => (x.id && String(x.id) === String(r.id)) || x.code === r.code);
+					return l ? { ...r, status: l.status } : r;
+				});
+				localStorage.setItem('ww_equipment', JSON.stringify(merged));
+				return merged;
 			}
 		}
 	} catch (_e) { /* fall back to localStorage */ }
@@ -3248,6 +3258,12 @@ async function initInventoryPage() {
 			}
 			equipment = Array.isArray(loaded.equipment) ? loaded.equipment : [];
 			customers = Array.isArray(loaded.customers) ? loaded.customers : [];
+			// If any equipment items are missing IDs (loaded from old/default cache), enrich from server
+			// so that saveOneEquipmentToServer can always do its PUT correctly.
+			if (equipment.length > 0 && equipment.some((eq) => !eq.id)) {
+				equipment = await fetchEquipmentFromServer();
+				persistInventoryMonthState();
+			}
 		} else {
 			if (hasAnyInventoryMonthPayload()) {
 				rawMaterials = [];
@@ -7504,6 +7520,14 @@ function initAccountingPage() {
 			renderAccountingPage();
 			return;
 		}
+		const salaryNameLink = event.target.closest('.salary-name-link[data-salary-employee]');
+		if (salaryNameLink) {
+			event.stopPropagation();
+			currentSalaryMonth = salaryNameLink.getAttribute('data-salary-month') || currentSalaryMonth;
+			currentSalaryEmployee = salaryNameLink.getAttribute('data-salary-employee') || '__all_workers__';
+			printCurrentSalarySelection();
+			return;
+		}
 		const editBtn = event.target.closest('.acc-edit-btn');
 		if (editBtn) {
 			event.stopPropagation();
@@ -7941,7 +7965,7 @@ function initAccountingPage() {
 				for (const s of filtered) {
 					total += s.amount || 0;
 					const grp = getSalaryGroup(s);
-					html += `<tr><td>${s.date}</td><td style="font-weight:600;">${s.employee}</td><td style="color:#64748b;font-size:0.85rem;">${groupLabel(grp)}</td><td>${formatCurrency(s.amount)}</td><td style="color:#64748b;font-size:0.85rem;">${s.note || '—'}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="salary" data-edit-idx="${s._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="salary" data-delete-idx="${s._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
+					html += `<tr><td>${s.date}</td><td style="font-weight:600;"><span class="salary-name-link" data-salary-employee="${escapeHtml(s.employee || '')}" data-salary-month="${escapeHtml(grp)}" title="Open salary slip for ${escapeHtml(s.employee || '')}">${s.employee}</span></td><td style="color:#64748b;font-size:0.85rem;">${groupLabel(grp)}</td><td>${formatCurrency(s.amount)}</td><td style="color:#64748b;font-size:0.85rem;">${s.note || '—'}</td><td><div class="row-actions"><button class="btn-edit acc-edit-btn" data-edit-entity="salary" data-edit-idx="${s._idx}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete acc-delete-btn" data-delete-entity="salary" data-delete-idx="${s._idx}"><i class="fa-solid fa-trash"></i></button></div></td></tr>`;
 				}
 				html += `<tr><td colspan="3" style="text-align:right;font-weight:800;background:#1e40af;color:#fff;padding:10px 14px;font-size:0.95rem;">TOTAL</td><td style="font-weight:800;background:#1e40af;color:#fff;font-size:0.95rem;">${formatCurrency(total)}</td><td style="background:#1e40af;" colspan="2"></td></tr>`;
 				salariesBody.innerHTML = salaryDraftRow + html;
