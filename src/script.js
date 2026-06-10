@@ -1225,6 +1225,23 @@ function broadcastRemoteSyncRefresh() {
 	});
 }
 
+// Pull factory equipment straight from its dedicated collection endpoint and
+// treat the server as authoritative. Used by the live-sync (SSE) refresh so a
+// status change on one device updates every other device's dashboard.
+async function refreshEquipmentFromServerAuthoritative() {
+	try {
+		const res = await fetch(API_BASE + '/api/factory-equipment', { credentials: 'include', cache: 'no-store' });
+		if (res.ok) {
+			const rows = await res.json();
+			if (Array.isArray(rows)) {
+				localStorage.setItem('ww_equipment', JSON.stringify(rows));
+				return rows;
+			}
+		}
+	} catch (_e) { /* keep existing localStorage on failure */ }
+	return null;
+}
+
 async function pullRemoteDataAndRefreshUi() {
 	await loadFromServer('ww_seed_flags');
 	await loadFromServer('ww_sales_months');
@@ -1237,6 +1254,9 @@ async function pullRemoteDataAndRefreshUi() {
 	];
 	const keysToRefresh = [...baseKeys, ...salesKeys];
 	await loadBulkFromServer(keysToRefresh);
+	// Equipment lives in its own collection, not the key/value store, so refresh
+	// it from the dedicated endpoint before emitting the ww_equipment change.
+	await refreshEquipmentFromServerAuthoritative();
 	keysToRefresh.forEach((key) => emitStorageKeyChange(key));
 	broadcastRemoteSyncRefresh();
 }

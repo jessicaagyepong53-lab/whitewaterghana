@@ -785,6 +785,9 @@
     return null;
   }
 
+  // Holds the salary record currently being edited (null when creating a new slip)
+  let _editingSalaryRecord = null;
+
   function saveSlipToRecords() {
     const empName = (document.getElementById('emp-name') || {}).value?.trim();
     if (!empName) { alert('Please enter the employee name before saving.'); return; }
@@ -858,6 +861,34 @@
     const today = new Date();
     const pad   = n => String(n).padStart(2, '0');
     const todayStr = `${today.getFullYear()}-${pad(today.getMonth()+1)}-${pad(today.getDate())}`;
+
+    // ── If we are editing an existing record, update it in place ──
+    if (_editingSalaryRecord && typeof accountingData !== 'undefined'
+        && typeof saveAccountingDataToStorage === 'function') {
+      const idx = accountingData.salaries.indexOf(_editingSalaryRecord);
+      if (idx !== -1) {
+        const old = accountingData.salaries[idx];
+        // Update the matching ledger entry (best-effort match on the old values)
+        const led = accountingData.ledger.find(l =>
+          l.account === 'Salaries' && l.type === 'expense'
+          && l.date === old.date && l.desc === `Salary — ${old.employee}`
+          && Number(l.debit) === Number(old.amount));
+        if (led) { led.desc = `Salary — ${empName}`; led.debit = net; }
+        accountingData.salaries[idx] = {
+          ...old,
+          date: old.date, employee: empName, month: monthVal,
+          amount: net, notes, note: notes.join(' \u00b7 '),
+          _fromSlip: true, slipData,
+        };
+        _editingSalaryRecord = null;
+        saveAccountingDataToStorage();
+        document.dispatchEvent(new Event('ww-refresh-page'));
+        showSlipToast(`\u2713 Updated: ${empName} — ${periodStr} — GHS ${fmt(net)}`);
+        return;
+      }
+      // Record no longer exists — fall through to a normal save
+      _editingSalaryRecord = null;
+    }
 
     // Check for duplicate (same employee + same month already saved)
     if (typeof accountingData !== 'undefined') {
@@ -1203,6 +1234,7 @@
     if (yrSel) yrSel.value = String(now.getFullYear());
     syncPeriodFromSelects();
     slipRecalc();
+    _editingSalaryRecord = null; // starting a fresh slip clears edit mode
     try { localStorage.removeItem(SLIP_KEY); } catch(e) {}
   }
 
@@ -1225,6 +1257,8 @@
 
     // Clear the form first
     resetSlip();
+    // Remember which record we are editing so saving updates it in place
+    _editingSalaryRecord = record;
 
     // Fill employee info
     const setVal = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
@@ -1237,27 +1271,76 @@
     if (yrSel && periodParts[1]) yrSel.value = periodParts[1];
     syncPeriodFromSelects();
 
-    // Parse notes for position, dept, ID and financial totals
-    let gross = 0, allowances = 0, deductions = 0;
-    (record.notes || []).forEach(note => {
-      if (note.startsWith('Dept: ')) {
-        const dept = document.getElementById('emp-dept');
-        if (dept) {
-          const val = note.slice(6);
-          // Try to match an existing option, otherwise leave as-is
-          const opt = Array.from(dept.options).find(o => o.value === val);
-          if (opt) dept.value = val;
-        }
-      } else if (note.startsWith('Position: ')) setVal('emp-position', note.slice(10));
-      else if (note.startsWith('ID: '))         setVal('emp-id',       note.slice(4));
-      else if (note.startsWith('Gross: GHS '))  gross       = parseFloat(note.slice(11).replace(/,/g,'')) || 0;
-      else if (note.startsWith('Allowances: GHS ')) allowances = parseFloat(note.slice(16).replace(/,/g,'')) || 0;
-      else if (note.startsWith('Deductions: GHS '))  deductions = parseFloat(note.slice(16).replace(/,/g,'')) || 0;
-    });
+    // Helper: select a department option only if it exists
+    const setDept = (val) => {
+      if (!val) return;
+      const dept = document.getElementById('emp-dept');
+      if (dept) {
+        const opt = Array.from(dept.options).find(o => o.value === val);
+        if (opt) dept.value = val;
+      }
+    };
+    // Helper: strip the trailing '%' / em-dash from a stored rate string
+    const stripPct = (r) => (r && r !== '\u2014') ? String(r).replace('%', '').trim() : '';
 
-    // Populate Basic Salary with gross total; leave overtime/allowances blank for user to adjust
-    if (gross > 0) setVal('e-basic', gross);
-    else if (record.amount > 0) setVal('e-basic', record.amount); // fallback: net as basic
+    const sd = record.slipData;
+    if (sd) {
+      // ── Full restore from the saved slip breakdown ──
+      setVal('emp-id',       sd.id);
+      setVal('emp-position', sd.position);
+      setDept(sd.dept);
+
+      // Fixed input IDs keyed by their row description
+      const earnFixed  = { 'Basic Salary': 'e-basic', 'Overtime Pay': 'e-overtime' };
+      const allowFixed = { 'Transport Allowance': 'a-transport', 'Housing Allowance': 'a-housing', 'Professional Allowance': 'a-professional' };
+      const dedFixed   = { 'Loan Repayment': 'd-loan' };
+
+      const restoreSection = (items, section, fixedMap, hasSsnit) => {
+        const tableId = section === 'earnings'   ? 'slip-table-earnings'
+                      : section === 'allowances' ? 'slip-table-allowances'
+                      :                            'slip-table-deductions';
+        (items || []).forEach(it => {
+          // SSNIT is a special calculated row — restore its rate only
+          if (hasSsnit && it.desc === 'SSNIT Contribution') {
+            const rate = stripPct(it.rate);
+            if (rate !== '') setVal('d-ssnit-rate', rate);
+            return;
+          }
+          const fixedId = fixedMap[it.desc];
+          if (fixedId) {
+            if (it.amt) setVal(fixedId, it.amt);
+          } else {
+            // Custom row — recreate it
+            addSlipRow(section, true, it.desc);
+            const rows = document.querySelectorAll('#' + tableId + ' .slip-custom-row');
+            const last = rows[rows.length - 1];
+            if (last) {
+              const rateVal = stripPct(it.rate);
+              const r = last.querySelector('.rate-text-input');
+              const a = last.querySelector('.amt-input');
+              if (r && rateVal !== '') r.value = rateVal;
+              if (a && it.amt != null) a.value = it.amt;
+            }
+          }
+        });
+      };
+
+      restoreSection(sd.earnings,   'earnings',   earnFixed,  false);
+      restoreSection(sd.allowances, 'allowances', allowFixed, false);
+      restoreSection(sd.deductions, 'deductions', dedFixed,   true);
+    } else {
+      // ── Legacy fallback: parse summary notes (older records w/o slipData) ──
+      let gross = 0;
+      (record.notes || []).forEach(note => {
+        if (note.startsWith('Dept: ')) setDept(note.slice(6));
+        else if (note.startsWith('Position: ')) setVal('emp-position', note.slice(10));
+        else if (note.startsWith('ID: '))         setVal('emp-id',       note.slice(4));
+        else if (note.startsWith('Gross: GHS '))  gross = parseFloat(note.slice(11).replace(/,/g,'')) || 0;
+      });
+      // Populate Basic Salary with gross total; leave the rest blank for the user to adjust
+      if (gross > 0) setVal('e-basic', gross);
+      else if (record.amount > 0) setVal('e-basic', record.amount); // fallback: net as basic
+    }
 
     syncSlipHeader();
     slipRecalc();

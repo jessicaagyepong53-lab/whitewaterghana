@@ -1258,6 +1258,7 @@ app.put('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, next
     if (req.body.lastMaintenance !== undefined) update.lastMaintenance = req.body.lastMaintenance;
     if (req.body.nextMaintenance !== undefined) update.nextMaintenance = req.body.nextMaintenance;
     await FactoryEquipment.updateOne({ _id: req.params.id }, update);
+    if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key: 'ww_equipment' });
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -1271,6 +1272,7 @@ app.post('/api/factory-equipment', ensureAuthenticated, async (req, res, next) =
       lastMaintenance: req.body.lastMaintenance || null,
       nextMaintenance: req.body.nextMaintenance || null,
     });
+    if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key: 'ww_equipment' });
     res.status(201).json({ id: doc._id, code: doc.code });
   } catch (error) { next(error); }
 });
@@ -1281,6 +1283,7 @@ app.delete('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, n
     if (!record) throw createError(404, 'Equipment not found');
     await moveToTrash('factory-equipment', record, `${req.user.name} (${req.user.role})`);
     await FactoryEquipment.deleteOne({ _id: req.params.id });
+    if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key: 'ww_equipment' });
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
