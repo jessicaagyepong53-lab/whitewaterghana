@@ -176,16 +176,15 @@ function padCode(number) {
 
 async function nextCode(Model, field, prefix) {
   const year = new Date().getFullYear();
-  const docs = await Model.find({}, field).lean();
-  if (!docs.length) return `${prefix}-${year}-${padCode(1)}`;
+  // Sort by the code field descending and take only the last one — avoids
+  // a full collection scan and is safe under concurrent requests since
+  // MongoDB returns the highest existing code rather than a stale in-memory max.
+  const [latest] = await Model.find({}, field).sort({ [field]: -1 }).limit(1).lean();
+  if (!latest) return `${prefix}-${year}-${padCode(1)}`;
 
-  let maxSuffix = 0;
-  for (const doc of docs) {
-    const code = doc[field];
-    const parts = String(code).split('-');
-    const num = Number(parts[parts.length - 1]);
-    if (Number.isFinite(num) && num > maxSuffix) maxSuffix = num;
-  }
+  const parts = String(latest[field] || '').split('-');
+  const num = Number(parts[parts.length - 1]);
+  const maxSuffix = Number.isFinite(num) ? num : 0;
   return `${prefix}-${year}-${padCode(maxSuffix + 1)}`;
 }
 
@@ -268,7 +267,7 @@ async function getCollection(resource) {
       }));
     }
     case 'invoices': {
-      const rows = await Invoice.find().populate('customer_id').populate('sales_order_id').sort({ createdAt: -1 }).lean();
+      const rows = await Invoice.find().populate('customer_id').populate('sales_order_id').sort({ invoice_code: 1 }).lean();
       return rows.map(r => ({
         id: r._id, invoiceCode: r.invoice_code, customerName: r.customer_id?.name ?? '', customerId: r.customer_id?._id,
         orderCode: r.sales_order_id?.order_code ?? null, salesOrderId: r.sales_order_id?._id ?? null,
@@ -777,7 +776,7 @@ const ALLOWED_DATA_KEYS = [
   'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
   'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
   'ww_cost_centre_budgets', 'ww_bom_data',
-  'ww_sales_months', 'ww_equipment', 'ww_seed_flags', 'ww_last_data_update',
+  'ww_sales_months', 'ww_equipment', 'ww_seed_flags', 'ww_last_data_update', 'ww_recent_restores',
 ];
 
 function isAllowedDataKey(key) {
@@ -838,7 +837,11 @@ function normalizeSalesMonthPayload(key, payload) {
     if (!id) continue;
     byId.set(id, pickNewerRecord(byId.get(id), inv));
   }
-  const dedupInvoices = [...byId.values()];
+  const dedupInvoices = [...byId.values()].sort((a, b) => {
+    const ta = new Date(a.createdAt || a.date || 0).getTime();
+    const tb = new Date(b.createdAt || b.date || 0).getTime();
+    return ta - tb;
+  });
   const activeInvoiceIds = new Set(dedupInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
 
   const orders = Array.isArray(payload.salesOrders) ? payload.salesOrders.filter((ord) => ord && ord.id) : [];
@@ -849,7 +852,11 @@ function normalizeSalesMonthPayload(key, payload) {
     if (!id || !sourceInvoiceId || !activeInvoiceIds.has(sourceInvoiceId)) continue;
     orderById.set(id, pickNewerRecord(orderById.get(id), ord));
   }
-  const dedupOrders = [...orderById.values()];
+  const dedupOrders = [...orderById.values()].sort((a, b) => {
+    const ta = new Date(a.createdAt || a.date || 0).getTime();
+    const tb = new Date(b.createdAt || b.date || 0).getTime();
+    return ta - tb;
+  });
 
   const nextDeletedInvoiceIds = (Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : [])
     .map((id) => String(id || '').trim())
@@ -887,10 +894,13 @@ app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
       if (/^ww_sales_\d{4}-\d{2}$/.test(d.key)) {
         const normalized = normalizeSalesMonthPayload(d.key, d.data);
         map[d.key] = normalized;
-        // Only write back if invoice count changed — avoids pointless writes on every GET
+        // BUG FIX: also check deletedInvoiceIds — count-only check missed cases where
+        // a deletion was recorded but the array length stayed the same, causing resurrection.
         const origCount = Array.isArray(d.data && d.data.invoices) ? d.data.invoices.length : -1;
         const normCount = Array.isArray(normalized && normalized.invoices) ? normalized.invoices.length : -1;
-        if (origCount !== normCount) {
+        const origDeleted = JSON.stringify((d.data && d.data.deletedInvoiceIds) || []);
+        const normDeleted = JSON.stringify((normalized && normalized.deletedInvoiceIds) || []);
+        if (origCount !== normCount || origDeleted !== normDeleted) {
           savePromises.push(AppData.updateOne({ key: d.key }, { key: d.key, data: normalized }, { upsert: true }));
         }
       } else {
@@ -910,9 +920,12 @@ app.get('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
     if (!doc) return res.json({ key, data: null });
     if (/^ww_sales_\d{4}-\d{2}$/.test(key)) {
       const normalized = normalizeSalesMonthPayload(key, doc.data);
+      // BUG FIX: also check deletedInvoiceIds, not just count
       const origCount = Array.isArray(doc.data && doc.data.invoices) ? doc.data.invoices.length : -1;
       const normCount = Array.isArray(normalized && normalized.invoices) ? normalized.invoices.length : -1;
-      if (origCount !== normCount) {
+      const origDel = JSON.stringify((doc.data && doc.data.deletedInvoiceIds) || []);
+      const normDel = JSON.stringify((normalized && normalized.deletedInvoiceIds) || []);
+      if (origCount !== normCount || origDel !== normDel) {
         await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
       }
       return res.json({ key, data: normalized });
@@ -962,8 +975,17 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
         mergedInvoices.push(pickNewerRecord(serverInvoiceMap.get(id), inv));
       }
       for (const [id, inv] of serverInvoiceMap.entries()) {
-        if (!seenIds.has(id)) mergedInvoices.push(inv);
+        if (!seenIds.has(id)) {
+          seenIds.add(id); // BUG FIX: mark as seen so re-POSTs can't double-add
+          mergedInvoices.push(inv);
+        }
       }
+      // BUG FIX: sort merged invoices by createdAt so ordering is always consistent
+      mergedInvoices.sort((a, b) => {
+        const ta = new Date(a.createdAt || a.date || 0).getTime();
+        const tb = new Date(b.createdAt || b.date || 0).getTime();
+        return ta - tb;
+      });
 
       const activeInvoiceIds = new Set(mergedInvoices.map((inv) => String(inv.id).trim()));
 
@@ -987,8 +1009,17 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
         mergedOrders.push(pickNewerRecord(serverOrderMap.get(id), ord));
       }
       for (const [id, ord] of serverOrderMap.entries()) {
-        if (!seenOrdIds.has(id)) mergedOrders.push(ord);
+        if (!seenOrdIds.has(id)) {
+          seenOrdIds.add(id); // BUG FIX: mark as seen to prevent future double-adds
+          mergedOrders.push(ord);
+        }
       }
+      // BUG FIX: sort merged orders by createdAt for consistent ordering
+      mergedOrders.sort((a, b) => {
+        const ta = new Date(a.createdAt || a.date || 0).getTime();
+        const tb = new Date(b.createdAt || b.date || 0).getTime();
+        return ta - tb;
+      });
 
       const normalized = normalizeSalesMonthPayload(key, {
         ...incoming,
@@ -1293,24 +1324,47 @@ app.delete('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, n
    ═══════════════════════════════════════════════ */
 
 const TRASH_TTL_DAYS = 30;
-const recentRestoreByUser = new Map();
+
+// BUG FIX: recentRestoreByUser was an in-memory Map. On serverless/Vercel each
+// request may hit a different instance so popRecentRestore always returned undefined,
+// making undo silently do nothing. Replaced with AppData persistence so undo works
+// correctly across any server instance. Entries auto-expire after 5 minutes.
+const RESTORE_TTL_MS = 5 * 60 * 1000;
+const RECENT_RESTORE_KEY = 'ww_recent_restores';
 
 function restoreActorKey(user) {
   if (!user) return 'anon';
   return String(user.id || user._id || user.email || user.name || 'anon');
 }
 
-function rememberRecentRestore(user, action) {
-  recentRestoreByUser.set(restoreActorKey(user), {
-    ...action,
-    recordedAt: Date.now(),
-  });
+async function rememberRecentRestore(user, action) {
+  const actorKey = restoreActorKey(user);
+  const doc = await AppData.findOne({ key: RECENT_RESTORE_KEY }).lean();
+  const map = (doc && doc.data && typeof doc.data === 'object' && !Array.isArray(doc.data)) ? { ...doc.data } : {};
+  // Evict expired entries while we're here
+  const now = Date.now();
+  for (const k of Object.keys(map)) {
+    if (!map[k].recordedAt || now - map[k].recordedAt > RESTORE_TTL_MS) delete map[k];
+  }
+  map[actorKey] = { ...action, recordedAt: now };
+  await AppData.updateOne({ key: RECENT_RESTORE_KEY }, { key: RECENT_RESTORE_KEY, data: map }, { upsert: true });
 }
 
-function popRecentRestore(user) {
-  const key = restoreActorKey(user);
-  const action = recentRestoreByUser.get(key);
-  recentRestoreByUser.delete(key);
+async function popRecentRestore(user) {
+  const actorKey = restoreActorKey(user);
+  const doc = await AppData.findOne({ key: RECENT_RESTORE_KEY }).lean();
+  if (!doc || !doc.data || typeof doc.data !== 'object') return undefined;
+  const map = { ...doc.data };
+  const action = map[actorKey];
+  if (!action) return undefined;
+  // Check expiry
+  if (!action.recordedAt || Date.now() - action.recordedAt > RESTORE_TTL_MS) {
+    delete map[actorKey];
+    await AppData.updateOne({ key: RECENT_RESTORE_KEY }, { key: RECENT_RESTORE_KEY, data: map }, { upsert: true });
+    return undefined;
+  }
+  delete map[actorKey];
+  await AppData.updateOne({ key: RECENT_RESTORE_KEY }, { key: RECENT_RESTORE_KEY, data: map }, { upsert: true });
   return action;
 }
 
@@ -1423,36 +1477,56 @@ async function undoSingleRestoreAction(action, user) {
     if (!isAllowedDataKey(key)) throw createError(400, 'Undo failed: invalid restore key');
 
     if (meta.kind === 'appDataArray') {
+      // BUG FIX: $pull with the full object does deep equality matching — if any field
+      // changed after restore (e.g. updatedAt), $pull silently fails and the record
+      // stays alive. Instead, read-modify-write by filtering on the stable id field.
       if (meta.arrayPath) {
-        await AppData.updateOne(
-          { key },
-          {
-            $setOnInsert: { key, data: {} },
-            $pull: { [`data.${meta.arrayPath}`]: action.recordData },
-          },
-          { upsert: true }
-        );
+        const restoredId = String((action.recordData && action.recordData.id) || '').trim();
+        if (!restoredId) throw createError(400, 'Undo failed: restored record has no id');
+        const existingDoc = await AppData.findOne({ key }).lean();
+        const payload = (existingDoc && existingDoc.data && typeof existingDoc.data === 'object' && !Array.isArray(existingDoc.data))
+          ? { ...existingDoc.data }
+          : { invoices: [], salesOrders: [], deletedInvoiceIds: [], deletedOrderIds: [] };
+        const arr = Array.isArray(payload[meta.arrayPath]) ? payload[meta.arrayPath] : [];
+        payload[meta.arrayPath] = arr.filter((r) => String(r && r.id || '').trim() !== restoredId);
+        // Re-add to tombstone list so the record stays deleted across future merges
+        if (meta.arrayPath === 'invoices') {
+          const tombstone = new Set((Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : []).map(String));
+          tombstone.add(restoredId);
+          payload.deletedInvoiceIds = Array.from(tombstone);
+        }
+        if (meta.arrayPath === 'salesOrders') {
+          const tombstone = new Set((Array.isArray(payload.deletedOrderIds) ? payload.deletedOrderIds : []).map(String));
+          tombstone.add(restoredId);
+          payload.deletedOrderIds = Array.from(tombstone);
+        }
+        await AppData.updateOne({ key }, { $set: { key, data: payload } }, { upsert: true });
       } else {
-        await AppData.updateOne(
-          { key },
-          {
-            $setOnInsert: { key, data: [] },
-            $pull: { data: action.recordData },
-          },
-          { upsert: true }
-        );
+        // Non-array-path variant: filter by id if available, else fall back to equality
+        const restoredId = String((action.recordData && action.recordData.id) || '').trim();
+        const existingDoc = await AppData.findOne({ key }).lean();
+        const current = Array.isArray(existingDoc && existingDoc.data) ? existingDoc.data : [];
+        const updated = restoredId
+          ? current.filter((r) => String(r && r.id || '').trim() !== restoredId)
+          : current.filter((r) => JSON.stringify(r) !== JSON.stringify(action.recordData));
+        await AppData.updateOne({ key }, { $set: { key, data: updated } }, { upsert: true });
       }
     } else if (meta.kind === 'bomComponent') {
       const product = String(meta.product || '').trim();
       if (!product) throw createError(400, 'Undo failed: invalid BOM product');
-      await AppData.updateOne(
-        { key },
-        {
-          $setOnInsert: { key, data: {} },
-          $pull: { [`data.${product}.components`]: action.recordData },
-        },
-        { upsert: true }
-      );
+      // BUG FIX: same $pull equality issue — use read-modify-write with id filter
+      const restoredId = String((action.recordData && action.recordData.id) || '').trim();
+      const existingDoc = await AppData.findOne({ key }).lean();
+      const data = (existingDoc && existingDoc.data && typeof existingDoc.data === 'object' && !Array.isArray(existingDoc.data))
+        ? { ...existingDoc.data }
+        : {};
+      const productData = (data[product] && typeof data[product] === 'object') ? data[product] : { components: [], labor: 0, overhead: 0 };
+      const components = Array.isArray(productData.components) ? productData.components : [];
+      productData.components = restoredId
+        ? components.filter((c) => String(c && c.id || '').trim() !== restoredId)
+        : components.filter((c) => JSON.stringify(c) !== JSON.stringify(action.recordData));
+      data[product] = productData;
+      await AppData.updateOne({ key }, { $set: { key, data } }, { upsert: true });
     } else {
       throw createError(400, 'Undo failed: unsupported restore metadata');
     }
@@ -1492,6 +1566,36 @@ app.post('/api/trash/app-data-delete', ensureAuthenticated, async (req, res, nex
     if (!module) throw createError(400, 'Invalid module');
     if (!restoreMeta || typeof restoreMeta !== 'object') throw createError(400, 'Invalid restore metadata');
     if (!restoreMeta.kind) throw createError(400, 'Restore metadata must include kind');
+
+    // BUG FIX: Moving to trash alone is not enough — if the client later PUTs the full
+    // month payload (which still contains this record), the merge loop will see the ID
+    // is not in deletedInvoiceIds/deletedOrderIds and resurrect it. We must write the
+    // tombstone into AppData BEFORE acknowledging the delete.
+    if (restoreMeta.kind === 'appDataArray' && restoreMeta.arrayPath && restoreMeta.key) {
+      const key = String(restoreMeta.key || '').trim();
+      const restoredId = String((recordData && recordData.id) || '').trim();
+      if (isAllowedDataKey(key) && restoredId) {
+        const existingDoc = await AppData.findOne({ key }).lean();
+        const payload = (existingDoc && existingDoc.data && typeof existingDoc.data === 'object' && !Array.isArray(existingDoc.data))
+          ? { ...existingDoc.data }
+          : { invoices: [], salesOrders: [], deletedInvoiceIds: [], deletedOrderIds: [] };
+
+        if (restoreMeta.arrayPath === 'invoices') {
+          const arr = Array.isArray(payload.invoices) ? payload.invoices : [];
+          payload.invoices = arr.filter((r) => String(r && r.id || '').trim() !== restoredId);
+          const tombstone = new Set((Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : []).map(String));
+          tombstone.add(restoredId);
+          payload.deletedInvoiceIds = Array.from(tombstone);
+        } else if (restoreMeta.arrayPath === 'salesOrders') {
+          const arr = Array.isArray(payload.salesOrders) ? payload.salesOrders : [];
+          payload.salesOrders = arr.filter((r) => String(r && r.id || '').trim() !== restoredId);
+          const tombstone = new Set((Array.isArray(payload.deletedOrderIds) ? payload.deletedOrderIds : []).map(String));
+          tombstone.add(restoredId);
+          payload.deletedOrderIds = Array.from(tombstone);
+        }
+        await AppData.updateOne({ key }, { $set: { key, data: payload } }, { upsert: true });
+      }
+    }
 
     await moveToTrash(module, recordData, `${req.user.name} (${req.user.role})`, restoreMeta);
     res.status(201).json({ ok: true });
@@ -1613,7 +1717,7 @@ app.post('/api/trash/:id/restore', ensureAuthenticated, ensureRole('users'), asy
         }
       }
 
-      rememberRecentRestore(
+      await rememberRecentRestore(
         req.user,
         restoredActions.length > 1 ? { kind: 'restoreBatch', actions: restoredActions } : restoredActions[0]
       );
@@ -1650,7 +1754,7 @@ app.post('/api/trash/:id/restore', ensureAuthenticated, ensureRole('users'), asy
       ? await Model.create({ _id: originalId, ...data })
       : await Model.create(data);
 
-    rememberRecentRestore(req.user, {
+    await rememberRecentRestore(req.user, {
       kind: 'modelRestore',
       module: trashItem.module,
       restoredId: String(restoredDoc._id),
@@ -1669,7 +1773,7 @@ app.post('/api/trash/:id/restore', ensureAuthenticated, ensureRole('users'), asy
 
 app.post('/api/trash/restore/undo-last', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
   try {
-    const action = popRecentRestore(req.user);
+    const action = await popRecentRestore(req.user);
     if (!action) throw createError(404, 'No recent restore to undo');
 
     if (action.kind === 'restoreBatch') {

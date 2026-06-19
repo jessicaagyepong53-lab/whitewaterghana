@@ -2624,6 +2624,11 @@ async function initDashboardPage() {
 			if (!isDateInSelectedDashboardYear(invoice.date)) return sum;
 			return invoice.status === 'paid' ? sum + (Number(invoice.amount) || 0) : sum;
 		}, 0) : 0;
+		const promoExpense = hasInvoiceData ? salesData.invoices.reduce((sum, invoice) => {
+			if (!isDateInSelectedDashboardYear(invoice.date) || invoice.status !== 'paid') return sum;
+			const rate = Number(invoice.rate || (invoice.items && invoice.items[0] ? invoice.items[0].unitPrice : 0) || 0);
+			return sum + (Number(invoice.promo || 0) * rate);
+		}, 0) : 0;
 		const revenueMtd = revenueData.length > 0 ? revenueData[revenueData.length - 1].revenue : 0;
 		const prevRevenue = revenueData.length > 1 ? revenueData[revenueData.length - 2].revenue : 0;
 		const revChange = prevRevenue > 0 ? (((revenueMtd - prevRevenue) / prevRevenue) * 100).toFixed(1) : 0;
@@ -2643,7 +2648,7 @@ async function initDashboardPage() {
 		const activeCustomers = countActiveCustomers();
 
 		const kpiCards = [
-			{ icon: '<i class="fa-solid fa-cedi-sign"></i>', label: 'Total Revenue', value: formatCurrency(totalRevenue), meta: revenueMtd > 0 ? `${formatCurrency(revenueMtd)} latest month • ${revChange >= 0 ? '+' : ''}${revChange}% vs previous month` : 'No sales data yet', color: 'blue', link: null },
+			{ icon: '<i class="fa-solid fa-cedi-sign"></i>', label: 'Total Revenue', value: formatCurrency(totalRevenue), meta: revenueMtd > 0 ? `${formatCurrency(revenueMtd)} latest month • ${revChange >= 0 ? '+' : ''}${revChange}% vs previous month` : 'No sales data yet', subMeta: hasInvoiceData && promoExpense > 0 ? `<span>Gross sales — promo booked as expense</span><span>Promo cost: ${formatCurrency(promoExpense)} (see Accounting)</span>` : '', color: 'blue', link: null },
 			{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Market Growth Rate', value: marketGrowth.label, meta: marketGrowth.meta, color: marketGrowth.color, link: null },
 			{ icon: '<i class="fa-solid fa-box"></i>', label: 'Units Produced', value: formatNumber(totalUnitsProduced), meta: unitsMeta, color: 'green', link: null },
 			{ icon: '<i class="fa-solid fa-users"></i>', label: 'Active Customers', value: formatNumber(activeCustomers), meta: activeCustomers > 0 ? 'Unique customers from sales' : 'No customers yet', color: 'purple', link: null },
@@ -2729,6 +2734,7 @@ async function initDashboardPage() {
 							<div class="kpi-icon-square ${kpi.color}">${kpi.icon}</div>
 						</div>
 						<p class="kpi-meta">${kpi.meta}</p>
+						${kpi.subMeta ? `<p class="kpi-meta split-meta">${kpi.subMeta}</p>` : ''}
 					</article>
 				`;
 			}).join('');
@@ -6015,10 +6021,14 @@ async function initSalesInvoicesPage() {
 			const invoicePromo = invoiceRows.reduce((sum, inv) => sum + (inv.promo || 0), 0);
 			const totalBagsSold = invoiceRows.reduce((sum, inv) => sum + ((inv.items && inv.items[0] ? inv.items[0].qty : 0) || 0), 0);
 			const nonPromoBags = totalBagsSold - invoicePromo;
+			const promoExpense = invoiceRows.filter((inv) => inv.status === 'paid').reduce((sum, inv) => {
+				const rate = Number(inv.rate || (inv.items && inv.items[0] ? inv.items[0].unitPrice : 0) || 0);
+				return sum + (Number(inv.promo || 0) * rate);
+			}, 0);
 			const hideMoney = window.__wwUserRole === 'supervisor' || window.__wwUserRole === 'staff';
 			stats.innerHTML = `
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice"></i></div><p class="s-label">Total Invoices (${monthLabel(currentSalesMonth)})</p><p class="s-value">${totalInvoices}</p><p class="s-meta">${orders.length} sales order${orders.length !== 1 ? 's' : ''} in ${monthLabel(currentSalesMonth)} • ${overallInvoiceCount} overall</p></div>
-				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue)}</p><p class="s-meta">From paid invoices</p></div>
+				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue)}</p><p class="s-meta split-meta"><span>From paid invoices (gross)</span><span>Promo cost: ${formatCurrency(promoExpense)} (expensed)</span></p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-gift"></i></div><p class="s-label">Total Promo Bags</p><p class="s-value">${formatNumber(invoicePromo)}</p><p class="s-meta split-meta"><span>Total bags: ${formatNumber(totalBagsSold)}</span><span>Non-promo: ${formatNumber(nonPromoBags)}</span><span>Promo: ${formatNumber(invoicePromo)}</span></p></div>
 				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices)}</p><p class="s-meta">From pending invoices</p></div>
 				<div class="stat-card ${overdueTotal > 0 ? 'stat-card-alert' : ''}" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-circle-exclamation"></i></div><p class="s-label">Overdue</p><p class="s-value">${formatCurrency(overdueTotal)}</p><p class="s-meta">${overdueTotal > 0 ? 'From overdue invoices' : 'All clear'}</p></div>
@@ -7811,9 +7821,17 @@ function initAccountingPage() {
 		const salesRevenue = allSales.invoices
 			.filter((inv) => inv.status === 'paid')
 			.reduce((s, inv) => s + (Number(inv.amount) || 0), 0);
+		// Promo bags are free/discounted giveaways — booked as a marketing operating cost (derived, not a manual entry)
+		const promoExpense = allSales.invoices
+			.filter((inv) => inv.status === 'paid')
+			.reduce((s, inv) => {
+				const rate = Number(inv.rate || (inv.items && inv.items[0] ? inv.items[0].unitPrice : 0) || 0);
+				return s + (Number(inv.promo || 0) * rate);
+			}, 0);
 
 		const revenue = (revCat ? revCat.total : 0) + salesRevenue;
-		const expense = expCat ? expCat.total : 0;
+		const ledgerExpense = expCat ? expCat.total : 0;
+		const expense = ledgerExpense + promoExpense;
 		const assetsSheetTotal = accountingData.assets.reduce((s, a) => s + (a.value || 0), 0);
 		const assets = (assCat ? assCat.total : 0) + assetsSheetTotal;
 		const liabilities = liaCat ? liaCat.total : 0;
@@ -7826,7 +7844,7 @@ function initAccountingPage() {
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-book"></i></div><p class="s-label">Ledger Entries</p><p class="s-value">${ledger.length}</p><p class="s-meta">Dr ${formatCurrency(totalDebits)} · Cr ${formatCurrency(totalCredits)}</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-wallet"></i></div><p class="s-label">Cashbook Total</p><p class="s-value">${formatCurrency(cashTotal)}</p><p class="s-meta">${cashbook.length} entries</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-money-bill-trend-up"></i></div><p class="s-label">Revenue</p><p class="s-value">${formatCurrency(revenue)}</p><p class="s-meta">Sales ${formatCurrency(salesRevenue)} · Ledger ${formatCurrency(revCat ? revCat.total : 0)}</p></div>
-				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice-dollar"></i></div><p class="s-label">Expenses</p><p class="s-value">${formatCurrency(expense)}</p><p class="s-meta">Operational costs from ledger</p></div>
+				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice-dollar"></i></div><p class="s-label">Expenses</p><p class="s-value">${formatCurrency(expense)}</p><p class="s-meta">Ledger ${formatCurrency(ledgerExpense)} · Promo ${formatCurrency(promoExpense)}</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-chart-line"></i></div><p class="s-label">Profit / Loss</p><p class="s-value" style="${plClass}">${formatCurrency(profitLoss)}</p><p class="s-meta">Revenue ${formatCurrency(revenue)} − Expenses ${formatCurrency(expense)}</p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-scale-balanced"></i></div><p class="s-label">Net Position</p><p class="s-value">${formatCurrency(assets - liabilities)}</p><p class="s-meta">Assets ${formatCurrency(assets)} · Liabilities ${formatCurrency(liabilities)}</p></div>
 			`;
@@ -9246,6 +9264,10 @@ function renderReportsData() {
 
 	// ── P&L from filtered sales + accounting + production + purchase data ──
 	const salesRevenue = invoices.filter((inv) => inv.status === 'paid').reduce((s, inv) => s + (Number(inv.amount) || 0), 0);
+	const promoExpense = invoices.filter((inv) => inv.status === 'paid').reduce((s, inv) => {
+		const rate = Number(inv.rate || (inv.items && inv.items[0] ? inv.items[0].unitPrice : 0) || 0);
+		return s + (Number(inv.promo || 0) * rate);
+	}, 0);
 	const ledgerRevenue = ledger.filter((e) => e.type === 'revenue').reduce((s, e) => s + ((Number(e.credit) || 0) - (Number(e.debit) || 0)), 0);
 	const filteredSummaryRevenue = salesRevenue + ledgerRevenue;
 	const filteredSummaryExpenses = ledger.filter((e) => e.type === 'expense').reduce((s, e) => s + ((Number(e.debit) || 0) - (Number(e.credit) || 0)), 0);
@@ -9254,13 +9276,14 @@ function renderReportsData() {
 		const amt = (po.items && po.items.length) ? po.items.reduce((t, i) => t + ((Number(i.qty) || 0) * (Number(i.unitCost) || 0)), 0) : (Number(po.amount) || 0);
 		return s + amt;
 	}, 0);
-	const netProfit = filteredSummaryRevenue - cogs - filteredSummaryExpenses - purchaseSpend;
+	const netProfit = filteredSummaryRevenue - cogs - filteredSummaryExpenses - purchaseSpend - promoExpense;
 	const profitLoss = [
 		{ item: 'Sales Revenue', amount: salesRevenue },
 		{ item: 'Other Revenue', amount: ledgerRevenue },
 		{ item: 'Cost of Goods Sold', amount: cogs ? -cogs : 0 },
 		{ item: 'Purchase Orders', amount: purchaseSpend ? -purchaseSpend : 0 },
 		{ item: 'Operating Expenses', amount: filteredSummaryExpenses ? -filteredSummaryExpenses : 0 },
+		{ item: 'Promotional Expense', amount: promoExpense ? -promoExpense : 0 },
 		{ item: 'Net Profit', amount: netProfit },
 	];
 
@@ -9388,8 +9411,9 @@ function renderReportsData() {
 
 	const kpis = [
 		{ icon: '<i class="fa-solid fa-chart-bar"></i>', label: 'Sales (' + filterLabel + ')', value: formatCurrency(allSalesTotal), meta: filterType === 'all' ? 'All tracked sales' : 'Filtered period', color: '' },
+		{ icon: '<i class="fa-solid fa-gift"></i>', label: 'Promo Expense (' + filterLabel + ')', value: formatCurrency(promoExpense), meta: promoExpense > 0 ? 'Free/discounted bags — marketing cost' : 'No promo this period', color: 'red' },
 		{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Forecast', value: formatCurrency(projected), meta: salesTrends.length >= 2 ? 'Trend-based projection' : 'Need more months', color: 'green' },
-		{ icon: '<i class="fa-solid fa-coins"></i>', label: 'Net Profit', value: formatCurrency(netProfit), meta: 'Revenue − COGS − Expenses', color: 'yellow' },
+		{ icon: '<i class="fa-solid fa-coins"></i>', label: 'Net Profit', value: formatCurrency(netProfit), meta: 'Revenue − COGS − Expenses − Promo', color: 'yellow' },
 		{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Market Growth Rate', value: mgLabel, meta: mgMeta, color: mgColor },
 		{ icon: '<i class="fa-solid fa-file-invoice"></i>', label: filterType === 'all' ? 'Total Invoices (All Time)' : `Total Invoices (${filterLabel})`, value: filterType === 'all' ? totalInvoicesAllTime.toLocaleString() : filteredInvoiceCount.toLocaleString(), meta: filterType === 'all' ? `${totalInvoicesAllTime} invoices overall` : `${filteredInvoiceCount} invoices in ${filterLabel}`, color: 'purple' },
 		{ icon: '<i class="fa-solid fa-industry"></i>', label: 'Ops Health', value: `${opsHealth}%`, meta: totalEquip > 0 ? `${operationalEquip}/${totalEquip} equipment up` : 'No equipment tracked', color: '' },
