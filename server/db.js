@@ -414,7 +414,8 @@ async function connectDB() {
     maxPoolSize: 5,
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
-       family: 4,
+    tls: true,
+    family: 4,
   });
   console.log('MongoDB connected');
   const shouldSeedOnConnect = process.env.SEED_ON_CONNECT === 'true'
