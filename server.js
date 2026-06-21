@@ -806,6 +806,9 @@ function invoiceContentFingerprint(inv) {
   const itemName = String((firstItem && firstItem.name) || inv.product || '').trim().toLowerCase();
   const qty = Number((firstItem && firstItem.qty) || 0);
   const unitPrice = Number((firstItem && firstItem.unitPrice) || inv.rate || 0);
+  // NOTE: deliberately excludes createdAt/entryTime — those describe when the
+  // record was saved, not what the transaction was, so a genuine duplicate
+  // entered minutes or hours apart would otherwise never match.
   return [
     String(inv.customer || '').trim().toLowerCase(),
     String(inv.date || '').trim(),
@@ -821,12 +824,51 @@ function invoiceContentFingerprint(inv) {
     String(inv.carNumber || '').trim().toLowerCase(),
     Number(inv.promo || 0),
     String(inv.promoNote || '').trim(),
-    String(inv.entryTime || '').trim(),
-    String(inv.createdAt || '').trim(),
   ].join('|');
 }
 
-function normalizeSalesMonthPayload(key, payload) {
+// Groups invoices that share an identical content fingerprint (customer, date,
+// amount, items, etc.) but were saved under different IDs — the case where a
+// client re-entered an invoice it couldn't see locally (e.g. after a slow or
+// failed load) and minted a brand-new ID for what is really the same record.
+// The earliest-created invoice in each group is kept; the rest are archived
+// to the trash bin (recoverable from the Trash page) and tombstoned so they
+// don't resurrect. Returns { survivorByDuplicateId, trashedIds } so callers
+// can repoint any sales orders that referenced a now-archived duplicate.
+async function dedupeInvoicesByContent(invoices, key) {
+  const groups = new Map();
+  for (const inv of invoices) {
+    const fp = invoiceContentFingerprint(inv);
+    if (!fp) continue;
+    if (!groups.has(fp)) groups.set(fp, []);
+    groups.get(fp).push(inv);
+  }
+
+  const trashedIds = new Set();
+  const survivorByDuplicateId = new Map();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const sorted = [...group].sort((a, b) => {
+      const ta = new Date(a.createdAt || a.date || 0).getTime();
+      const tb = new Date(b.createdAt || b.date || 0).getTime();
+      return ta - tb;
+    });
+    const survivor = sorted[0];
+    for (const dup of sorted.slice(1)) {
+      const dupId = String(dup.id || '').trim();
+      if (!dupId) continue;
+      trashedIds.add(dupId);
+      survivorByDuplicateId.set(dupId, String(survivor.id || '').trim());
+      try {
+        await moveToTrash('invoices', dup, 'system (auto-dedup)', { kind: 'appDataArray', key, arrayPath: 'invoices' });
+      } catch (_e) { /* best-effort — still remove it from the active list below */ }
+    }
+  }
+
+  return { survivorByDuplicateId, trashedIds };
+}
+
+async function normalizeSalesMonthPayload(key, payload) {
   if (!/^ww_sales_\d{4}-\d{2}$/.test(String(key || ''))) return payload;
   if (!payload || typeof payload !== 'object') return payload;
 
@@ -837,7 +879,16 @@ function normalizeSalesMonthPayload(key, payload) {
     if (!id) continue;
     byId.set(id, pickNewerRecord(byId.get(id), inv));
   }
-  const dedupInvoices = [...byId.values()].sort((a, b) => {
+  let dedupInvoices = [...byId.values()];
+
+  // Content-level dedup: catches invoices that share a real-world duplicate
+  // but a different ID, which the ID-based merge above can't see.
+  const { survivorByDuplicateId, trashedIds } = await dedupeInvoicesByContent(dedupInvoices, key);
+  if (trashedIds.size) {
+    dedupInvoices = dedupInvoices.filter((inv) => !trashedIds.has(String(inv.id || '').trim()));
+  }
+
+  dedupInvoices = dedupInvoices.sort((a, b) => {
     const ta = new Date(a.createdAt || a.date || 0).getTime();
     const tb = new Date(b.createdAt || b.date || 0).getTime();
     return ta - tb;
@@ -847,7 +898,12 @@ function normalizeSalesMonthPayload(key, payload) {
   const orders = Array.isArray(payload.salesOrders) ? payload.salesOrders.filter((ord) => ord && ord.id) : [];
   const orderById = new Map();
   for (const ord of orders) {
-    const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
+    let sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
+    // Repoint orders that referenced a now-archived duplicate invoice to the surviving one.
+    if (sourceInvoiceId && survivorByDuplicateId.has(sourceInvoiceId)) {
+      sourceInvoiceId = survivorByDuplicateId.get(sourceInvoiceId);
+      ord.sourceInvoiceId = sourceInvoiceId;
+    }
     const id = String(ord.id || '').trim();
     if (!id || !sourceInvoiceId || !activeInvoiceIds.has(sourceInvoiceId)) continue;
     orderById.set(id, pickNewerRecord(orderById.get(id), ord));
@@ -858,7 +914,10 @@ function normalizeSalesMonthPayload(key, payload) {
     return ta - tb;
   });
 
-  const nextDeletedInvoiceIds = (Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : [])
+  const nextDeletedInvoiceIds = ([
+    ...(Array.isArray(payload.deletedInvoiceIds) ? payload.deletedInvoiceIds : []),
+    ...trashedIds,
+  ])
     .map((id) => String(id || '').trim())
     .filter((id) => id && !activeInvoiceIds.has(id));
 
@@ -892,7 +951,7 @@ app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
     const savePromises = [];
     for (const d of docs) {
       if (/^ww_sales_\d{4}-\d{2}$/.test(d.key)) {
-        const normalized = normalizeSalesMonthPayload(d.key, d.data);
+        const normalized = await normalizeSalesMonthPayload(d.key, d.data);
         map[d.key] = normalized;
         // BUG FIX: also check deletedInvoiceIds — count-only check missed cases where
         // a deletion was recorded but the array length stayed the same, causing resurrection.
@@ -919,7 +978,7 @@ app.get('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
     const doc = await AppData.findOne({ key }).lean();
     if (!doc) return res.json({ key, data: null });
     if (/^ww_sales_\d{4}-\d{2}$/.test(key)) {
-      const normalized = normalizeSalesMonthPayload(key, doc.data);
+      const normalized = await normalizeSalesMonthPayload(key, doc.data);
       // BUG FIX: also check deletedInvoiceIds, not just count
       const origCount = Array.isArray(doc.data && doc.data.invoices) ? doc.data.invoices.length : -1;
       const normCount = Array.isArray(normalized && normalized.invoices) ? normalized.invoices.length : -1;
@@ -1021,7 +1080,7 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
         return ta - tb;
       });
 
-      const normalized = normalizeSalesMonthPayload(key, {
+      const normalized = await normalizeSalesMonthPayload(key, {
         ...incoming,
         invoices: mergedInvoices,
         salesOrders: mergedOrders,
@@ -1035,7 +1094,7 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
     }
 
     // Non-sales keys: simple normalize and save.
-    const normalized = normalizeSalesMonthPayload(key, req.body.data);
+    const normalized = await normalizeSalesMonthPayload(key, req.body.data);
     await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
     if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key });
     res.json({ ok: true });

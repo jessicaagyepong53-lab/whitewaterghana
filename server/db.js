@@ -407,6 +407,12 @@ async function seedDatabase() {
    ═══════════════════════════════════════════════ */
 
 async function connectDB() {
+  // Guard against redundant connect attempts — important on Vercel, where a
+  // warm container can receive overlapping requests before the first
+  // connectDB() call has resolved. readyState 1 = connected, 2 = connecting.
+  if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) {
+    return mongoose.connection.asPromise ? mongoose.connection.asPromise() : undefined;
+  }
   const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
   if (!uri) throw new Error('Mongo URI is missing. Set MONGO_URI (or MONGODB_URI).');
   await mongoose.connect(uri, {
