@@ -2125,22 +2125,17 @@ function loadEquipmentFromStorage() {
 
 async function fetchEquipmentFromServer() {
 	try {
-		const res = await fetch(API_BASE + '/api/factory-equipment', { credentials: 'include' });
+		const res = await fetch(API_BASE + '/api/factory-equipment', { credentials: 'include', cache: 'no-store' });
 		if (res.ok) {
 			const rows = await res.json();
 			if (Array.isArray(rows) && rows.length) {
-				// Merge: server provides IDs and metadata; local localStorage provides the most
-				// recently set statuses (which may be newer than the server when a PUT is in-flight).
-				// Match by id first, fall back to code so that items without local IDs are enriched.
-				const local = (() => {
-					try { return JSON.parse(localStorage.getItem('ww_equipment') || '[]'); } catch (_e) { return []; }
-				})();
-				const merged = rows.map((r) => {
-					const l = local.find((x) => (x.id && String(x.id) === String(r.id)) || x.code === r.code);
-					return l ? { ...r, status: l.status } : r;
-				});
-				localStorage.setItem('ww_equipment', JSON.stringify(merged));
-				return merged;
+				// Server is always the source of truth — it holds the latest saved state
+				// for ALL fields (status, name, details, maintenance dates).
+				// We used to merge local status over server status here, but that was
+				// backwards: it meant dashboard status changes got silently rolled back
+				// to whatever was in the local cache.
+				localStorage.setItem('ww_equipment', JSON.stringify(rows));
+				return rows;
 			}
 		}
 	} catch (_e) { /* fall back to localStorage */ }
@@ -2157,13 +2152,25 @@ function saveEquipmentToStorage(equipmentRows) {
 	} catch (_e) { /* BroadcastChannel not supported — storage event is the fallback */ }
 }
 
-function saveOneEquipmentToServer(eq) {
-	if (eq.id) {
-		fetch(API_BASE + '/api/factory-equipment/' + eq.id, {
+async function saveOneEquipmentToServer(eq) {
+	if (!eq || !eq.id) return;
+	try {
+		const res = await fetch(API_BASE + '/api/factory-equipment/' + eq.id, {
 			method: 'PUT', credentials: 'include',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ status: eq.status, equipment: eq.equipment, details: eq.details, lastMaintenance: eq.lastMaintenance, nextMaintenance: eq.nextMaintenance }),
-		}).catch(() => {});
+			body: JSON.stringify({
+				status: eq.status,
+				equipment: eq.equipment,
+				details: eq.details,
+				lastMaintenance: eq.lastMaintenance,
+				nextMaintenance: eq.nextMaintenance,
+			}),
+		});
+		if (!res.ok) {
+			showDeleteToast('Equipment save failed — please refresh and try again.');
+		}
+	} catch (_err) {
+		showDeleteToast('Could not reach server to save equipment changes.');
 	}
 }
 
@@ -3283,13 +3290,12 @@ async function initInventoryPage() {
 				finishedProducts = syncedForMonth;
 			}
 			equipment = Array.isArray(loaded.equipment) ? loaded.equipment : [];
+			// Equipment is global data (same physical machines regardless of month),
+			// so ALWAYS fetch fresh from the server — never trust the monthly snapshot
+			// for it. Stale cache here was the main cause of edits going away on
+			// refresh and the dashboard / inventory page showing different data.
+			equipment = await fetchEquipmentFromServer();
 			customers = Array.isArray(loaded.customers) ? loaded.customers : [];
-			// If any equipment items are missing IDs (loaded from old/default cache), enrich from server
-			// so that saveOneEquipmentToServer can always do its PUT correctly.
-			if (equipment.length > 0 && equipment.some((eq) => !eq.id)) {
-				equipment = await fetchEquipmentFromServer();
-				persistInventoryMonthState();
-			}
 		} else {
 			if (hasAnyInventoryMonthPayload()) {
 				rawMaterials = [];
@@ -3820,7 +3826,7 @@ async function initInventoryPage() {
 
 	if (modalForm && !modalForm.dataset.bound) {
 		modalForm.dataset.bound = '1';
-		modalForm.addEventListener('submit', (event) => {
+		modalForm.addEventListener('submit', async (event) => {
 			event.preventDefault();
 			if (!currentEntity) return;
 
@@ -3885,7 +3891,7 @@ async function initInventoryPage() {
 					equipment[editingIdx].details = getValue('details');
 					equipment[editingIdx].lastMaintenance = getValue('lastMaintenance') || todayForInput;
 					equipment[editingIdx].nextMaintenance = getValue('nextMaintenance') || todayForInput;
-					saveOneEquipmentToServer(equipment[editingIdx]);
+					await saveOneEquipmentToServer(equipment[editingIdx]);
 				} else {
 					const code = `EQ-${String(equipment.length + 101).padStart(3, '0')}`;
 					const newEq = {
@@ -3896,18 +3902,28 @@ async function initInventoryPage() {
 						lastMaintenance: getValue('lastMaintenance') || todayForInput,
 						nextMaintenance: getValue('nextMaintenance') || todayForInput,
 					};
-					// Create on server and get back the id
-					fetch(API_BASE + '/api/factory-equipment', {
-						method: 'POST', credentials: 'include',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify(newEq),
-					}).then((r) => r.ok ? r.json() : null).then((result) => {
-						if (result && result.id) {
-							newEq.id = result.id;
-							persistInventoryMonthState();
-						}
-					}).catch(() => {});
+					// Push optimistically so it renders immediately, but hold off on
+					// persisting to localStorage until the server returns the real ID.
+					// Without the ID, saveOneEquipmentToServer can't PUT updates, and
+					// a sync triggered before the .then() resolves would save an ID-less record.
 					equipment.push(newEq);
+					rerenderInventory();
+					try {
+						const r = await fetch(API_BASE + '/api/factory-equipment', {
+							method: 'POST', credentials: 'include',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify(newEq),
+						});
+						if (r.ok) {
+							const result = await r.json();
+							if (result && result.id) newEq.id = result.id;
+						} else {
+							showDeleteToast('Equipment save failed — please refresh and try again.');
+						}
+					} catch (_err) {
+						showDeleteToast('Could not reach server to save new equipment.');
+					}
+					persistInventoryMonthState();
 				}
 				persistInventoryMonthState();
 			}
@@ -4023,7 +4039,13 @@ async function initInventoryPage() {
 	try {
 		new BroadcastChannel('ww_raw_materials_sync').onmessage = () => reloadAndRerender().catch(() => {});
 		new BroadcastChannel('ww_finished_products_sync').onmessage = () => reloadAndRerender().catch(() => {});
-		new BroadcastChannel('ww_equipment_sync').onmessage = () => reloadAndRerender().catch(() => {});
+		// Equipment sync: fetch fresh from server rather than reloading the monthly
+		// snapshot (which doesn't contain the dashboard's status changes — they only
+		// update ww_equipment, not the monthly key).
+		new BroadcastChannel('ww_equipment_sync').onmessage = async () => {
+			equipment = await fetchEquipmentFromServer();
+			rerenderInventory();
+		};
 	} catch (_e) { /* BroadcastChannel not supported */ }
 	document.addEventListener('ww-refresh-page', rerenderInventory);
 }
