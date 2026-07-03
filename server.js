@@ -4962,6 +4962,14 @@ async function writeRecordVaultData(data, source = null) {
 
   const normalized = normalizeRecordVaultData(data);
 
+  normalized.companyDocuments = Array.isArray(normalized.companyDocuments)
+    ? [...normalized.companyDocuments].sort((a, b) => recordVaultDateMs(a) - recordVaultDateMs(b))
+    : [];
+
+  normalized.receipts = Array.isArray(normalized.receipts)
+    ? [...normalized.receipts].sort((a, b) => recordVaultDateMs(a) - recordVaultDateMs(b))
+    : [];
+
   await AppData.updateOne(
 
     { key: RECORD_VAULT_KEY },
@@ -5023,14 +5031,6 @@ function recordVaultDateMs(entry) {
   return Number.isFinite(ms) ? ms : 0;
 
 }
-
-  normalized.companyDocuments = Array.isArray(normalized.companyDocuments)
-    ? [...normalized.companyDocuments].sort((a, b) => recordVaultDateMs(a) - recordVaultDateMs(b))
-    : [];
-
-  normalized.receipts = Array.isArray(normalized.receipts)
-    ? [...normalized.receipts].sort((a, b) => recordVaultDateMs(a) - recordVaultDateMs(b))
-    : [];
 
 function sanitizeFileName(name) {
 
