@@ -10,6 +10,12 @@ const cookieParser = require('cookie-parser');
 
 const express = require('express');
 
+const http = require('http');
+
+const multer = require('multer');
+
+const { Server } = require('socket.io');
+
 const {
 
   connectDB,
@@ -21,6 +27,12 @@ const {
   refreshCustomerStats,
 
   refreshInventoryStatuses,
+
+  getGridFSBucket,
+
+  isValidObjectId,
+
+  toObjectId,
 
   User,
 
@@ -65,6 +77,14 @@ const {
 
 
 const app = express();
+
+const server = http.createServer(app);
+
+const io = new Server(server, {
+
+  cors: { origin: true, credentials: true },
+
+});
 
 const rootDir = __dirname;
 
@@ -123,6 +143,8 @@ const RESOURCE_RULES = {
   approvals: ['ceo', 'manager'],
 
   reports: ['ceo', 'manager'],
+
+  vault: ['ceo', 'manager'],
 
   dashboard: ['ceo', 'manager', 'supervisor', 'staff'],
 
@@ -187,6 +209,13 @@ app.get('/', (_req, res) => {
 app.get('/store', (_req, res) => {
 
   res.sendFile(path.join(rootDir, 'store.html'));
+
+});
+
+// Convenience aliases so the vault page can be opened from root URLs too.
+app.get(['/vault', '/vault.html'], (_req, res) => {
+
+  res.sendFile(path.join(rootDir, 'pages', 'vault.html'));
 
 });
 
@@ -448,6 +477,88 @@ async function nextCode(Model, field, prefix) {
 
   return `${prefix}-${year}-${padCode(maxSuffix + 1)}`;
 
+}
+
+function extractIdempotencyKey(req) {
+  const headerKey = String(req.get('x-idempotency-key') || '').trim();
+  if (headerKey) return headerKey;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const bodyKey = String(body.idempotencyKey || body.clientTxnId || body.client_txn_id || '').trim();
+  return bodyKey;
+}
+
+function buildIdempotencyStorageKey(scope, actorId, idemKey) {
+  return `ww_idem_${scope}_${String(actorId || 'anonymous')}_${idemKey}`;
+}
+
+async function beginIdempotentRequest(scope, actorId, idemKey) {
+  const normalizedKey = String(idemKey || '').trim();
+  if (!normalizedKey) return { enabled: false };
+
+  const storageKey = buildIdempotencyStorageKey(scope, actorId, normalizedKey);
+  const insertResult = await AppData.updateOne(
+    { key: storageKey },
+    {
+      $setOnInsert: {
+        key: storageKey,
+        data: {
+          status: 'pending',
+          scope,
+          actorId: String(actorId || ''),
+          idempotencyKey: normalizedKey,
+          createdAt: nowIso(),
+        },
+      },
+    },
+    { upsert: true }
+  );
+
+  const inserted = !!(insertResult && (insertResult.upsertedCount === 1 || insertResult.upsertedId));
+  if (inserted) {
+    return { enabled: true, storageKey, idempotencyKey: normalizedKey, state: 'acquired' };
+  }
+
+  const existing = await AppData.findOne({ key: storageKey }).lean();
+  const existingData = existing && existing.data && typeof existing.data === 'object' ? existing.data : {};
+  if (existingData.status === 'completed' && existingData.response) {
+    return {
+      enabled: true,
+      storageKey,
+      idempotencyKey: normalizedKey,
+      state: 'replay',
+      response: existingData.response,
+    };
+  }
+
+  return {
+    enabled: true,
+    storageKey,
+    idempotencyKey: normalizedKey,
+    state: 'pending',
+  };
+}
+
+async function completeIdempotentRequest(handle, responsePayload) {
+  if (!handle || !handle.enabled) return;
+  await AppData.updateOne(
+    { key: handle.storageKey },
+    {
+      key: handle.storageKey,
+      data: {
+        status: 'completed',
+        idempotencyKey: handle.idempotencyKey,
+        completedAt: nowIso(),
+        response: responsePayload,
+      },
+    },
+    { upsert: true }
+  );
+}
+
+async function releaseIdempotentRequest(handle) {
+  if (!handle || !handle.enabled) return;
+  if (handle.state !== 'acquired') return;
+  await AppData.deleteOne({ key: handle.storageKey });
 }
 
 
@@ -1122,6 +1233,22 @@ function broadcastSseEvent(event, data) {
 
 }
 
+function broadcastRealtimeUpdate(payload) {
+
+  const body = payload && typeof payload === 'object' ? payload : {};
+
+  broadcastSseEvent('data_updated', body);
+
+  try { io.emit('data_updated', body); } catch (_e) { /* noop */ }
+
+}
+
+io.on('connection', (_socket) => {
+
+  // connection lifecycle intentionally passive; server pushes data updates only
+
+});
+
 
 
 // GET handlers for auth routes — silences browser/extension prefetch probes
@@ -1638,6 +1765,10 @@ const ALLOWED_DATA_KEYS = [
 
   'ww_sales_months', 'ww_equipment', 'ww_seed_flags', 'ww_last_data_update', 'ww_recent_restores',
 
+  'ww_record_vault',
+
+  'ww_tax_records',
+
 ];
 
 
@@ -1647,6 +1778,8 @@ function isAllowedDataKey(key) {
   if (ALLOWED_DATA_KEYS.includes(key)) return true;
 
   if (/^ww_sales_\d{4}-\d{2}$/.test(key)) return true;
+
+  if (/^ww_inventory_\d{4}-\d{2}$/.test(key)) return true;
 
   return false;
 
@@ -1736,6 +1869,11 @@ function invoiceContentFingerprint(inv) {
 
 }
 
+function getClientTxnKey(record) {
+  if (!record || typeof record !== 'object') return '';
+  return String(record.clientTxnId || record.client_txn_id || record.idempotencyKey || record.idempotency_key || '').trim();
+}
+
 
 
 // Groups invoices that share an identical content fingerprint (customer, date,
@@ -1767,8 +1905,19 @@ function normalizeSalesMonthPayload(key, payload) {
   if (!payload || typeof payload !== 'object') return payload;
 
   const invoices = Array.isArray(payload.invoices) ? payload.invoices.filter((inv) => inv && inv.id) : [];
-  const byId = new Map();
+  const invoiceByTxn = new Map();
+  const invoiceNoTxn = [];
   for (const inv of invoices) {
+    const txn = getClientTxnKey(inv);
+    if (!txn) {
+      invoiceNoTxn.push(inv);
+      continue;
+    }
+    invoiceByTxn.set(txn, pickNewerRecord(invoiceByTxn.get(txn), inv));
+  }
+
+  const byId = new Map();
+  for (const inv of [...invoiceByTxn.values(), ...invoiceNoTxn]) {
     const id = String(inv.id || '').trim();
     if (!id) continue;
     byId.set(id, pickNewerRecord(byId.get(id), inv));
@@ -1781,8 +1930,21 @@ function normalizeSalesMonthPayload(key, payload) {
   const activeInvoiceIds = new Set(dedupInvoices.map((inv) => String(inv.id || '')).filter(Boolean));
 
   const orders = Array.isArray(payload.salesOrders) ? payload.salesOrders.filter((ord) => ord && ord.id) : [];
-  const orderById = new Map();
+  const orderByTxn = new Map();
+  const orderNoTxn = [];
   for (const ord of orders) {
+    const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
+    const txn = getClientTxnKey(ord);
+    if (!sourceInvoiceId || !activeInvoiceIds.has(sourceInvoiceId)) continue;
+    if (!txn) {
+      orderNoTxn.push(ord);
+      continue;
+    }
+    orderByTxn.set(txn, pickNewerRecord(orderByTxn.get(txn), ord));
+  }
+
+  const orderById = new Map();
+  for (const ord of [...orderByTxn.values(), ...orderNoTxn]) {
     const sourceInvoiceId = String(ord.sourceInvoiceId || '').trim();
     const id = String(ord.id || '').trim();
     if (!id || !sourceInvoiceId || !activeInvoiceIds.has(sourceInvoiceId)) continue;
@@ -1928,6 +2090,12 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
   try {
 
     const key = req.params.key;
+
+    const source = req.body && req.body.__source && typeof req.body.__source === 'object'
+
+      ? { instanceId: String(req.body.__source.instanceId || '').trim() }
+
+      : null;
 
     if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
 
@@ -2115,7 +2283,7 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
       await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
 
-      if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key });
+      if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key, source });
 
       return res.json({ ok: true });
 
@@ -2129,7 +2297,7 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
     await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
 
-    if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key });
+    if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key, source });
 
     res.json({ ok: true });
 
@@ -2162,6 +2330,283 @@ app.get('/api/live-updates', ensureAuthenticated, (req, res) => {
   }, 25000);
 
   req.on('close', () => { clearInterval(heartbeat); sseClients.delete(res); });
+
+});
+
+
+
+/* ═══════════════════════════════════════════════
+
+   TAX RECORDS (Accounting)
+
+   ═══════════════════════════════════════════════ */
+
+const TAX_RECORDS_KEY = 'ww_tax_records';
+
+function normalizeTaxType(value) {
+
+  const raw = String(value || '').trim();
+
+  if (!raw) return 'Other';
+
+  return raw;
+
+}
+
+function computeTaxRecordStatus(record) {
+
+  if (record && record.paidDate) return 'Paid';
+
+  const dueMs = Date.parse(String(record && record.dueDate || ''));
+
+  if (!Number.isFinite(dueMs)) return 'Pending';
+
+  const now = new Date();
+
+  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
+
+  return todayEnd > dueMs ? 'Overdue' : 'Pending';
+
+}
+
+function normalizeTaxRecords(records) {
+
+  const rows = Array.isArray(records) ? records : [];
+
+  return rows.map((row) => {
+
+    const taxId = String(row && row.taxId || '').trim();
+
+    const type = normalizeTaxType(row && row.type);
+
+    const period = String(row && row.period || '').trim();
+
+    const amount = Number(row && row.amount || 0);
+
+    const dueDate = String(row && row.dueDate || '').trim();
+
+    const paidDate = String(row && row.paidDate || '').trim();
+
+    const createdAt = String(row && row.createdAt || '').trim() || nowIso();
+
+    const normalized = {
+
+      taxId,
+
+      type,
+
+      period,
+
+      amount: Number.isFinite(amount) ? amount : 0,
+
+      dueDate,
+
+      paidDate: paidDate || null,
+
+      createdAt,
+
+    };
+
+    normalized.status = computeTaxRecordStatus(normalized);
+
+    return normalized;
+
+  }).filter((row) => row.taxId);
+
+}
+
+async function readTaxRecords() {
+
+  const doc = await AppData.findOne({ key: TAX_RECORDS_KEY }).lean();
+
+  return normalizeTaxRecords(doc && doc.data);
+
+}
+
+async function writeTaxRecords(records) {
+
+  const normalized = normalizeTaxRecords(records);
+
+  await AppData.updateOne(
+
+    { key: TAX_RECORDS_KEY },
+
+    { key: TAX_RECORDS_KEY, data: normalized },
+
+    { upsert: true },
+
+  );
+
+  if (typeof broadcastRealtimeUpdate === 'function') {
+
+    broadcastRealtimeUpdate({ key: TAX_RECORDS_KEY });
+
+  }
+
+  return normalized;
+
+}
+
+function nextTaxId(records) {
+
+  const rows = Array.isArray(records) ? records : [];
+
+  const maxNum = rows.reduce((max, row) => {
+
+    const m = /^TAX-(\d+)$/.exec(String(row && row.taxId || '').trim());
+
+    if (!m) return max;
+
+    const n = Number(m[1]);
+
+    return Number.isFinite(n) ? Math.max(max, n) : max;
+
+  }, 0);
+
+  return `TAX-${String(maxNum + 1).padStart(3, '0')}`;
+
+}
+
+app.get('/api/tax-records', ensureAuthenticated, ensureRole('accounting'), async (_req, res, next) => {
+
+  try {
+
+    const records = await readTaxRecords();
+
+    records.sort((a, b) => toIsoMs(b.dueDate || b.createdAt) - toIsoMs(a.dueDate || a.createdAt));
+
+    res.json({ records });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.post('/api/tax-records', ensureAuthenticated, ensureRole('accounting'), async (req, res, next) => {
+
+  try {
+
+    requireFields(req.body, ['type', 'period', 'amount', 'dueDate']);
+
+    const records = await readTaxRecords();
+
+    const record = {
+
+      taxId: nextTaxId(records),
+
+      type: normalizeTaxType(req.body.type),
+
+      period: String(req.body.period || '').trim(),
+
+      amount: Number(req.body.amount || 0),
+
+      dueDate: String(req.body.dueDate || '').trim(),
+
+      paidDate: null,
+
+      createdAt: nowIso(),
+
+    };
+
+    record.status = computeTaxRecordStatus(record);
+
+    const saved = await writeTaxRecords([...records, record]);
+
+    const inserted = saved.find((row) => row.taxId === record.taxId) || record;
+
+    res.status(201).json({ ok: true, record: inserted });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.patch('/api/tax-records/:taxId', ensureAuthenticated, ensureRole('accounting'), async (req, res, next) => {
+
+  try {
+
+    const taxId = String(req.params.taxId || '').trim();
+
+    if (!taxId) throw createError(400, 'Tax ID is required');
+
+    const records = await readTaxRecords();
+
+    const idx = records.findIndex((row) => row.taxId === taxId);
+
+    if (idx < 0) throw createError(404, 'Tax record not found');
+
+    const current = records[idx];
+
+    const nextRecord = {
+
+      ...current,
+
+      type: req.body.type !== undefined ? normalizeTaxType(req.body.type) : current.type,
+
+      period: req.body.period !== undefined ? String(req.body.period || '').trim() : current.period,
+
+      amount: req.body.amount !== undefined ? Number(req.body.amount || 0) : current.amount,
+
+      dueDate: req.body.dueDate !== undefined ? String(req.body.dueDate || '').trim() : current.dueDate,
+
+      paidDate: req.body.paidDate !== undefined ? (String(req.body.paidDate || '').trim() || null) : current.paidDate,
+
+    };
+
+    nextRecord.status = computeTaxRecordStatus(nextRecord);
+
+    records[idx] = nextRecord;
+
+    const saved = await writeTaxRecords(records);
+
+    const updated = saved.find((row) => row.taxId === taxId) || nextRecord;
+
+    res.json({ ok: true, record: updated });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.delete('/api/tax-records/:taxId', ensureAuthenticated, ensureRole('accounting'), async (req, res, next) => {
+
+  try {
+
+    const taxId = String(req.params.taxId || '').trim();
+
+    if (!taxId) throw createError(400, 'Tax ID is required');
+
+    const records = await readTaxRecords();
+
+    const existing = records.find((row) => row.taxId === taxId);
+
+    if (!existing) throw createError(404, 'Tax record not found');
+
+    await moveToTrash('accounting', existing, `${req.user.name} (${req.user.role})`, {
+      kind: 'appDataArray',
+      key: 'ww_tax_records',
+    });
+
+    const nextRecords = records.filter((row) => row.taxId !== taxId);
+
+    await writeTaxRecords(nextRecords);
+
+    res.json({ ok: true });
+
+  } catch (error) {
+
+    next(error);
+
+  }
 
 });
 
@@ -2371,9 +2816,39 @@ app.post('/api/production', ensureAuthenticated, ensureRole('production'), async
 
 app.post('/api/sales', ensureAuthenticated, ensureRole('sales'), async (req, res, next) => {
 
+  const incomingIdemKey = extractIdempotencyKey(req);
+  const actorId = req.user && (req.user.id || req.user._id) ? (req.user.id || req.user._id) : 'unknown';
+  let idemHandle = null;
+
   try {
 
+    idemHandle = await beginIdempotentRequest('api_sales', actorId, incomingIdemKey);
+    if (idemHandle.enabled && idemHandle.state === 'replay') {
+      res.status(200).json(idemHandle.response);
+      return;
+    }
+    if (idemHandle.enabled && idemHandle.state === 'pending') {
+      throw createError(409, 'A matching sales request is already being processed. Please wait.');
+    }
+
     requireFields(req.body, ['customerId', 'product', 'quantity', 'amount', 'orderDate', 'source', 'status']);
+
+    const clientTxnIdRaw = String(req.body.clientTxnId || req.body.client_txn_id || incomingIdemKey || '').trim();
+    const clientTxnId = clientTxnIdRaw || null;
+
+    if (clientTxnId) {
+      const existingSo = await SalesOrder.findOne({ client_txn_id: clientTxnId }).populate('invoice_id').lean();
+      if (existingSo) {
+        const replayPayload = {
+          id: existingSo._id,
+          orderCode: existingSo.order_code,
+          invoiceCode: existingSo.invoice_id && existingSo.invoice_id.invoice_code ? existingSo.invoice_id.invoice_code : null,
+        };
+        await completeIdempotentRequest(idemHandle, replayPayload);
+        res.status(200).json(replayPayload);
+        return;
+      }
+    }
 
     const orderCode = await nextCode(SalesOrder, 'order_code', 'SO');
 
@@ -2390,6 +2865,10 @@ app.post('/api/sales', ensureAuthenticated, ensureRole('sales'), async (req, res
       product: req.body.product, quantity, amount,
 
       order_date: req.body.orderDate, source: req.body.source, status: req.body.status,
+
+      idempotency_key: incomingIdemKey || undefined,
+
+      client_txn_id: clientTxnId || undefined,
 
     });
 
@@ -2413,6 +2892,10 @@ app.post('/api/sales', ensureAuthenticated, ensureRole('sales'), async (req, res
 
         status: req.body.invoiceStatus || 'Pending',
 
+        idempotency_key: incomingIdemKey || undefined,
+
+        client_txn_id: clientTxnId || undefined,
+
       });
 
       await SalesOrder.updateOne({ _id: so._id }, { invoice_id: inv._id });
@@ -2427,9 +2910,32 @@ app.post('/api/sales', ensureAuthenticated, ensureRole('sales'), async (req, res
 
     await createAccountingEntry('Income', 'Sales Revenue', amount, `Sales order ${orderCode}`, req.body.orderDate);
 
-    res.status(201).json({ id: so._id, orderCode, invoiceCode });
+    const responsePayload = { id: so._id, orderCode, invoiceCode };
+    await completeIdempotentRequest(idemHandle, responsePayload);
+    res.status(201).json(responsePayload);
 
-  } catch (error) { next(error); }
+  } catch (error) {
+    if (error && error.code === 11000) {
+      const replayByTxn = String(req.body?.clientTxnId || req.body?.client_txn_id || incomingIdemKey || '').trim();
+      if (replayByTxn) {
+        const replayQuery = [{ client_txn_id: replayByTxn }];
+        if (incomingIdemKey) replayQuery.push({ idempotency_key: incomingIdemKey });
+        const existingSo = await SalesOrder.findOne({ $or: replayQuery }).populate('invoice_id').lean();
+        if (existingSo) {
+          const replayPayload = {
+            id: existingSo._id,
+            orderCode: existingSo.order_code,
+            invoiceCode: existingSo.invoice_id && existingSo.invoice_id.invoice_code ? existingSo.invoice_id.invoice_code : null,
+          };
+          await completeIdempotentRequest(idemHandle, replayPayload);
+          res.status(200).json(replayPayload);
+          return;
+        }
+      }
+    }
+    await releaseIdempotentRequest(idemHandle);
+    next(error);
+  }
 
 });
 
@@ -2437,9 +2943,35 @@ app.post('/api/sales', ensureAuthenticated, ensureRole('sales'), async (req, res
 
 app.post('/api/invoices', ensureAuthenticated, ensureRole('invoices'), async (req, res, next) => {
 
+  const incomingIdemKey = extractIdempotencyKey(req);
+  const actorId = req.user && (req.user.id || req.user._id) ? (req.user.id || req.user._id) : 'unknown';
+  let idemHandle = null;
+
   try {
 
+    idemHandle = await beginIdempotentRequest('api_invoices', actorId, incomingIdemKey);
+    if (idemHandle.enabled && idemHandle.state === 'replay') {
+      res.status(200).json(idemHandle.response);
+      return;
+    }
+    if (idemHandle.enabled && idemHandle.state === 'pending') {
+      throw createError(409, 'A matching invoice request is already being processed. Please wait.');
+    }
+
     requireFields(req.body, ['customerId', 'amount', 'issueDate', 'dueDate', 'status']);
+
+    const clientTxnIdRaw = String(req.body.clientTxnId || req.body.client_txn_id || incomingIdemKey || '').trim();
+    const clientTxnId = clientTxnIdRaw || null;
+
+    if (clientTxnId) {
+      const existing = await Invoice.findOne({ client_txn_id: clientTxnId }).lean();
+      if (existing) {
+        const replayPayload = { id: existing._id, invoiceCode: existing.invoice_code };
+        await completeIdempotentRequest(idemHandle, replayPayload);
+        res.status(200).json(replayPayload);
+        return;
+      }
+    }
 
     const invoiceCode = await nextCode(Invoice, 'invoice_code', 'INV');
 
@@ -2453,13 +2985,36 @@ app.post('/api/invoices', ensureAuthenticated, ensureRole('invoices'), async (re
 
       issue_date: req.body.issueDate, due_date: req.body.dueDate, status: req.body.status,
 
+      idempotency_key: incomingIdemKey || undefined,
+
+      client_txn_id: clientTxnId || undefined,
+
     });
 
     await refreshCustomerStats();
 
-    res.status(201).json({ id: doc._id, invoiceCode });
+    const responsePayload = { id: doc._id, invoiceCode };
+    await completeIdempotentRequest(idemHandle, responsePayload);
+    res.status(201).json(responsePayload);
 
-  } catch (error) { next(error); }
+  } catch (error) {
+    if (error && error.code === 11000) {
+      const replayByTxn = String(req.body?.clientTxnId || req.body?.client_txn_id || incomingIdemKey || '').trim();
+      if (replayByTxn) {
+        const replayQuery = [{ client_txn_id: replayByTxn }];
+        if (incomingIdemKey) replayQuery.push({ idempotency_key: incomingIdemKey });
+        const existing = await Invoice.findOne({ $or: replayQuery }).lean();
+        if (existing) {
+          const replayPayload = { id: existing._id, invoiceCode: existing.invoice_code };
+          await completeIdempotentRequest(idemHandle, replayPayload);
+          res.status(200).json(replayPayload);
+          return;
+        }
+      }
+    }
+    await releaseIdempotentRequest(idemHandle);
+    next(error);
+  }
 
 });
 
@@ -2633,7 +3188,7 @@ app.put('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, next
 
     await FactoryEquipment.updateOne({ _id: req.params.id }, update);
 
-    if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key: 'ww_equipment' });
+    if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key: 'ww_equipment' });
 
     res.json({ ok: true });
 
@@ -2661,7 +3216,7 @@ app.post('/api/factory-equipment', ensureAuthenticated, async (req, res, next) =
 
     });
 
-    if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key: 'ww_equipment' });
+    if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key: 'ww_equipment' });
 
     res.status(201).json({ id: doc._id, code: doc.code });
 
@@ -2683,7 +3238,7 @@ app.delete('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, n
 
     await FactoryEquipment.deleteOne({ _id: req.params.id });
 
-    if (typeof broadcastSseEvent === 'function') broadcastSseEvent('data_updated', { key: 'ww_equipment' });
+    if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key: 'ww_equipment' });
 
     res.json({ ok: true });
 
@@ -3665,6 +4220,34 @@ app.delete('/api/trash/:id', ensureAuthenticated, ensureRole('users'), async (re
 
   try {
 
+    const trashItem = await TrashBin.findById(req.params.id).lean();
+
+    if (!trashItem) throw createError(404, 'Trash item not found');
+
+    // Record Vault files are retained while in Trash for restore support.
+    // Permanently deleting a trash item should also remove the stored file blob.
+    if (trashItem.module === 'record-vault') {
+
+      const fileId = String((trashItem.record_data && trashItem.record_data.fileId) || '').trim();
+
+      if (isValidObjectId(fileId)) {
+
+        const bucket = getGridFSBucket();
+
+        try {
+
+          await bucket.delete(toObjectId(fileId));
+
+        } catch (_e) {
+
+          // Ignore missing blobs; continue removing trash metadata.
+
+        }
+
+      }
+
+    }
+
     const result = await TrashBin.deleteOne({ _id: req.params.id });
 
     if (result.deletedCount === 0) throw createError(404, 'Trash item not found');
@@ -3883,11 +4466,23 @@ app.get('/api/store/me', async (req, res) => {
 
 app.post('/api/store/orders', async (req, res, next) => {
 
+  const incomingIdemKey = extractIdempotencyKey(req);
+  let idemHandle = null;
+
   try {
 
     const customer = await getStoreCustomer(req.cookies.ww_store_session);
 
     if (!customer) throw createError(401, 'Please log in to place an order');
+
+    idemHandle = await beginIdempotentRequest('store_orders', customer.id, incomingIdemKey);
+    if (idemHandle.enabled && idemHandle.state === 'replay') {
+      res.status(200).json(idemHandle.response);
+      return;
+    }
+    if (idemHandle.enabled && idemHandle.state === 'pending') {
+      throw createError(409, 'A matching checkout request is already being processed. Please wait.');
+    }
 
 
 
@@ -3957,6 +4552,8 @@ app.post('/api/store/orders', async (req, res, next) => {
 
       phone, notes: notes || null,
 
+      idempotency_key: incomingIdemKey || undefined,
+
     });
 
 
@@ -4001,6 +4598,10 @@ app.post('/api/store/orders', async (req, res, next) => {
 
       amount: total, order_date: issueDate, source: 'Online Store', status: 'Pending',
 
+      idempotency_key: incomingIdemKey || undefined,
+
+      client_txn_id: incomingIdemKey || undefined,
+
     });
 
 
@@ -4013,6 +4614,10 @@ app.post('/api/store/orders', async (req, res, next) => {
 
       issue_date: issueDate, due_date: dueDate, status: 'Pending',
 
+      idempotency_key: incomingIdemKey || undefined,
+
+      client_txn_id: incomingIdemKey || undefined,
+
     });
 
 
@@ -4023,9 +4628,31 @@ app.post('/api/store/orders', async (req, res, next) => {
 
 
 
-    res.status(201).json({ ok: true, order: { id: storeOrder._id, orderCode, total, status: 'Pending' } });
+    const responsePayload = { ok: true, order: { id: storeOrder._id, orderCode, total, status: 'Pending' } };
+    await completeIdempotentRequest(idemHandle, responsePayload);
+    res.status(201).json(responsePayload);
 
-  } catch (error) { next(error); }
+  } catch (error) {
+    if (error && error.code === 11000 && incomingIdemKey) {
+      const existingStoreOrder = await StoreOrder.findOne({ idempotency_key: incomingIdemKey }).lean();
+      if (existingStoreOrder) {
+        const replayPayload = {
+          ok: true,
+          order: {
+            id: existingStoreOrder._id,
+            orderCode: existingStoreOrder.order_code,
+            total: Number(existingStoreOrder.total || 0),
+            status: existingStoreOrder.status || 'Pending',
+          },
+        };
+        await completeIdempotentRequest(idemHandle, replayPayload);
+        res.status(200).json(replayPayload);
+        return;
+      }
+    }
+    await releaseIdempotentRequest(idemHandle);
+    next(error);
+  }
 
 });
 
@@ -4078,6 +4705,437 @@ const handleStoreAdminOrders = async (req, res, next) => {
   } catch (error) { next(error); }
 
 };
+
+/* ═══════════════════════════════════════════════
+
+   RECORD VAULT (GridFS binaries + AppData metadata)
+
+   ═══════════════════════════════════════════════ */
+
+const RECORD_VAULT_KEY = 'ww_record_vault';
+
+const RECORD_VAULT_SECTIONS = ['companyDocuments', 'receipts'];
+
+const RECORD_VAULT_CATEGORY_MAP = {
+
+  companyDocuments: ['License', 'Contract', 'Certificate', 'Insurance', 'Other'],
+
+  receipts: ['Purchase Receipt', 'Utility Payment', 'Salary Payment', 'Other'],
+
+};
+
+const recordVaultUpload = multer({
+
+  storage: multer.memoryStorage(),
+
+  limits: { fileSize: 15 * 1024 * 1024 },
+
+  fileFilter: (_req, file, cb) => {
+
+    const mime = String(file.mimetype || '').toLowerCase();
+    const ext = String(path.extname(file.originalname || '') || '').toLowerCase();
+    const allowedMimes = [
+      'application/pdf',
+      'application/x-pdf',
+      'application/acrobat',
+      'applications/vnd.pdf',
+      'text/pdf',
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+    ];
+    const allowedExts = ['.pdf', '.jpg', '.jpeg', '.png'];
+
+    const mimeAllowed = allowedMimes.includes(mime);
+    const extAllowed = allowedExts.includes(ext);
+    const genericMimeWithSafeExt = (mime === 'application/octet-stream' || !mime) && extAllowed;
+
+    if (mimeAllowed || genericMimeWithSafeExt) {
+
+      cb(null, true);
+
+      return;
+
+    }
+
+    cb(createError(400, 'Only PDF, JPG, and PNG files are allowed'));
+
+  },
+
+});
+
+function isRecordVaultSection(section) {
+
+  return RECORD_VAULT_SECTIONS.includes(String(section || ''));
+
+}
+
+function normalizeRecordVaultData(raw) {
+
+  const data = raw && typeof raw === 'object' ? raw : {};
+
+  return {
+
+    companyDocuments: Array.isArray(data.companyDocuments) ? data.companyDocuments : [],
+
+    receipts: Array.isArray(data.receipts) ? data.receipts : [],
+
+  };
+
+}
+
+async function readRecordVaultData() {
+
+  const doc = await AppData.findOne({ key: RECORD_VAULT_KEY }).lean();
+
+  return normalizeRecordVaultData(doc && doc.data);
+
+}
+
+async function writeRecordVaultData(data) {
+
+  const normalized = normalizeRecordVaultData(data);
+
+  await AppData.updateOne(
+
+    { key: RECORD_VAULT_KEY },
+
+    { key: RECORD_VAULT_KEY, data: normalized },
+
+    { upsert: true },
+
+  );
+
+  if (typeof broadcastRealtimeUpdate === 'function') {
+
+    broadcastRealtimeUpdate({ key: RECORD_VAULT_KEY });
+
+  }
+
+  return normalized;
+
+}
+
+function recordVaultDateMs(entry) {
+
+  const raw = entry && (entry.date || entry.uploadDate);
+
+  const ms = Date.parse(String(raw || ''));
+
+  return Number.isFinite(ms) ? ms : 0;
+
+}
+
+function sanitizeFileName(name) {
+
+  return String(name || 'file').replace(/\"/g, '');
+
+}
+
+function inferMimeFromName(fileName) {
+
+  const ext = String(path.extname(fileName || '') || '').toLowerCase();
+
+  if (ext === '.pdf') return 'application/pdf';
+
+  if (ext === '.png') return 'image/png';
+
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+
+  return '';
+
+}
+
+function resolveVaultFileName(originalName, customName) {
+
+  const original = String(originalName || 'file').trim() || 'file';
+
+  const custom = String(customName || '').trim();
+
+  if (!custom) return original;
+
+  const originalExt = String(path.extname(original) || '');
+
+  const customExt = String(path.extname(custom) || '');
+
+  if (customExt) return custom;
+
+  return `${custom}${originalExt}`;
+
+}
+
+function resolveVaultDisplayName(originalName, customName) {
+
+  const original = String(originalName || 'file').trim() || 'file';
+
+  const custom = String(customName || '').trim();
+
+  const toTitleCase = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+
+  if (custom) {
+    const customBase = String(path.parse(custom).name || '').trim();
+    return customBase || 'file';
+  }
+
+  const originalBase = String(path.parse(original).name || '').trim();
+
+  return toTitleCase(originalBase) || 'file';
+
+}
+
+app.get('/api/record-vault/:section', ensureAuthenticated, ensureRole('vault'), async (req, res, next) => {
+
+  try {
+
+    const section = String(req.params.section || '');
+
+    if (!isRecordVaultSection(section)) throw createError(400, 'Invalid section');
+
+    const allData = await readRecordVaultData();
+
+    let files = Array.isArray(allData[section]) ? [...allData[section]] : [];
+
+    const search = String(req.query.search || '').trim().toLowerCase();
+
+    const category = String(req.query.category || '').trim();
+
+    const dateFromMs = Date.parse(String(req.query.dateFrom || ''));
+
+    const dateToMs = Date.parse(String(req.query.dateTo || ''));
+
+    if (search) {
+
+      files = files.filter((entry) => String(entry.fileName || '').toLowerCase().includes(search));
+
+    }
+
+    if (category && category !== 'All') {
+
+      files = files.filter((entry) => String(entry.category || '') === category);
+
+    }
+
+    if (Number.isFinite(dateFromMs)) {
+
+      files = files.filter((entry) => recordVaultDateMs(entry) >= dateFromMs);
+
+    }
+
+    if (Number.isFinite(dateToMs)) {
+
+      files = files.filter((entry) => recordVaultDateMs(entry) <= dateToMs);
+
+    }
+
+    files.sort((a, b) => recordVaultDateMs(b) - recordVaultDateMs(a));
+
+    res.json({ files });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.post('/api/record-vault/:section/upload', ensureAuthenticated, ensureRole('vault'), recordVaultUpload.single('file'), async (req, res, next) => {
+
+  try {
+
+    const section = String(req.params.section || '');
+
+    if (!isRecordVaultSection(section)) throw createError(400, 'Invalid section');
+
+    if (!req.file) throw createError(400, 'No file uploaded');
+
+    const ext = String(path.extname(req.file.originalname || '') || '').toLowerCase();
+    const normalizedContentType = (() => {
+      const incoming = String(req.file.mimetype || '').toLowerCase();
+      if (incoming && incoming !== 'application/octet-stream') return incoming;
+      if (ext === '.pdf') return 'application/pdf';
+      if (ext === '.png') return 'image/png';
+      if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+      return incoming || 'application/octet-stream';
+    })();
+
+    const resolvedDisplayName = resolveVaultDisplayName(req.file.originalname, req.body.fileName || req.body.saveAsName);
+
+    const resolvedFileName = resolveVaultFileName(req.file.originalname, req.body.fileName || req.body.saveAsName);
+
+    const bucket = getGridFSBucket();
+
+    const uploadStream = bucket.openUploadStream(resolvedFileName, {
+
+      contentType: normalizedContentType,
+
+      metadata: {
+
+        section,
+
+        uploadedBy: req.user && req.user.name ? req.user.name : 'Unknown',
+
+        uploadedAt: nowIso(),
+
+      },
+
+    });
+
+    await new Promise((resolve, reject) => {
+
+      uploadStream.on('error', reject);
+
+      uploadStream.on('finish', resolve);
+
+      uploadStream.end(req.file.buffer);
+
+    });
+
+    const fileId = String(uploadStream.id);
+
+    const allowedCategories = RECORD_VAULT_CATEGORY_MAP[section] || ['Other'];
+
+    const categoryInput = String(req.body.category || '').trim();
+
+    const category = allowedCategories.includes(categoryInput) ? categoryInput : 'Other';
+
+    const uploadDateIso = nowIso();
+
+    const record = {
+
+      fileId,
+
+      fileName: resolvedDisplayName,
+
+      storageFileName: resolvedFileName,
+
+      category,
+
+      uploadDate: uploadDateIso,
+
+      uploadedBy: String(req.body.uploadedBy || (req.user && req.user.name) || 'Unknown').trim(),
+
+      fileSize: Number(req.file.size || 0),
+
+      contentType: normalizedContentType,
+
+    };
+
+    if (section === 'receipts') {
+
+      record.amount = String(req.body.amount || '').trim();
+
+      record.date = String(req.body.date || '').trim() || uploadDateIso;
+
+      record.notes = String(req.body.notes || '').trim();
+
+    }
+
+    const allData = await readRecordVaultData();
+
+    allData[section].push(record);
+
+    await writeRecordVaultData(allData);
+
+    res.status(201).json({ ok: true, file: record });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.get('/api/record-vault/:section/:fileId/download', ensureAuthenticated, ensureRole('vault'), async (req, res, next) => {
+
+  try {
+
+    const section = String(req.params.section || '');
+
+    const fileId = String(req.params.fileId || '');
+
+    if (!isRecordVaultSection(section)) throw createError(400, 'Invalid section');
+
+    if (!isValidObjectId(fileId)) throw createError(400, 'Invalid file id');
+
+    const allData = await readRecordVaultData();
+
+    const entry = (allData[section] || []).find((row) => String(row.fileId || '') === fileId);
+
+    if (!entry) throw createError(404, 'File not found');
+
+    const bucket = getGridFSBucket();
+
+    const fileDoc = await bucket.find({ _id: toObjectId(fileId) }).next();
+
+    if (!fileDoc) throw createError(404, 'File not found');
+
+    const wantsDownload = String(req.query.download || '') === '1';
+
+    const safeName = sanitizeFileName(fileDoc.filename || entry.storageFileName || entry.fileName || 'file');
+
+    const inferredMime = inferMimeFromName(fileDoc.filename || entry.fileName || '');
+    const resolvedContentType = String(fileDoc.contentType || entry.contentType || inferredMime || 'application/octet-stream').toLowerCase();
+
+    res.setHeader('Content-Type', resolvedContentType);
+
+    res.setHeader('Content-Disposition', `${wantsDownload ? 'attachment' : 'inline'}; filename="${safeName}"`);
+
+    bucket.openDownloadStream(toObjectId(fileId)).pipe(res);
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.delete('/api/record-vault/:section/:fileId', ensureAuthenticated, ensureRole('vault'), async (req, res, next) => {
+
+  try {
+
+    const section = String(req.params.section || '');
+
+    const fileId = String(req.params.fileId || '');
+
+    if (!isRecordVaultSection(section)) throw createError(400, 'Invalid section');
+
+    if (!isValidObjectId(fileId)) throw createError(400, 'Invalid file id');
+
+    const allData = await readRecordVaultData();
+
+    const existing = (allData[section] || []).find((row) => String(row.fileId || '') === fileId);
+
+    if (!existing) throw createError(404, 'File not found');
+
+    // Soft-delete: archive in Trash Bin with restore metadata so this record
+    // follows the same 30-day retention and restore flow as other modules.
+    await moveToTrash('record-vault', existing, `${req.user.name} (${req.user.role})`, {
+      kind: 'appDataArray',
+      key: 'ww_record_vault',
+      arrayPath: section,
+    });
+
+    allData[section] = allData[section].filter((row) => String(row.fileId || '') !== fileId);
+
+    await writeRecordVaultData(allData);
+
+    res.json({ ok: true });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
 
 
 
@@ -4279,7 +5337,7 @@ if (!process.env.VERCEL) {
 
 
 
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
 
       console.log(`Server running on port ${PORT}`);
 

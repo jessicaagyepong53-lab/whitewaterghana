@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Reports &amp; Analytics</title>
-  <link rel="stylesheet" href="../src/script.css?v=20260504">
+  <link rel="stylesheet" href="../src/script.css?v=20260702h">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
 </head>
 <body class="ops-page" data-page="reports">
@@ -21,6 +21,7 @@
     <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
     <a href="vendors.html"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
     <a href="accounting.html"><i class="fa-solid fa-calculator"></i> Accounting</a>
+    <a href="vault.html"><i class="fa-solid fa-box-archive"></i> Record Vault</a>
     <a href="production.html"><i class="fa-solid fa-industry"></i> Production</a>
     <a href="reports.html" class="is-active"><i class="fa-solid fa-chart-line"></i> Reports</a>
     <a href="users.html"><i class="fa-solid fa-users-gear"></i> User Management</a>
@@ -45,19 +46,43 @@
         <h2>Reports &amp; Analytics</h2>
         <p>Sales trends, financial reports, and operational intelligence in one comprehensive module.</p>
       </div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-        <select id="rep-filter-type" onchange="applyReportsFilter()" style="padding:8px 12px;border:1px solid #c8ddec;border-radius:8px;font-size:13px;background:#fff;cursor:pointer;">
+      <div class="rep-filter-bar">
+        <select id="rep-filter-type" class="rep-filter-control" onchange="applyReportsFilter()" style="padding:8px 12px;border:1px solid #c8ddec;border-radius:8px;font-size:13px;background:#fff;cursor:pointer;">
           <option value="all">All Time</option>
           <option value="month">Per Month</option>
           <option value="year">Per Year</option>
         </select>
-        <input type="month" id="rep-filter-month" onchange="applyReportsFilter()" style="padding:8px 12px;border:1px solid #c8ddec;border-radius:8px;font-size:13px;background:#fff;display:none;">
-        <select id="rep-filter-year" onchange="applyReportsFilter()" style="padding:8px 12px;border:1px solid #c8ddec;border-radius:8px;font-size:13px;background:#fff;cursor:pointer;display:none;"></select>
+        <input type="month" id="rep-filter-month" class="rep-filter-control" onchange="applyReportsFilter()" style="padding:8px 12px;border:1px solid #c8ddec;border-radius:8px;font-size:13px;background:#fff;display:none;">
+        <select id="rep-filter-year" class="rep-filter-control" onchange="applyReportsFilter()" style="padding:8px 12px;border:1px solid #c8ddec;border-radius:8px;font-size:13px;background:#fff;cursor:pointer;display:none;"></select>
         <button type="button" class="btn-print" id="rep-export-btn" onclick="exportReports()">Export Reports</button>
       </div>
     </div>
   </div>
   <section class="kpi-grid" id="rep-kpi-grid"></section>
+  <section class="rep-performance-card">
+    <div class="rep-performance-head">
+      <div>
+        <h3>Output Performance Over Time</h3>
+        <p>Drag to pan, scroll/pinch to zoom. Timeline starts from the first recorded sales dispatch date.</p>
+      </div>
+      <div class="rep-performance-views" id="rep-performance-views">
+        <button type="button" class="rep-view-btn is-active" data-view="daily">Daily</button>
+        <button type="button" class="rep-view-btn" data-view="monthly">Monthly</button>
+      </div>
+      <div class="rep-performance-ranges" id="rep-performance-ranges">
+        <button type="button" class="rep-range-btn is-active" data-range="30d">Last 30D</button>
+        <button type="button" class="rep-range-btn" data-range="90d">90D</button>
+        <button type="button" class="rep-range-btn" data-range="1y">1Y</button>
+        <button type="button" class="rep-range-btn" data-range="all">All</button>
+      </div>
+    </div>
+    <div class="rep-zone-legend" id="rep-zone-legend">
+      <span><i class="fa-solid fa-square" style="color:#ef4444"></i> Critical Zone</span>
+      <span><i class="fa-solid fa-square" style="color:#f59e0b"></i> Acceptable Zone</span>
+      <span><i class="fa-solid fa-square" style="color:#22c55e"></i> High-Performance Zone</span>
+    </div>
+    <div id="chart-production-performance" class="chart-wrap rep-performance-chart"></div>
+  </section>
   <div class="panel">
     <div class="tab-bar">
       <button class="tab-btn tab-active" data-tab="sales" onclick="switchTab('rep','sales')">Sales Reports</button>
@@ -134,7 +159,9 @@
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="../src/script.js?v=20260517v2"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+<script src="../src/script.js?v=20260702m"></script>
 
 <script>
 // Reports KPI patch — uses AppData as source of truth for invoice counts

@@ -10,6 +10,37 @@ const SALES_YEAR_RESEQUENCE_MIGRATION_KEY = 'ww_sales_year_resequence_v1';
 const LEGACY_MARCH_SALES_CLEANUP_KEY = 'ww_march2026_sales_cleanup_v2';
 const MAY_RESET_MIGRATION_KEY = 'ww_sales_may2026_reset_v1';
 const SALES_SERVER_AUTHORITATIVE_MODE = true;
+const CLIENT_INSTANCE_ID = (() => {
+	try {
+		const existing = sessionStorage.getItem('ww_client_instance_id');
+		if (existing) return existing;
+		const next = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+		sessionStorage.setItem('ww_client_instance_id', next);
+		return next;
+	} catch (_e) {
+		return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+	}
+})();
+
+function getSyncSourceMeta() {
+	return { instanceId: CLIENT_INSTANCE_ID };
+}
+
+function isOwnRealtimeUpdate(payload) {
+	const id = String(payload && payload.source && payload.source.instanceId || '').trim();
+	return !!id && id === CLIENT_INSTANCE_ID;
+}
+
+function shouldProcessRealtimePayload(payload) {
+	if (isOwnRealtimeUpdate(payload)) return false;
+	const key = String(payload && payload.key || '*');
+	const now = Date.now();
+	const cache = window.__wwRealtimeDedup || (window.__wwRealtimeDedup = new Map());
+	const last = Number(cache.get(key) || 0);
+	if (now - last < 600) return false;
+	cache.set(key, now);
+	return true;
+}
 
 function getPendingSalesSyncKey(month) {
 	return `${SALES_PENDING_SYNC_PREFIX}${month}`;
@@ -731,7 +762,7 @@ function setLastDataUpdateStamp(value) {
 }
 
 function putAppDataKeyToServer(key, data, logResult = true) {
-	const body = JSON.stringify({ data });
+	const body = JSON.stringify({ data, __source: getSyncSourceMeta() });
 	return fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), {
 		method: 'PUT', credentials: 'include',
 		headers: { 'Content-Type': 'application/json' },
@@ -1141,6 +1172,9 @@ async function loadBulkFromServer(keys) {
 			if (json.items) {
 				for (const [k, v] of Object.entries(json.items)) {
 					if (v === null || v === undefined) continue;
+					// Equipment has a dedicated collection endpoint.
+					// Ignore key/value payload for ww_equipment to avoid stale overwrite.
+					if (k === 'ww_equipment') continue;
 					// For sales month keys, merge server+local by ID to avoid losing local entries.
 					const salesMonth = getSalesMonthFromStorageKey(k);
 					if (salesMonth) {
@@ -1262,7 +1296,7 @@ async function pullRemoteDataAndRefreshUi() {
 }
 
 function formatCurrency(value) {
-	return `GH ${Number(value || 0).toLocaleString(undefined, {
+	return `GH₵${Number(value || 0).toLocaleString(undefined, {
 		minimumFractionDigits: 2,
 		maximumFractionDigits: 2,
 	})}`;
@@ -1784,8 +1818,8 @@ async function resolveCurrentUserRole() {
 
 // ── Role-Based Access Control ──
 const ROLE_PAGE_ACCESS = {
-	ceo:        ['dashboard', 'inventory', 'invoices', 'sales', 'vendors', 'accounting', 'production', 'reports', 'users'],
-	manager:    ['dashboard', 'inventory', 'invoices', 'sales', 'vendors', 'accounting', 'production', 'reports', 'users'],
+	ceo:        ['dashboard', 'inventory', 'invoices', 'sales', 'vendors', 'accounting', 'vault', 'production', 'reports', 'users'],
+	manager:    ['dashboard', 'inventory', 'invoices', 'sales', 'vendors', 'accounting', 'vault', 'production', 'reports', 'users'],
 	supervisor: ['inventory', 'invoices', 'sales', 'vendors'],
 	staff:      ['inventory', 'invoices', 'sales', 'vendors'],
 };
@@ -1797,6 +1831,7 @@ const PAGE_TO_HREF = {
 	sales: 'sales.html',
 	vendors: 'vendors.html',
 	accounting: 'accounting.html',
+	vault: 'vault.html',
 	production: 'production.html',
 	reports: 'reports.html',
 	users: 'users.html',
@@ -1839,7 +1874,7 @@ function enforceRoleAccess() {
 			if (href.includes('login') || link.classList.contains('logout-link')) return;
 			const pageName = Object.entries(PAGE_TO_HREF).find(([, h]) => href.includes(h));
 			if (pageName && !allowed.includes(pageName[0])) {
-				link.style.display = 'none';
+				link.remove();
 			}
 		});
 	}
@@ -1860,15 +1895,7 @@ function enforceRoleAccess() {
 		});
 	}
 
-	// Show role badge in topbar
-	const topbar = document.querySelector('.ops-topbar');
-	if (topbar && !topbar.querySelector('.role-badge')) {
-		const badge = document.createElement('span');
-		badge.className = 'role-badge';
-		badge.textContent = role.charAt(0).toUpperCase() + role.slice(1);
-		badge.style.cssText = 'margin-left:auto;padding:5px 14px;border-radius:20px;font-size:12px;font-weight:600;background:rgba(0,119,182,0.1);color:#0077b6;';
-		topbar.appendChild(badge);
-	}
+	renderTopbarUserMenu();
 }
 
 /* ── Sidebar Collapse Toggle ── */
@@ -1916,9 +1943,211 @@ function bindLogoutLinks() {
 			} catch (_error) {
 				// Redirect anyway.
 			}
+			localStorage.removeItem('ww_user_email');
+			localStorage.removeItem('ww_user_role');
+			localStorage.removeItem('ww_user_name');
 			window.location.href = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
 		});
 	});
+}
+
+function toRoleLabel(role) {
+	const raw = String(role || '').trim();
+	if (!raw) return 'User';
+	return raw
+		.replace(/[_-]+/g, ' ')
+		.toLowerCase()
+		.replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function toUserInitials(name, email) {
+	const cleanName = String(name || '').trim();
+	if (cleanName) {
+		const parts = cleanName.split(/\s+/).filter(Boolean);
+		if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+		return `${parts[0][0] || ''}${parts[parts.length - 1][0] || ''}`.toUpperCase();
+	}
+	const localPart = String(email || '').split('@')[0] || 'U';
+	return localPart.slice(0, 2).toUpperCase();
+}
+
+function getCachedSessionUser() {
+	const email = String(localStorage.getItem('ww_user_email') || '').trim().toLowerCase();
+	const role = resolveEffectiveClientRole(
+		normalizeRole(localStorage.getItem('ww_user_role') || 'staff'),
+		email,
+	);
+	const name = String(localStorage.getItem('ww_user_name') || '').trim();
+	return {
+		name: name || 'User',
+		email,
+		role,
+		roleLabel: toRoleLabel(role),
+	};
+}
+
+function cacheSessionUser(user) {
+	if (!user || typeof user !== 'object') return getCachedSessionUser();
+	const email = String(user.email || '').trim().toLowerCase();
+	const role = resolveEffectiveClientRole(normalizeRole(user.effectiveRole || user.role || 'staff'), email);
+	const name = String(user.name || '').trim() || 'User';
+	if (email) localStorage.setItem('ww_user_email', email);
+	if (role) localStorage.setItem('ww_user_role', role);
+	if (name) localStorage.setItem('ww_user_name', name);
+	window.__wwCurrentUser = { name, email, role, roleLabel: toRoleLabel(role) };
+	return window.__wwCurrentUser;
+}
+
+function closeTopbarUserMenu() {
+	document.querySelectorAll('.ww-user-dropdown.is-open').forEach((menu) => {
+		menu.classList.remove('is-open');
+		const trigger = menu.querySelector('.ww-user-trigger');
+		if (trigger) trigger.setAttribute('aria-expanded', 'false');
+	});
+}
+
+function openUserManagementPage() {
+	window.location.href = resolvePageHref('users');
+}
+
+function openTopbarProfileModal(userInput) {
+	const user = userInput || window.__wwCurrentUser || getCachedSessionUser();
+	const displayName = String(user?.name || 'User').trim() || 'User';
+	const roleLabel = toRoleLabel(user?.roleLabel || user?.role || 'User');
+	const email = String(user?.email || '').trim() || '—';
+	const initials = toUserInitials(displayName, email);
+
+	const existing = document.querySelector('.ww-profile-overlay');
+	if (existing) existing.remove();
+
+	const overlay = document.createElement('div');
+	overlay.className = 'ww-profile-overlay';
+	overlay.innerHTML = `
+		<div class="ww-profile-modal" role="dialog" aria-modal="true" aria-label="User Profile">
+			<div class="ww-profile-head">
+				<h3>Profile</h3>
+				<button type="button" class="ww-profile-close" aria-label="Close profile">&times;</button>
+			</div>
+			<div class="ww-profile-body">
+				<div class="ww-profile-summary">
+					<span class="ww-profile-avatar">${escapeHtml(initials)}</span>
+					<div>
+						<p class="ww-profile-name">${escapeHtml(displayName)}</p>
+						<p class="ww-profile-role">${escapeHtml(roleLabel)}</p>
+					</div>
+				</div>
+				<div class="ww-profile-list">
+					<div class="ww-profile-row"><span class="ww-profile-label">Name</span><span class="ww-profile-value">${escapeHtml(displayName)}</span></div>
+					<div class="ww-profile-row"><span class="ww-profile-label">Role</span><span class="ww-profile-value">${escapeHtml(roleLabel)}</span></div>
+					<div class="ww-profile-row"><span class="ww-profile-label">Email</span><span class="ww-profile-value">${escapeHtml(email)}</span></div>
+				</div>
+				<div class="ww-profile-actions">
+					<button type="button" class="btn-secondary ww-profile-close-btn">Close</button>
+					<button type="button" class="btn-primary ww-profile-users-btn"><i class="fa-solid fa-users-gear"></i> User Management</button>
+				</div>
+			</div>
+		</div>
+	`;
+	document.body.appendChild(overlay);
+
+	const close = () => {
+		const node = document.querySelector('.ww-profile-overlay');
+		if (node) node.remove();
+	};
+	overlay.addEventListener('click', (event) => {
+		if (event.target === overlay) close();
+	});
+	overlay.querySelector('.ww-profile-close')?.addEventListener('click', close);
+	overlay.querySelector('.ww-profile-close-btn')?.addEventListener('click', close);
+	overlay.querySelector('.ww-profile-users-btn')?.addEventListener('click', () => {
+		close();
+		openUserManagementPage();
+	});
+}
+
+function renderTopbarUserMenu(userInput) {
+	const topbars = document.querySelectorAll('.ops-topbar');
+	if (!topbars.length) return;
+	const user = userInput || window.__wwCurrentUser || getCachedSessionUser();
+	const displayName = String(user?.name || 'User').trim() || 'User';
+	const displayRole = toRoleLabel(user?.roleLabel || user?.role || 'user');
+	const initials = toUserInitials(displayName, user?.email || '');
+
+	topbars.forEach((topbar) => {
+		let menu = topbar.querySelector('.ww-user-dropdown');
+		if (!menu) {
+			menu = document.createElement('div');
+			menu.className = 'ww-user-dropdown';
+			menu.innerHTML = `
+				<button type="button" class="ww-user-trigger" aria-haspopup="menu" aria-expanded="false" title="Open user menu">
+					<span class="ww-user-avatar"></span>
+					<span class="ww-user-meta">
+						<span class="ww-user-name"></span>
+						<span class="ww-user-role"></span>
+					</span>
+					<i class="fa-solid fa-chevron-down ww-user-caret" aria-hidden="true"></i>
+				</button>
+				<div class="ww-user-menu" role="menu" aria-label="User menu">
+					<button type="button" class="ww-user-menu-item" data-user-action="profile" role="menuitem"><i class="fa-regular fa-user"></i> Profile</button>
+					<button type="button" class="ww-user-menu-item" data-user-action="settings" role="menuitem"><i class="fa-solid fa-sliders"></i> Settings</button>
+					<button type="button" class="ww-user-menu-item danger" data-user-action="logout" role="menuitem"><i class="fa-solid fa-arrow-right-from-bracket"></i> Log Out</button>
+				</div>
+			`;
+			topbar.appendChild(menu);
+
+			const trigger = menu.querySelector('.ww-user-trigger');
+			if (trigger) {
+				trigger.addEventListener('click', (event) => {
+					event.stopPropagation();
+					const isOpen = menu.classList.contains('is-open');
+					closeTopbarUserMenu();
+					if (!isOpen) {
+						menu.classList.add('is-open');
+						trigger.setAttribute('aria-expanded', 'true');
+					}
+				});
+			}
+
+			menu.addEventListener('click', async (event) => {
+				const actionBtn = event.target.closest('[data-user-action]');
+				if (!actionBtn) return;
+				const action = actionBtn.getAttribute('data-user-action');
+				closeTopbarUserMenu();
+				if (action === 'profile') {
+					openTopbarProfileModal(window.__wwCurrentUser || getCachedSessionUser());
+					return;
+				}
+				if (action === 'settings') {
+					openUserManagementPage();
+					return;
+				}
+				if (action === 'logout') {
+					try {
+						await fetch(API_BASE + '/api/auth/logout', { method: 'POST', credentials: 'include' });
+					} catch (_error) { /* redirect anyway */ }
+					localStorage.removeItem('ww_user_email');
+					localStorage.removeItem('ww_user_role');
+					localStorage.removeItem('ww_user_name');
+					window.location.href = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
+				}
+			});
+		}
+
+		const avatar = menu.querySelector('.ww-user-avatar');
+		const nameEl = menu.querySelector('.ww-user-name');
+		const roleEl = menu.querySelector('.ww-user-role');
+		if (avatar) avatar.textContent = initials;
+		if (nameEl) nameEl.textContent = displayName;
+		if (roleEl) roleEl.textContent = displayRole;
+	});
+
+	if (!window.__wwUserMenuGlobalBound) {
+		window.__wwUserMenuGlobalBound = true;
+		document.addEventListener('click', () => closeTopbarUserMenu());
+		document.addEventListener('keydown', (event) => {
+			if (event.key === 'Escape') closeTopbarUserMenu();
+		});
+	}
 }
 
 function getSystemUsers() {
@@ -1997,6 +2226,7 @@ function bindRolePersistenceOnAuthForms() {
 				if (loginEmail) localStorage.setItem('ww_user_email', loginEmail);
 				const role = resolveEffectiveClientRole(normalizeRole(data.user?.effectiveRole || data.user?.role), loginEmail);
 				localStorage.setItem('ww_user_role', role);
+				if (data.user?.name) localStorage.setItem('ww_user_name', String(data.user.name));
 				upsertSystemUser(data.user?.name || '', email, role);
 				setAuthMessage('Login successful! Redirecting…', false);
 				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Redirecting…'; }
@@ -2038,6 +2268,7 @@ function bindRolePersistenceOnAuthForms() {
 				if (registerEmail) localStorage.setItem('ww_user_email', registerEmail);
 				const role = resolveEffectiveClientRole(normalizeRole(data.user?.effectiveRole || data.user?.role), registerEmail);
 				localStorage.setItem('ww_user_role', role);
+				if (data.user?.name || name) localStorage.setItem('ww_user_name', String(data.user?.name || name));
 				upsertSystemUser(name, email, role);
 				setAuthMessage('Account created! Redirecting…', false);
 				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Redirecting…'; }
@@ -2052,6 +2283,68 @@ function bindRolePersistenceOnAuthForms() {
 
 function getTodayDateStr() {
 	return new Date().toISOString().slice(0, 10);
+}
+
+const PRODUCTION_ZONE_THRESHOLDS = {
+	criticalMax: 6000,
+	acceptableMax: 11999,
+	highPerformanceMin: 12000,
+};
+
+const PRODUCTION_ZONE_INFO = {
+	critical: {
+		label: 'Critical Zone',
+		colorClass: 'zone-critical',
+		badgeClass: 'badge-red',
+		band: 'rgba(239, 68, 68, 0.08)',
+		text: 'Immediate management intervention required',
+	},
+	acceptable: {
+		label: 'Acceptable Zone',
+		colorClass: 'zone-acceptable',
+		badgeClass: 'badge-yellow',
+		band: 'rgba(245, 158, 11, 0.08)',
+		text: 'Stable operations, room for improvement',
+	},
+	high: {
+		label: 'High-Performance Zone',
+		colorClass: 'zone-high',
+		badgeClass: 'badge-green',
+		band: 'rgba(34, 197, 94, 0.08)',
+		text: 'Target achieved or exceeded',
+	},
+};
+
+function getProductionZoneInfo(output) {
+	const value = Number(output || 0);
+	if (value <= PRODUCTION_ZONE_THRESHOLDS.criticalMax) return { key: 'critical', output: value, ...PRODUCTION_ZONE_INFO.critical };
+	if (value <= PRODUCTION_ZONE_THRESHOLDS.acceptableMax) return { key: 'acceptable', output: value, ...PRODUCTION_ZONE_INFO.acceptable };
+	return { key: 'high', output: value, ...PRODUCTION_ZONE_INFO.high };
+}
+
+function getInvoiceOutputBags(invoice) {
+	if (!invoice || typeof invoice !== 'object') return 0;
+	if (Array.isArray(invoice.items) && invoice.items.length) {
+		return invoice.items.reduce((sum, item) => sum + (Number(item && item.qty) || 0), 0);
+	}
+	return Number(invoice.bags || 0) || 0;
+}
+
+function getProductionOutputForDate(dateKey) {
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateKey || ''))) return 0;
+	const salesData = getAllSalesData();
+	const invoices = Array.isArray(salesData && salesData.invoices) ? salesData.invoices : [];
+	return invoices.reduce((sum, invoice) => {
+		if (!invoice || !invoice.id) return sum;
+		const invoiceDate = String(invoice.date || '').slice(0, 10);
+		if (invoiceDate !== dateKey) return sum;
+		return sum + getInvoiceOutputBags(invoice);
+	}, 0);
+}
+
+function getTodayProductionZone() {
+	const todayStr = getTodayDateStr();
+	return getProductionZoneInfo(getProductionOutputForDate(todayStr));
 }
 
 function loadFinishedProductsFromStorage() {
@@ -2153,7 +2446,12 @@ function saveEquipmentToStorage(equipmentRows) {
 }
 
 async function saveOneEquipmentToServer(eq) {
-	if (!eq || !eq.id) return;
+	if (!eq) return false;
+	if (!eq.id) {
+		showDeleteToast('Equipment item is missing a server ID. Refreshing equipment data...');
+		await fetchEquipmentFromServer();
+		return false;
+	}
 	try {
 		const res = await fetch(API_BASE + '/api/factory-equipment/' + eq.id, {
 			method: 'PUT', credentials: 'include',
@@ -2168,9 +2466,12 @@ async function saveOneEquipmentToServer(eq) {
 		});
 		if (!res.ok) {
 			showDeleteToast('Equipment save failed — please refresh and try again.');
+			return false;
 		}
+		return true;
 	} catch (_err) {
 		showDeleteToast('Could not reach server to save equipment changes.');
+		return false;
 	}
 }
 
@@ -2218,6 +2519,27 @@ async function initDashboardPage() {
 		return;
 	}
 	await clearSalesBrowserCacheIfServerEmpty();
+
+	const dashTraceEnabled = (() => {
+		try {
+			const q = new URLSearchParams(window.location.search);
+			if (q.get('traceInv') === '1') localStorage.setItem('ww_trace_inventory', '1');
+			if (q.get('traceInv') === '0') localStorage.removeItem('ww_trace_inventory');
+			return localStorage.getItem('ww_trace_inventory') === '1';
+		} catch (_e) {
+			return false;
+		}
+	})();
+
+	const dashTrace = (event, details) => {
+		if (!dashTraceEnabled) return;
+		const payload = details && typeof details === 'object' ? details : {};
+		try {
+			console.log('[DASH-TRACE]', new Date().toISOString(), event, payload);
+		} catch (_e) { /* no-op */ }
+	};
+
+	dashTrace('init:start', { path: window.location.pathname, search: window.location.search });
 
 	let selectedDashboardYear = null;
 	const parseYearFromDateLike = (raw) => {
@@ -2567,10 +2889,12 @@ async function initDashboardPage() {
 	};
 
 	let equipmentStatus = loadEquipmentFromStorage();
+	dashTrace('equipment:cache-load', { count: Array.isArray(equipmentStatus) ? equipmentStatus.length : -1 });
 
 	// Fetch fresh equipment from server and re-render when ready
 	fetchEquipmentFromServer().then((serverEquipment) => {
 		equipmentStatus = serverEquipment;
+		dashTrace('equipment:fetch:done', { count: Array.isArray(serverEquipment) ? serverEquipment.length : -1 });
 		renderDashboardEquipmentStatus();
 	});
 
@@ -2653,11 +2977,13 @@ async function initDashboardPage() {
 			: 'No production data yet';
 
 		const activeCustomers = countActiveCustomers();
+		const todayPerformanceZone = getTodayProductionZone();
 
 		const kpiCards = [
 			{ icon: '<i class="fa-solid fa-cedi-sign"></i>', label: 'Total Revenue', value: formatCurrency(totalRevenue), meta: revenueMtd > 0 ? `${formatCurrency(revenueMtd)} latest month • ${revChange >= 0 ? '+' : ''}${revChange}% vs previous month` : 'No sales data yet', subMeta: hasInvoiceData && promoExpense > 0 ? `<span>Gross sales — promo booked as expense</span><span>Promo cost: ${formatCurrency(promoExpense)} (see Accounting)</span>` : '', color: 'blue', link: null },
 			{ icon: '<i class="fa-solid fa-chart-line"></i>', label: 'Market Growth Rate', value: marketGrowth.label, meta: marketGrowth.meta, color: marketGrowth.color, link: null },
 			{ icon: '<i class="fa-solid fa-box"></i>', label: 'Units Produced', value: formatNumber(totalUnitsProduced), meta: unitsMeta, color: 'green', link: null },
+			{ icon: '<i class="fa-solid fa-industry"></i>', label: 'Daily Output', value: formatNumber(todayPerformanceZone.output), subtitle: 'bags/day', meta: `<span class="today-performance-badge ${todayPerformanceZone.badgeClass}">${todayPerformanceZone.label}</span><span>${todayPerformanceZone.text}</span>`, subMeta: `<span>Daily output: <strong>${formatNumber(todayPerformanceZone.output)}</strong> bags</span>`, color: todayPerformanceZone.key === 'critical' ? 'red' : todayPerformanceZone.key === 'acceptable' ? 'yellow' : 'green', link: null },
 			{ icon: '<i class="fa-solid fa-users"></i>', label: 'Active Customers', value: formatNumber(activeCustomers), meta: activeCustomers > 0 ? 'Unique customers from sales' : 'No customers yet', color: 'purple', link: null },
 			{ icon: '<i class="fa-solid fa-triangle-exclamation"></i>', label: 'Stock Alerts', value: String(stockAlertCount), meta: `${stockCriticalCount} critically low \u2014 needs reorder`, color: stockCriticalCount > 0 ? 'red' : 'yellow', link: `${resolvePageHref('inventory')}?tab=materials` },
 		];
@@ -2737,6 +3063,7 @@ async function initDashboardPage() {
 							<div>
 								<p class="kpi-label">${kpi.label}</p>
 								<p class="kpi-value">${kpi.value}</p>
+								${kpi.subtitle ? `<p class="kpi-subtitle">${kpi.subtitle}</p>` : ''}
 							</div>
 							<div class="kpi-icon-square ${kpi.color}">${kpi.icon}</div>
 						</div>
@@ -2836,6 +3163,7 @@ async function initDashboardPage() {
 	const equipmentContent = document.getElementById('dash-equipment-content');
 	const renderDashboardEquipmentStatus = () => {
 		equipmentStatus = loadEquipmentFromStorage();
+		dashTrace('equipment:render:start', { count: Array.isArray(equipmentStatus) ? equipmentStatus.length : -1 });
 		if (!equipmentContent) {
 			return;
 		}
@@ -2913,27 +3241,36 @@ async function initDashboardPage() {
 		// Allow editing status directly from dashboard — changes sync back to inventory
 		const dashTbody = document.getElementById('dash-equipment-tbody');
 		if (dashTbody) {
-			dashTbody.onchange = (e) => {
+			dashTbody.onchange = async (e) => {
 				const sel = e.target.closest('select[data-dash-eq-idx]');
 				if (!sel) return;
 				const idx = Number(sel.dataset.dashEqIdx);
 				if (!equipmentStatus[idx]) return;
+				dashTrace('equipment:edit:change', { idx, nextStatus: sel.value, id: equipmentStatus[idx] && equipmentStatus[idx].id ? String(equipmentStatus[idx].id) : '' });
 				equipmentStatus[idx].status = sel.value;
-				saveOneEquipmentToServer(equipmentStatus[idx]);
+				const saved = await saveOneEquipmentToServer(equipmentStatus[idx]);
+				dashTrace('equipment:edit:save-result', { idx, success: !!saved });
 				saveEquipmentToStorage(equipmentStatus);
 				renderDashboardEquipmentStatus();
 			};
 		}
+		dashTrace('equipment:render:done', {
+			count: equipmentStatus.length,
+			faulty: equipmentStatus.filter((eq) => ['faulty', 'faulty_needs_repair'].includes(eq.status)).length,
+			needsRepair: equipmentStatus.filter((eq) => eq.status === 'needs_repair').length,
+		});
 	};
 	renderDashboardEquipmentStatus();
 
 	const refreshDashboardView = () => {
+		dashTrace('refresh:start', { reason: 'dashboard-refresh' });
 		renderDashboardYearSelector();
 		const rd = buildRevenueData();
 		renderDashboardLiveSummary();
 		renderDashboardEquipmentStatus();
 		renderDashboardCharts(rd, buildDailySales());
 		renderProfitLossChart(rd);
+		dashTrace('refresh:done', { equipmentCount: Array.isArray(equipmentStatus) ? equipmentStatus.length : -1 });
 	};
 
 	if (!window.__wwDashboardStorageBound) {
@@ -2941,6 +3278,7 @@ async function initDashboardPage() {
 
 		// Cross-tab: localStorage storage event
 		window.addEventListener('storage', (event) => {
+			dashTrace('sync:storage-event', { key: event && event.key ? String(event.key) : '' });
 			const dashKeys = ['ww_raw_materials', 'ww_daily_production', 'ww_equipment', 'ww_production_batches', 'ww_accounting_data_v2', 'ww_purchase_data_v2', 'ww_market_yearly_values'];
 			if (dashKeys.includes(event.key) || (event.key && event.key.startsWith('ww_sales_'))) {
 				refreshDashboardView();
@@ -2959,6 +3297,7 @@ async function initDashboardPage() {
 		try {
 			const eqChannel = new BroadcastChannel('ww_equipment_sync');
 			eqChannel.onmessage = (e) => {
+				dashTrace('sync:channel', { channel: 'ww_equipment_sync', type: e && e.data && e.data.type ? String(e.data.type) : '' });
 				if (e.data && e.data.type === 'equipment_updated') {
 					renderDashboardEquipmentStatus();
 				}
@@ -3012,6 +3351,27 @@ async function initInventoryPage() {
 
 	const userRole = await resolveCurrentUserRole();
 	const canAdd = ['ceo', 'manager', 'supervisor'].includes(userRole);
+
+	const invTraceEnabled = (() => {
+		try {
+			const q = new URLSearchParams(window.location.search);
+			if (q.get('traceInv') === '1') localStorage.setItem('ww_trace_inventory', '1');
+			if (q.get('traceInv') === '0') localStorage.removeItem('ww_trace_inventory');
+			return localStorage.getItem('ww_trace_inventory') === '1';
+		} catch (_e) {
+			return false;
+		}
+	})();
+
+	const invTrace = (event, details) => {
+		if (!invTraceEnabled) return;
+		const payload = details && typeof details === 'object' ? details : {};
+		try {
+			console.log('[INV-TRACE]', new Date().toISOString(), event, payload);
+		} catch (_e) { /* no-op */ }
+	};
+
+	invTrace('init:start', { path: window.location.pathname, search: window.location.search });
 
 	const INVENTORY_MONTHS_KEY = 'ww_inventory_months';
 	const INVENTORY_MONTHLY_MIGRATED_KEY = 'ww_inventory_monthly_migrated_v1';
@@ -3177,7 +3537,9 @@ async function initInventoryPage() {
 				equipment: month === thisMonth ? legacyEquipment : [],
 				customers: [],
 			};
-			localStorage.setItem(inventoryMonthStorageKey(month), JSON.stringify(payload));
+			const monthKey = inventoryMonthStorageKey(month);
+			localStorage.setItem(monthKey, JSON.stringify(payload));
+			syncToServer(monthKey, payload);
 		}
 
 		localStorage.setItem(INVENTORY_MONTHLY_MIGRATED_KEY, '1');
@@ -3226,7 +3588,9 @@ async function initInventoryPage() {
 				equipment: Array.isArray(payload?.equipment) ? payload.equipment : [],
 				customers: Array.isArray(payload?.customers) ? payload.customers : [],
 			};
-			localStorage.setItem(inventoryMonthStorageKey(month), JSON.stringify(nextPayload));
+			const monthKey = inventoryMonthStorageKey(month);
+			localStorage.setItem(monthKey, JSON.stringify(nextPayload));
+			syncToServer(monthKey, nextPayload);
 		}
 
 		localStorage.setItem(INVENTORY_FINISHED_REBUCKET_KEY, '1');
@@ -3237,6 +3601,13 @@ async function initInventoryPage() {
 	};
 
 	const persistInventoryMonthState = () => {
+		invTrace('persist:start', {
+			month: currentInventoryMonth,
+			rawMaterials: Array.isArray(rawMaterials) ? rawMaterials.length : -1,
+			finishedProducts: Array.isArray(finishedProducts) ? finishedProducts.length : -1,
+			equipment: Array.isArray(equipment) ? equipment.length : -1,
+			customers: Array.isArray(customers) ? customers.length : -1,
+		});
 		const payload = {
 			rawMaterials: Array.isArray(rawMaterials) ? rawMaterials : [],
 			finishedProducts: Array.isArray(finishedProducts) ? finishedProducts : [],
@@ -3245,6 +3616,7 @@ async function initInventoryPage() {
 		};
 		const monthKey = inventoryMonthStorageKey(currentInventoryMonth);
 		localStorage.setItem(monthKey, JSON.stringify(payload));
+		syncToServer(monthKey, payload);
 
 		// Keep legacy snapshot keys in sync for other modules.
 		localStorage.setItem('ww_raw_materials', JSON.stringify(payload.rawMaterials));
@@ -3253,7 +3625,9 @@ async function initInventoryPage() {
 		localStorage.setItem('ww_finished_products', JSON.stringify(allFinishedProducts));
 		syncToServer('ww_finished_products', allFinishedProducts);
 		rebuildDailyProductionLog(allFinishedProducts);
-		localStorage.setItem('ww_equipment', JSON.stringify(payload.equipment));
+		// Keep global equipment cache from the live equipment array (server-backed).
+		// Do not rely on stale monthly snapshots for this shared dataset.
+		localStorage.setItem('ww_equipment', JSON.stringify(Array.isArray(equipment) ? equipment : []));
 
 		try {
 			const rawChannel = new BroadcastChannel('ww_raw_materials_sync');
@@ -3270,16 +3644,21 @@ async function initInventoryPage() {
 			equipmentChannel.postMessage({ type: 'equipment_updated', month: currentInventoryMonth });
 			equipmentChannel.close();
 		} catch (_e) { /* noop */ }
+		invTrace('persist:done', { month: currentInventoryMonth, monthKey, finishedProducts: payload.finishedProducts.length, equipment: payload.equipment.length });
 	};
 
 	const loadInventoryMonthState = async (month) => {
+		invTrace('month:load:start', { month });
 		currentInventoryMonth = month;
 		const syncedForMonth = loadSyncedFinishedProducts().filter((product) => inferProductMonth(product) === currentInventoryMonth);
-		let loaded = null;
-		try {
-			loaded = JSON.parse(localStorage.getItem(inventoryMonthStorageKey(month)) || 'null');
-		} catch (_e) {
-			loaded = null;
+		const monthKey = inventoryMonthStorageKey(month);
+		let loaded = await loadFromServerForceFresh(monthKey);
+		if (!loaded || typeof loaded !== 'object') {
+			try {
+				loaded = JSON.parse(localStorage.getItem(monthKey) || 'null');
+			} catch (_e) {
+				loaded = null;
+			}
 		}
 
 		if (loaded && typeof loaded === 'object') {
@@ -3296,21 +3675,25 @@ async function initInventoryPage() {
 			// refresh and the dashboard / inventory page showing different data.
 			equipment = await fetchEquipmentFromServer();
 			customers = Array.isArray(loaded.customers) ? loaded.customers : [];
+			invTrace('month:load:from-storage', { month, rawMaterials: rawMaterials.length, finishedProducts: finishedProducts.length, equipment: equipment.length, customers: customers.length });
 		} else {
 			if (hasAnyInventoryMonthPayload()) {
 				rawMaterials = [];
 				finishedProducts = syncedForMonth;
-				equipment = [];
+				equipment = await fetchEquipmentFromServer();
 				customers = [];
 				persistInventoryMonthState();
+				invTrace('month:load:new-empty-month', { month, finishedProducts: finishedProducts.length, equipment: equipment.length });
 			} else {
 				rawMaterials = loadRawMaterialsFromStorage();
 				finishedProducts = loadFinishedProductsFromStorage();
 				equipment = await fetchEquipmentFromServer();
 				customers = [];
 				persistInventoryMonthState();
+				invTrace('month:load:legacy-bootstrap', { month, finishedProducts: finishedProducts.length, equipment: equipment.length });
 			}
 		}
+		invTrace('month:load:done', { month, rawMaterials: rawMaterials.length, finishedProducts: finishedProducts.length, equipment: equipment.length, customers: customers.length });
 	};
 
 	const monthSelect = document.getElementById('inv-month-select');
@@ -3610,6 +3993,7 @@ async function initInventoryPage() {
 	};
 
 	const rerenderInventory = () => {
+		invTrace('render:rerender', { month: currentInventoryMonth, rawMaterials: rawMaterials.length, finishedProducts: finishedProducts.length, equipment: equipment.length, customers: customers.length });
 		renderStats();
 		renderMaterials();
 		renderProducts();
@@ -3751,6 +4135,7 @@ async function initInventoryPage() {
 
 
 	const closeModal = (skipDraft = false) => {
+		invTrace('modal:close', { entity: currentEntity, editingIdx, skipDraft: !!skipDraft });
 		const savedEntity = currentEntity;
 		const wasAdding = editingIdx < 0;
 		if (!skipDraft && wasAdding && savedEntity) saveInvDraft(savedEntity);
@@ -3764,6 +4149,7 @@ async function initInventoryPage() {
 	window.addEventListener('beforeunload', () => { if (editingIdx < 0 && currentEntity) saveInvDraft(currentEntity); });
 
 	const openModal = (entity, editIndex, resumeDraft = false) => {
+		invTrace('modal:open', { entity, editIndex: typeof editIndex === 'number' ? editIndex : -1, resumeDraft: !!resumeDraft });
 		const config = MODAL_CONFIGS[entity];
 		if (!config || !addModal) return;
 		currentEntity = entity;
@@ -3829,6 +4215,7 @@ async function initInventoryPage() {
 		modalForm.addEventListener('submit', async (event) => {
 			event.preventDefault();
 			if (!currentEntity) return;
+			invTrace('modal:submit:start', { entity: currentEntity, editingIdx, month: currentInventoryMonth });
 
 			const getValue = (id) => {
 				const el = document.getElementById(`inv-field-${id}`);
@@ -3864,6 +4251,7 @@ async function initInventoryPage() {
 			if (currentEntity === 'product') {
 				const product = getValue('product');
 				if (!product) return;
+				invTrace('product:submit', { mode: editingIdx >= 0 ? 'edit' : 'add', editingIdx, beforeCount: finishedProducts.length, product });
 				if (editingIdx >= 0 && finishedProducts[editingIdx]) {
 					finishedProducts[editingIdx].product = product;
 					finishedProducts[editingIdx].qty = getNum('qty');
@@ -3881,17 +4269,23 @@ async function initInventoryPage() {
 					});
 				}
 				persistInventoryMonthState();
+				invTrace('product:submit:done', { afterCount: finishedProducts.length, month: currentInventoryMonth });
 			}
 
 			if (currentEntity === 'equipment') {
 				const equipmentName = getValue('equipmentName');
 				if (!equipmentName) return;
+				invTrace('equipment:submit', { mode: editingIdx >= 0 ? 'edit' : 'add', editingIdx, beforeCount: equipment.length, equipmentName });
 				if (editingIdx >= 0 && equipment[editingIdx]) {
 					equipment[editingIdx].equipment = equipmentName;
 					equipment[editingIdx].details = getValue('details');
 					equipment[editingIdx].lastMaintenance = getValue('lastMaintenance') || todayForInput;
 					equipment[editingIdx].nextMaintenance = getValue('nextMaintenance') || todayForInput;
-					await saveOneEquipmentToServer(equipment[editingIdx]);
+					const saved = await saveOneEquipmentToServer(equipment[editingIdx]);
+					invTrace('equipment:submit:edit:server-save', {
+						success: !!saved,
+						id: equipment[editingIdx] && equipment[editingIdx].id ? String(equipment[editingIdx].id) : '',
+					});
 				} else {
 					const code = `EQ-${String(equipment.length + 101).padStart(3, '0')}`;
 					const newEq = {
@@ -3917,15 +4311,19 @@ async function initInventoryPage() {
 						if (r.ok) {
 							const result = await r.json();
 							if (result && result.id) newEq.id = result.id;
+							invTrace('equipment:submit:add:server-create', { success: true, id: result && result.id ? String(result.id) : '' });
 						} else {
 							showDeleteToast('Equipment save failed — please refresh and try again.');
+							invTrace('equipment:submit:add:server-create', { success: false, httpStatus: r.status });
 						}
 					} catch (_err) {
 						showDeleteToast('Could not reach server to save new equipment.');
+						invTrace('equipment:submit:add:server-create', { success: false, networkError: true });
 					}
 					persistInventoryMonthState();
 				}
 				persistInventoryMonthState();
+				invTrace('equipment:submit:done', { afterCount: equipment.length, month: currentInventoryMonth });
 			}
 
 			if (currentEntity === 'customer') {
@@ -3952,6 +4350,7 @@ async function initInventoryPage() {
 			clearInvDraft(submittedEntity);
 			closeModal(true); // skipDraft=true — data already saved, don't re-save draft
 			rerenderInventory();
+			invTrace('modal:submit:done', { entity: submittedEntity, month: currentInventoryMonth });
 		});
 	}
 
@@ -3960,6 +4359,7 @@ async function initInventoryPage() {
 		document.addEventListener('click', (event) => {
 			const button = event.target.closest('.table-add-btn[data-add-entity]');
 			if (button) {
+				invTrace('click:add', { entity: button.getAttribute('data-add-entity') || '', canAdd: !!canAdd });
 				if (!canAdd) {
 					alert('You do not have permission to add rows.');
 					return;
@@ -3979,6 +4379,11 @@ async function initInventoryPage() {
 			const editBtn = event.target.closest('.inv-edit-btn');
 			if (editBtn) {
 				event.stopPropagation();
+				invTrace('click:edit', {
+					entity: editBtn.getAttribute('data-edit-entity') || '',
+					idx: Number(editBtn.getAttribute('data-edit-idx')),
+					month: currentInventoryMonth,
+				});
 				openModal(editBtn.getAttribute('data-edit-entity'), Number(editBtn.getAttribute('data-edit-idx')));
 				return;
 			}
@@ -3987,6 +4392,7 @@ async function initInventoryPage() {
 				event.stopPropagation();
 				const entity = deleteBtn.getAttribute('data-delete-entity');
 				const idx = Number(deleteBtn.getAttribute('data-delete-idx'));
+				invTrace('click:delete', { entity, idx, month: currentInventoryMonth });
 				if (!window.confirm('Delete this ' + entity + '? This cannot be undone.')) return;
 				if (entity === 'material') {
 					const removed = rawMaterials[idx];
@@ -4021,11 +4427,14 @@ async function initInventoryPage() {
 
 	/* ── Cross-tab sync: refresh inventory when another tab changes data ── */
 	const reloadAndRerender = async () => {
+		invTrace('sync:reload:start', { month: currentInventoryMonth });
 		await loadInventoryMonthState(currentInventoryMonth);
 		renderInventoryMonthOptions();
 		rerenderInventory();
+		invTrace('sync:reload:done', { month: currentInventoryMonth });
 	};
 	window.addEventListener('storage', (e) => {
+		invTrace('sync:storage-event', { key: e && e.key ? String(e.key) : '' });
 		if ([
 			'ww_raw_materials',
 			'ww_finished_products',
@@ -4037,12 +4446,19 @@ async function initInventoryPage() {
 		}
 	});
 	try {
-		new BroadcastChannel('ww_raw_materials_sync').onmessage = () => reloadAndRerender().catch(() => {});
-		new BroadcastChannel('ww_finished_products_sync').onmessage = () => reloadAndRerender().catch(() => {});
+		new BroadcastChannel('ww_raw_materials_sync').onmessage = () => {
+			invTrace('sync:channel', { channel: 'ww_raw_materials_sync' });
+			reloadAndRerender().catch(() => {});
+		};
+		new BroadcastChannel('ww_finished_products_sync').onmessage = () => {
+			invTrace('sync:channel', { channel: 'ww_finished_products_sync' });
+			reloadAndRerender().catch(() => {});
+		};
 		// Equipment sync: fetch fresh from server rather than reloading the monthly
 		// snapshot (which doesn't contain the dashboard's status changes — they only
 		// update ww_equipment, not the monthly key).
 		new BroadcastChannel('ww_equipment_sync').onmessage = async () => {
+			invTrace('sync:channel', { channel: 'ww_equipment_sync' });
 			equipment = await fetchEquipmentFromServer();
 			rerenderInventory();
 		};
@@ -5462,7 +5878,10 @@ async function initSalesInvoicesPage() {
 	const modalForm = document.getElementById('si-add-form');
 	let currentEntity = null;
 	let editingSiIdx = -1;
+	let currentSubmitTxnId = '';
+	let siSubmitInFlight = false;
 	const siDraftStorageKey = (entity) => `ww_sales_modal_draft_${currentSalesMonth}_${entity}`;
+	const generateClientTxnId = (entity) => `${entity}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 	const clearModalValidation = () => {
 		if (!modalFieldsEl) return;
@@ -5519,6 +5938,7 @@ async function initSalesInvoicesPage() {
 			values[field.id] = el.value;
 		});
 		try {
+			if (currentSubmitTxnId) values.__txnId = currentSubmitTxnId;
 			localStorage.setItem(siDraftStorageKey(entity), JSON.stringify({ values, ts: Date.now() }));
 		} catch (_e) { /* ignore */ }
 	};
@@ -5589,6 +6009,8 @@ async function initSalesInvoicesPage() {
 		if (addModal) addModal.style.display = 'none';
 		if (modalForm) modalForm.reset();
 		clearModalValidation();
+		currentSubmitTxnId = '';
+		siSubmitInFlight = false;
 		if (!skipDraft && wasAdding && savedEntity) renderSalesPage();
 	};
 
@@ -5622,6 +6044,13 @@ async function initSalesInvoicesPage() {
 			}
 		} else {
 			editingSiIdx = -1;
+		}
+		if (editingSiIdx >= 0) {
+			currentSubmitTxnId = '';
+		} else {
+			const draft = getModalDraft(entity);
+			const draftTxn = draft && typeof draft.__txnId === 'string' ? draft.__txnId.trim() : '';
+			currentSubmitTxnId = draftTxn || generateClientTxnId(entity);
 		}
 		if (modalTitle) modalTitle.textContent = editingSiIdx >= 0 ? config.title.replace('Add', 'Edit') : config.title;
 		if (modalFieldsEl) {
@@ -5752,7 +6181,14 @@ async function initSalesInvoicesPage() {
 		modalForm.addEventListener('submit', (event) => {
 			event.preventDefault();
 			if (!currentEntity) return;
+			if (siSubmitInFlight) return;
 			if (!validateModalRequiredFields()) return;
+			siSubmitInFlight = true;
+			const finalizeSubmit = () => { siSubmitInFlight = false; };
+			const submitTxnId = editingSiIdx >= 0 ? '' : (currentSubmitTxnId || generateClientTxnId(currentEntity));
+			if (editingSiIdx < 0) currentSubmitTxnId = submitTxnId;
+
+			try {
 
 			if (currentEntity === 'invoice') {
 				const customer = getValue('customer');
@@ -5781,6 +6217,7 @@ async function initSalesInvoicesPage() {
 					deliveryFee: 0,
 					createdAt: new Date().toISOString(),
 					updatedAt: new Date().toISOString(),
+					...(submitTxnId ? { clientTxnId: submitTxnId, idempotencyKey: submitTxnId } : {}),
 				};
 				invData.rate = invData.items[0].unitPrice;
 				invData.amount = invData.items[0].qty * invData.items[0].unitPrice;
@@ -5797,12 +6234,19 @@ async function initSalesInvoicesPage() {
 					Object.assign(salesModuleData.invoices[editingSiIdx], invData);
 					savedInvoice = salesModuleData.invoices[editingSiIdx];
 				} else {
-					invData.id = nextInvoiceId();
-					unmarkSalesDeletion(currentSalesMonth, 'invoice', invData.id);
-					unmarkSalesDeletion(currentSalesMonth, 'order', `SO${String(invData.id).slice(3)}`);
-					if (!invData.createdAt) invData.createdAt = new Date().toISOString();
-					salesModuleData.invoices.push(invData);
-					savedInvoice = invData;
+					const existingByTxn = submitTxnId
+						? salesModuleData.invoices.find((inv) => String(inv?.clientTxnId || '') === String(submitTxnId))
+						: null;
+					if (existingByTxn) {
+						savedInvoice = existingByTxn;
+					} else {
+						invData.id = nextInvoiceId();
+						unmarkSalesDeletion(currentSalesMonth, 'invoice', invData.id);
+						unmarkSalesDeletion(currentSalesMonth, 'order', `SO${String(invData.id).slice(3)}`);
+						if (!invData.createdAt) invData.createdAt = new Date().toISOString();
+						salesModuleData.invoices.push(invData);
+						savedInvoice = invData;
+					}
 				}
 				upsertSalesOrderFromInvoice(savedInvoice);
 			}
@@ -5828,6 +6272,7 @@ async function initSalesInvoicesPage() {
 					status: chosenStatus,
 					requestedStatus: undefined,
 					updatedAt: new Date().toISOString(),
+					...(submitTxnId ? { clientTxnId: submitTxnId, idempotencyKey: submitTxnId } : {}),
 				};
 				if (editingSiIdx >= 0 && salesModuleData.salesOrders[editingSiIdx]) {
 					Object.assign(salesModuleData.salesOrders[editingSiIdx], ordData);
@@ -5856,6 +6301,18 @@ async function initSalesInvoicesPage() {
 						linkedInvoice.updatedAt = ordData.updatedAt;
 					}
 				} else {
+					const existingOrderByTxn = submitTxnId
+						? salesModuleData.salesOrders.find((ord) => String(ord?.clientTxnId || '') === String(submitTxnId))
+						: null;
+					if (existingOrderByTxn) {
+						saveSalesDataToStorage();
+						const savedEntity = currentEntity;
+						clearModalDraft(savedEntity);
+						closeModal(true); // skip draft re-save — we just submitted successfully
+						clearModalDraft(savedEntity);
+						renderSalesPage();
+						return;
+					}
 					const invId = nextInvoiceId();
 					const qty = Number(existingOrder?.bags || 1) || 1;
 					const unitPrice = qty > 0 ? +(ordData.amount / qty).toFixed(2) : ordData.rate;
@@ -5877,6 +6334,7 @@ async function initSalesInvoicesPage() {
 						amount: Number(ordData.amount || 0),
 						createdAt: new Date().toISOString(),
 						updatedAt: ordData.updatedAt,
+						...(submitTxnId ? { clientTxnId: submitTxnId, idempotencyKey: submitTxnId } : {}),
 					};
 					ordData.id = `SO${String(invId).slice(3)}`;
 					ordData.sourceInvoiceId = invId;
@@ -5894,6 +6352,9 @@ async function initSalesInvoicesPage() {
 			closeModal(true); // skip draft re-save — we just submitted successfully
 			clearModalDraft(savedEntity);
 			renderSalesPage();
+			} finally {
+				finalizeSubmit();
+			}
 		});
 	}
 
@@ -7087,6 +7548,15 @@ function initAccountingPage() {
 	}
 
 	loadAccountingDataFromStorage();
+	const refreshAccountingFromServer = async () => {
+		try {
+			const updated = await loadFromServer('ww_accounting_data_v2');
+			if (updated) {
+				loadAccountingDataFromStorage();
+				renderAccountingPage();
+			}
+		} catch (_e) { /* keep local data when offline */ }
+	};
 	const todayStr = getTodayDateStr();
 
 	/* ---- Modal system ---- */
@@ -7098,8 +7568,8 @@ function initAccountingPage() {
 				{ id: 'desc', label: 'Description', type: 'text', required: true, placeholder: 'e.g. Cash Sale - Customer' },
 				{ id: 'account', label: 'Account', type: 'text', required: true, placeholder: 'e.g. Sales Revenue' },
 				{ id: 'type', label: 'Type', type: 'select', options: ['asset', 'liability', 'equity', 'revenue', 'expense'], required: true },
-				{ id: 'debit', label: 'Debit (GH)', type: 'number', min: '0', step: '0.01' },
-				{ id: 'credit', label: 'Credit (GH)', type: 'number', min: '0', step: '0.01' },
+				{ id: 'debit', label: 'Debit (GH₵)', type: 'number', min: '0', step: '0.01' },
+				{ id: 'credit', label: 'Credit (GH₵)', type: 'number', min: '0', step: '0.01' },
 			],
 		},
 		cashbook: {
@@ -7107,7 +7577,7 @@ function initAccountingPage() {
 			fields: [
 				{ id: 'date', label: 'Date', type: 'date', defaultValue: todayStr, required: true },
 				{ id: 'desc', label: 'Description', type: 'text', required: true, placeholder: 'e.g. Fuel, Packaging, Plumbing' },
-				{ id: 'amount', label: 'Amount (GH)', type: 'number', min: '0', step: '0.01', required: true },
+				{ id: 'amount', label: 'Amount (GH₵)', type: 'number', min: '0', step: '0.01', required: true },
 			],
 		},
 		account: {
@@ -7115,7 +7585,7 @@ function initAccountingPage() {
 			fields: [
 				{ id: 'category', label: 'Category', type: 'select', options: ['Assets', 'Liabilities', 'Equity', 'Revenue', 'Expenses'], required: true },
 				{ id: 'name', label: 'Account Name', type: 'text', required: true, placeholder: 'e.g. Bank, Inventory' },
-				{ id: 'value', label: 'Balance (GH)', type: 'number', min: '0', step: '0.01', required: true },
+				{ id: 'value', label: 'Balance (GH₵)', type: 'number', min: '0', step: '0.01', required: true },
 			],
 		},
 		currency: {
@@ -7123,7 +7593,7 @@ function initAccountingPage() {
 			fields: [
 				{ id: 'code', label: 'Currency Code', type: 'text', required: true, placeholder: 'e.g. USD' },
 				{ id: 'name', label: 'Currency Name', type: 'text', required: true, placeholder: 'e.g. US Dollar' },
-				{ id: 'rate', label: 'Rate to GHS', type: 'number', min: '0', step: '0.01', required: true, placeholder: '1 unit = ? GHS' },
+				{ id: 'rate', label: 'Rate to GH₵', type: 'number', min: '0', step: '0.01', required: true, placeholder: '1 unit = ? GH₵' },
 			],
 		},
 		salary: {
@@ -7132,7 +7602,7 @@ function initAccountingPage() {
 				{ id: 'date', label: 'Date Paid', type: 'date', defaultValue: todayStr, required: true },
 				{ id: 'employee', label: 'Employee Name', type: 'text', required: true, placeholder: 'e.g. Ernest Boateng' },
 				{ id: 'month', label: 'Month', type: 'month', required: true, defaultValue: todayStr.slice(0, 7) },
-				{ id: 'amount', label: 'Amount (GH)', type: 'number', min: '0', step: '0.01', required: true },
+				{ id: 'amount', label: 'Amount (GH₵)', type: 'number', min: '0', step: '0.01', required: true },
 				{ id: 'note1', label: 'Note 1', type: 'text', placeholder: 'e.g. Deductions' },
 				{ id: 'note2', label: 'Note 2', type: 'text', placeholder: '' },
 				{ id: 'note3', label: 'Note 3', type: 'text', placeholder: '' },
@@ -7146,7 +7616,7 @@ function initAccountingPage() {
 				{ id: 'date', label: 'Date', type: 'date', defaultValue: todayStr, required: true },
 				{ id: 'name', label: 'Asset Name', type: 'text', required: true, placeholder: 'e.g. Salaries & Wages - Week 1' },
 				{ id: 'category', label: 'Category', type: 'select', options: ['Salaries & Wages', 'Equipment', 'Vehicles', 'Property', 'Inventory', 'Furniture', 'Other'], required: true },
-				{ id: 'value', label: 'Value (GH)', type: 'number', min: '0', step: '0.01', required: true },
+				{ id: 'value', label: 'Value (GH₵)', type: 'number', min: '0', step: '0.01', required: true },
 				{ id: 'note', label: 'Notes', type: 'text', placeholder: 'e.g. Week 1 payroll' },
 			],
 		},
@@ -7211,6 +7681,26 @@ function initAccountingPage() {
 
 	let currentSalaryMonth = null;
 	let currentSalaryEmployee = '__all_workers__';
+	let currentExpensePeriod = null;
+	const ACCOUNTING_EXPENSE_PERIOD_MIN_MONTH = '2026-03';
+	let taxRecords = [];
+	let taxEditingId = null;
+	const EXPENSE_BREAKDOWN_ORDER = ['Salaries', 'Raw Materials', 'Electricity', 'Water Supply', 'Maintenance', 'Supplies', 'Other'];
+	const EXPENSE_BREAKDOWN_COLORS = ['#0077b6', '#22c55e', '#f59e0b', '#0ea5e9', '#ef4444', '#8b5cf6', '#64748b', '#14b8a6', '#f97316', '#334155'];
+	const toTitleCase = (value) => String(value || '').trim().toLowerCase().replace(/\b\w/g, (m) => m.toUpperCase());
+	function normalizeExpenseCategory(rawCategory) {
+		const raw = String(rawCategory || '').trim();
+		if (!raw) return 'Other';
+		const lower = raw.toLowerCase();
+		if (lower.includes('salary') || lower.includes('wage') || lower.includes('payroll')) return 'Salaries';
+		if (lower.includes('raw material') || lower.includes('material') || lower.includes('packaging')) return 'Raw Materials';
+		if (lower.includes('electric') || lower.includes('power') || lower.includes('ecg')) return 'Electricity';
+		if (lower.includes('water')) return 'Water Supply';
+		if (lower.includes('maint') || lower.includes('repair') || lower.includes('servic')) return 'Maintenance';
+		if (lower.includes('supply') || lower.includes('office')) return 'Supplies';
+		if (lower === 'production') return 'Raw Materials';
+		return toTitleCase(raw);
+	}
 	const ledgerCollapseStorageKey = 'ww_accounting_ledger_months_collapsed';
 	const loadCollapsedLedgerMonths = () => {
 		try {
@@ -7243,6 +7733,199 @@ function initAccountingPage() {
 	let collapsedCashbookMonths = loadCollapsedCashbookMonths();
 
 	const CURRENCY_ICONS = { USD: 'fa-solid fa-dollar-sign', GBP: 'fa-solid fa-sterling-sign', EUR: 'fa-solid fa-euro-sign' };
+
+	const taxModal = document.getElementById('tax-record-modal');
+	const taxModalTitle = document.getElementById('tax-modal-title');
+	const taxInputType = document.getElementById('tax-input-type');
+	const taxInputPeriod = document.getElementById('tax-input-period');
+	const taxInputAmount = document.getElementById('tax-input-amount');
+	const taxInputDueDate = document.getElementById('tax-input-duedate');
+	const taxPaidDateGroup = document.getElementById('tax-paiddate-group');
+	const taxInputPaidDate = document.getElementById('tax-input-paiddate');
+	const taxSummaryTotalDue = document.getElementById('tax-summary-total-due');
+	const taxSummaryOverdue = document.getElementById('tax-summary-overdue');
+	const taxSummaryPaidMonth = document.getElementById('tax-summary-paid-month');
+
+	const taxStatusClass = (status) => {
+		if (status === 'Paid') return 'tax-status tax-status-paid';
+		if (status === 'Overdue') return 'tax-status tax-status-overdue';
+		return 'tax-status tax-status-pending';
+	};
+
+	const taxDateLabel = (value) => {
+		const text = String(value || '').trim();
+		if (!text) return '—';
+		const date = new Date(text);
+		if (Number.isNaN(date.getTime())) return text;
+		return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+	};
+
+	const taxParseDateOnly = (value) => {
+		const text = String(value || '').trim();
+		if (!text) return null;
+		const date = new Date(text + 'T00:00:00');
+		return Number.isNaN(date.getTime()) ? null : date;
+	};
+
+	const taxRenderSummary = () => {
+		if (!taxSummaryTotalDue || !taxSummaryOverdue || !taxSummaryPaidMonth) return;
+		const now = new Date();
+		const nowMonth = now.getMonth();
+		const nowYear = now.getFullYear();
+		let totalDue = 0;
+		let overdueCount = 0;
+		let paidThisMonth = 0;
+
+		taxRecords.forEach((record) => {
+			const amount = Number(record && record.amount || 0);
+			const status = String(record && record.status || 'Pending');
+			if ((status === 'Pending' || status === 'Overdue') && Number.isFinite(amount)) {
+				totalDue += amount;
+			}
+			if (status === 'Overdue') overdueCount += 1;
+			const paidDate = taxParseDateOnly(record && record.paidDate);
+			if (paidDate && paidDate.getMonth() === nowMonth && paidDate.getFullYear() === nowYear && Number.isFinite(amount)) {
+				paidThisMonth += amount;
+			}
+		});
+
+		taxSummaryTotalDue.textContent = formatCurrency(totalDue);
+		taxSummaryOverdue.textContent = String(overdueCount);
+		taxSummaryPaidMonth.textContent = formatCurrency(paidThisMonth);
+	};
+
+	const taxCloseModal = () => {
+		if (taxModal) taxModal.style.display = 'none';
+		taxEditingId = null;
+		if (taxModalTitle) taxModalTitle.textContent = 'Record Tax Payment';
+		if (taxInputType) { taxInputType.disabled = false; taxInputType.value = 'VAT'; }
+		if (taxInputPeriod) { taxInputPeriod.disabled = false; taxInputPeriod.value = ''; }
+		if (taxInputAmount) { taxInputAmount.disabled = false; taxInputAmount.value = ''; }
+		if (taxInputDueDate) { taxInputDueDate.disabled = false; taxInputDueDate.value = ''; }
+		if (taxInputPaidDate) taxInputPaidDate.value = '';
+		if (taxPaidDateGroup) taxPaidDateGroup.style.display = 'none';
+	};
+
+	const taxOpenCreateModal = () => {
+		taxEditingId = null;
+		if (taxModalTitle) taxModalTitle.textContent = 'Record Tax Payment';
+		if (taxPaidDateGroup) taxPaidDateGroup.style.display = 'none';
+		if (taxInputType) { taxInputType.disabled = false; taxInputType.value = 'VAT'; }
+		if (taxInputPeriod) { taxInputPeriod.disabled = false; taxInputPeriod.value = ''; }
+		if (taxInputAmount) { taxInputAmount.disabled = false; taxInputAmount.value = ''; }
+		if (taxInputDueDate) { taxInputDueDate.disabled = false; taxInputDueDate.value = ''; }
+		if (taxInputPaidDate) taxInputPaidDate.value = '';
+		if (taxModal) taxModal.style.display = 'flex';
+	};
+
+	const taxOpenMarkPaidModal = (taxId) => {
+		const record = taxRecords.find((r) => String(r.taxId || '') === String(taxId || ''));
+		if (!record) return;
+		taxEditingId = record.taxId;
+		if (taxModalTitle) taxModalTitle.textContent = `Mark ${record.taxId} as Paid`;
+		if (taxInputType) { taxInputType.disabled = true; taxInputType.value = record.type || 'Other'; }
+		if (taxInputPeriod) { taxInputPeriod.disabled = true; taxInputPeriod.value = record.period || ''; }
+		if (taxInputAmount) { taxInputAmount.disabled = true; taxInputAmount.value = Number(record.amount || 0); }
+		if (taxInputDueDate) {
+			taxInputDueDate.disabled = true;
+			taxInputDueDate.value = String(record.dueDate || '').slice(0, 10);
+		}
+		if (taxPaidDateGroup) taxPaidDateGroup.style.display = 'block';
+		if (taxInputPaidDate) taxInputPaidDate.value = new Date().toISOString().slice(0, 10);
+		if (taxModal) taxModal.style.display = 'flex';
+	};
+
+	const taxRenderTable = () => {
+		const tbody = document.getElementById('tax-records-tbody');
+		const emptyState = document.getElementById('tax-empty-state');
+		if (!tbody || !emptyState) return;
+		taxRenderSummary();
+		if (!taxRecords.length) {
+			tbody.innerHTML = '';
+			emptyState.style.display = 'block';
+			return;
+		}
+		emptyState.style.display = 'none';
+		tbody.innerHTML = taxRecords.map((record) => {
+			const markPaidBtn = record.status === 'Paid'
+				? ''
+				: `<button type="button" class="tax-mark-paid-btn" data-tax-action="mark-paid" data-tax-id="${escapeHtml(record.taxId || '')}">Mark Paid</button>`;
+			return `
+				<tr>
+					<td data-label="Tax ID">${escapeHtml(record.taxId || '')}</td>
+					<td data-label="Type">${escapeHtml(record.type || '')}</td>
+					<td data-label="Period">${escapeHtml(record.period || '')}</td>
+					<td data-label="Amount">${formatCurrency(Number(record.amount || 0))}</td>
+					<td data-label="Due Date">${escapeHtml(taxDateLabel(record.dueDate))}</td>
+					<td data-label="Paid Date">${escapeHtml(taxDateLabel(record.paidDate))}</td>
+					<td data-label="Status"><span class="${taxStatusClass(record.status)}">${escapeHtml(record.status || 'Pending')}</span></td>
+					<td data-label="Actions">${markPaidBtn}</td>
+				</tr>
+			`;
+		}).join('');
+	};
+
+	const taxLoadRecords = async () => {
+		try {
+			const res = await fetch(API_BASE + '/api/tax-records', { credentials: 'include', cache: 'no-store' });
+			if (!res.ok) throw new Error('Failed to load tax records');
+			const payload = await res.json();
+			taxRecords = Array.isArray(payload.records) ? payload.records : [];
+			taxRenderTable();
+		} catch (_error) {
+			taxRecords = [];
+			taxRenderTable();
+		}
+	};
+
+	const taxSubmitRecord = async () => {
+		const submitBtn = document.getElementById('tax-submit-btn');
+		if (submitBtn) {
+			submitBtn.disabled = true;
+			submitBtn.textContent = 'Saving...';
+		}
+		try {
+			if (taxEditingId) {
+				const paidDate = String(taxInputPaidDate && taxInputPaidDate.value || '').trim();
+				if (!paidDate) {
+					alert('Please select a paid date.');
+					return;
+				}
+				const res = await fetch(API_BASE + '/api/tax-records/' + encodeURIComponent(taxEditingId), {
+					method: 'PATCH',
+					credentials: 'include',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ paidDate }),
+				});
+				if (!res.ok) throw new Error('Could not update tax record');
+			} else {
+				const type = String(taxInputType && taxInputType.value || '').trim();
+				const period = String(taxInputPeriod && taxInputPeriod.value || '').trim();
+				const amount = Number(taxInputAmount && taxInputAmount.value || 0);
+				const dueDate = String(taxInputDueDate && taxInputDueDate.value || '').trim();
+				if (!type || !period || !dueDate || !(amount > 0)) {
+					alert('Please fill Type, Period, Amount, and Due Date.');
+					return;
+				}
+				const res = await fetch(API_BASE + '/api/tax-records', {
+					method: 'POST',
+					credentials: 'include',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ type, period, amount, dueDate }),
+				});
+				if (!res.ok) throw new Error('Could not create tax record');
+			}
+			taxCloseModal();
+			await taxLoadRecords();
+		} catch (_error) {
+			alert('Could not save tax record.');
+		} finally {
+			if (submitBtn) {
+				submitBtn.disabled = false;
+				submitBtn.textContent = 'Save';
+			}
+		}
+	};
 
 	const addModal = document.getElementById('acc-add-modal');
 	const modalTitle = document.getElementById('acc-modal-title');
@@ -7494,9 +8177,9 @@ function initAccountingPage() {
 			sd.dept ? `Dept: ${sd.dept}` : null,
 			sd.position ? `Position: ${sd.position}` : null,
 			sd.id ? `ID: ${sd.id}` : null,
-			`Gross: GHS ${fmt2(sd.gross)}`,
-			sd.totalAllowances > 0 ? `Allowances: GHS ${fmt2(sd.totalAllowances)}` : null,
-			`Deductions: GHS ${fmt2(sd.totalDeductions)}`,
+			`Gross: GH₵ ${fmt2(sd.gross)}`,
+			sd.totalAllowances > 0 ? `Allowances: GH₵ ${fmt2(sd.totalAllowances)}` : null,
+			`Deductions: GH₵ ${fmt2(sd.totalDeductions)}`,
 		].filter(Boolean);
 		const userExtra = (extraNotes || []).filter((n) => n && !/^(Dept:|Position:|ID:|Gross:|Allowances:|Deductions:)/.test(n));
 		return [...autoNotes, ...userExtra];
@@ -7562,6 +8245,11 @@ function initAccountingPage() {
 	document.getElementById('acc-modal-close')?.addEventListener('click', closeModal);
 	document.getElementById('acc-modal-cancel')?.addEventListener('click', closeModal);
 	addModal?.addEventListener('click', (e) => { if (e.target === addModal) closeModal(); });
+	document.getElementById('tax-add-btn')?.addEventListener('click', taxOpenCreateModal);
+	document.getElementById('tax-modal-close')?.addEventListener('click', taxCloseModal);
+	document.getElementById('tax-cancel-btn')?.addEventListener('click', taxCloseModal);
+	document.getElementById('tax-submit-btn')?.addEventListener('click', taxSubmitRecord);
+	taxModal?.addEventListener('click', (e) => { if (e.target === taxModal) taxCloseModal(); });
 
 	const getValue = (id) => { const el = document.getElementById(`acc-field-${id}`); return el ? el.value.trim() : ''; };
 	const getNum = (id) => { const v = Number(getValue(id)); return Number.isFinite(v) && v >= 0 ? v : 0; };
@@ -7698,6 +8386,13 @@ function initAccountingPage() {
 	}
 
 	document.addEventListener('click', (event) => {
+		const taxMarkBtn = event.target.closest('[data-tax-action="mark-paid"][data-tax-id]');
+		if (taxMarkBtn) {
+			event.stopPropagation();
+			taxOpenMarkPaidModal(taxMarkBtn.getAttribute('data-tax-id'));
+			return;
+		}
+
 		const btn = event.target.closest('.acc-add-btn[data-add-entity]');
 		if (btn) { openModal(btn.getAttribute('data-add-entity'), undefined, false); return; }
 		const resumeDraftBtn = event.target.closest('.acc-resume-draft-btn[data-draft-entity]');
@@ -7828,6 +8523,51 @@ function initAccountingPage() {
 			const total = grouped[c].reduce((sum, a) => sum + a.value, 0);
 			return { category: c, accounts: grouped[c], total };
 		});
+
+		const expensePeriods = [...new Set(
+			ledger
+				.filter((entry) => String(entry.type || '').toLowerCase() === 'expense' && /^\d{4}-\d{2}-\d{2}$/.test(String(entry.date || '')))
+				.map((entry) => String(entry.date).slice(0, 7))
+				.filter((period) => period >= ACCOUNTING_EXPENSE_PERIOD_MIN_MONTH)
+		)].sort();
+		if (!currentExpensePeriod) currentExpensePeriod = expensePeriods[expensePeriods.length - 1] || '__all__';
+		if (currentExpensePeriod !== '__all__' && !expensePeriods.includes(currentExpensePeriod)) {
+			currentExpensePeriod = expensePeriods[expensePeriods.length - 1] || '__all__';
+		}
+
+		const filteredExpenseEntries = ledger.filter((entry) => {
+			if (String(entry.type || '').toLowerCase() !== 'expense') return false;
+			const date = String(entry.date || '').trim();
+			if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+			if (date.slice(0, 7) < ACCOUNTING_EXPENSE_PERIOD_MIN_MONTH) return false;
+			if (currentExpensePeriod === '__all__') return true;
+			return date.slice(0, 7) === currentExpensePeriod;
+		});
+		const expenseCategoryTotals = new Map(EXPENSE_BREAKDOWN_ORDER.map((category) => [category, 0]));
+		filteredExpenseEntries.forEach((entry) => {
+			const category = normalizeExpenseCategory(entry.account || entry.desc || 'Other');
+			const amount = Number(entry.debit || 0) - Number(entry.credit || 0);
+			if (!Number.isFinite(amount) || Math.abs(amount) < 0.005) return;
+			expenseCategoryTotals.set(category, (expenseCategoryTotals.get(category) || 0) + amount);
+		});
+		const expenseBreakdownRows = [...expenseCategoryTotals.entries()]
+			.map(([category, amount]) => ({ category, amount }))
+			.sort((a, b) => {
+				const aIdx = EXPENSE_BREAKDOWN_ORDER.indexOf(a.category);
+				const bIdx = EXPENSE_BREAKDOWN_ORDER.indexOf(b.category);
+				if (aIdx !== -1 || bIdx !== -1) {
+					if (aIdx === -1) return 1;
+					if (bIdx === -1) return -1;
+					if (aIdx !== bIdx) return aIdx - bIdx;
+				}
+				return b.amount - a.amount;
+			});
+		const expenseBreakdownTotal = expenseBreakdownRows.reduce((sum, row) => sum + row.amount, 0);
+		expenseBreakdownRows.forEach((row, idx) => {
+			row.percent = expenseBreakdownTotal > 0 ? (row.amount / expenseBreakdownTotal) * 100 : 0;
+			row.color = EXPENSE_BREAKDOWN_COLORS[idx % EXPENSE_BREAKDOWN_COLORS.length];
+		});
+		const chartExpenseRows = expenseBreakdownRows.filter((row) => row.amount > 0.004);
 
 		/* Stats — auto-computed from all sheets */
 		const totalDebits = ledger.reduce((s, e) => s + (e.debit || 0), 0);
@@ -8023,6 +8763,102 @@ function initAccountingPage() {
 				}).join('');
 		}
 
+		const expensePeriodSelect = document.getElementById('acc-expense-period-select');
+		const expenseChartHost = document.getElementById('acc-expense-distribution-chart');
+		const expenseCategoryList = document.getElementById('acc-expense-category-list');
+		const expenseTotalValue = document.getElementById('acc-expense-total-value');
+		const expenseCards = document.getElementById('acc-expense-breakdown-cards');
+		if (expensePeriodSelect) {
+			expensePeriodSelect.innerHTML = ['<option value="__all__">All periods</option>']
+				.concat(expensePeriods.map((period) => `<option value="${period}">${monthLabel(period)}</option>`))
+				.join('');
+			expensePeriodSelect.value = currentExpensePeriod;
+			if (!expensePeriodSelect.dataset.bound) {
+				expensePeriodSelect.dataset.bound = '1';
+				expensePeriodSelect.addEventListener('change', () => {
+					currentExpensePeriod = expensePeriodSelect.value || '__all__';
+					renderAccountingPage();
+				});
+			}
+		}
+		if (expenseTotalValue) {
+			expenseTotalValue.textContent = formatCurrency(expenseBreakdownTotal);
+		}
+		if (expenseCategoryList) {
+			expenseCategoryList.innerHTML = expenseBreakdownRows.map((row) => `
+				<div class="expense-category-item">
+					<div class="expense-category-main">
+						<span class="pie-swatch" style="background:${row.color}"></span>
+						<div class="expense-category-labels">
+							<span class="expense-category-name">${escapeHtml(row.category)}</span>
+							<span class="expense-category-meta">${row.percent.toFixed(1)}% of total expenses</span>
+						</div>
+					</div>
+					<div class="expense-category-values">
+						<span class="expense-category-amount">${formatCurrency(row.amount)}</span>
+						<span class="expense-category-percent">${row.percent.toFixed(1)}%</span>
+					</div>
+				</div>
+			`).join('');
+		}
+		if (expenseCards) {
+			expenseCards.innerHTML = expenseBreakdownRows.map((row) => `
+				<article class="expense-detail-card">
+					<div class="expense-detail-top">
+						<span class="pie-swatch" style="background:${row.color}"></span>
+						<span class="expense-detail-name">${escapeHtml(row.category)}</span>
+					</div>
+					<p class="expense-detail-amount">${formatCurrency(row.amount)}</p>
+					<p class="expense-detail-percent">${row.percent.toFixed(1)}% of total expenses</p>
+				</article>
+			`).join('');
+		}
+		if (expenseChartHost) {
+			if (window.__accExpenseChart) {
+				window.__accExpenseChart.destroy();
+				window.__accExpenseChart = null;
+			}
+			if (!chartExpenseRows.length) {
+				expenseChartHost.innerHTML = `<div class="expense-chart-empty">No expense distribution available for ${currentExpensePeriod === '__all__' ? 'the selected periods' : monthLabel(currentExpensePeriod)}.</div>`;
+			} else if (typeof Chart === 'undefined') {
+				expenseChartHost.innerHTML = `<div class="expense-chart-empty">Chart library unavailable. Expense totals are shown in the list and cards.</div>`;
+			} else {
+				expenseChartHost.innerHTML = '<canvas id="acc-expense-chart-canvas" aria-label="Expense Distribution pie chart"></canvas>';
+				const expenseCanvas = document.getElementById('acc-expense-chart-canvas');
+				if (expenseCanvas) {
+					window.__accExpenseChart = new Chart(expenseCanvas, {
+						type: 'pie',
+						data: {
+							labels: chartExpenseRows.map((row) => row.category),
+							datasets: [{
+								data: chartExpenseRows.map((row) => Number(row.amount.toFixed(2))),
+								backgroundColor: chartExpenseRows.map((row) => row.color),
+								borderColor: '#ffffff',
+								borderWidth: 2,
+								hoverOffset: 8,
+							}],
+						},
+						options: {
+							responsive: true,
+							maintainAspectRatio: false,
+							plugins: {
+								legend: { display: false },
+								tooltip: {
+									callbacks: {
+										label: (ctx) => {
+											const amount = Number(ctx.parsed || 0);
+											const percent = expenseBreakdownTotal > 0 ? (amount / expenseBreakdownTotal) * 100 : 0;
+											return `${ctx.label}: ${formatCurrency(amount)} (${percent.toFixed(1)}%)`;
+										},
+									},
+								},
+							},
+						},
+					});
+				}
+			}
+		}
+
 		/* Multi-Currency */
 		const currencyGrid = document.getElementById('currency-grid');
 		if (currencyGrid) {
@@ -8031,9 +8867,11 @@ function initAccountingPage() {
 				: currencies.map((cur) => {
 					const sample = cur.rate > 0 ? (100 / cur.rate).toFixed(2) : '0.00';
 					const icon = CURRENCY_ICONS[cur.code] || 'fa-solid fa-coins';
-					return `<div class="currency-card"><div class="cur-top"><div class="cur-left"><span class="cur-globe"><i class="fa-solid fa-globe"></i></span><div><p class="cur-code">${cur.code}</p><p class="cur-name">${cur.name}</p></div></div><span class="cur-symbol"><i class="${icon}"></i></span></div><p class="cur-rate">1 ${cur.code} = ${cur.rate.toFixed(2)} GHS</p><p class="cur-sample">100 GHS ≈ ${sample} ${cur.code}</p></div>`;
+					return `<div class="currency-card"><div class="cur-top"><div class="cur-left"><span class="cur-globe"><i class="fa-solid fa-globe"></i></span><div><p class="cur-code">${cur.code}</p><p class="cur-name">${cur.name}</p></div></div><span class="cur-symbol"><i class="${icon}"></i></span></div><p class="cur-rate">1 ${cur.code} = ${cur.rate.toFixed(2)} GH₵</p><p class="cur-sample">100 GH₵ ≈ ${sample} ${cur.code}</p></div>`;
 				}).join('');
 		}
+
+		taxRenderTable();
 
 		/* Assets Sheet */
 		const assetsArr = accountingData.assets;
@@ -8233,7 +9071,7 @@ function initAccountingPage() {
 			// ── Full salary-slip printout (May 2026+) ───────────────────
 			const origin = window.location.origin;
 			const logoUrl = `${origin}/images/New%20Logo.jpeg`;
-			const fmtGHS = (n) => 'GHS ' + Number(n).toLocaleString('en-GH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+			const fmtGHS = (n) => 'GH₵ ' + Number(n).toLocaleString('en-GH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 			const slipSections = [...selectedWorkers].sort((a, b) => a.localeCompare(b)).map((worker, idx) => {
 				const rec = selectedRows.find((r) => r.employee === worker) || {};
@@ -8269,15 +9107,15 @@ function initAccountingPage() {
 					allowHtml = (sd.allowances && sd.allowances.length > 0 && allowTotal > 0) ? `
 						<table class="sp-table">
 							<tr class="sp-sec-hdr"><td colspan="3">Allowances</td></tr>
-							<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GHS)</td></tr>
+							<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GH₵)</td></tr>
 							${buildRows(sd.allowances, false)}
 							<tr class="sp-total"><td colspan="2">Total Allowances</td><td class="sp-r">${fmtGHS(allowTotal)}</td></tr>
 						</table>` : '';
 				} else {
 					// Older records saved without slipData — fall back to summary totals
-					const grossStr = getNoteVal('Gross: GHS ');
-					const allowStr = getNoteVal('Allowances: GHS ');
-					const dedStr   = getNoteVal('Deductions: GHS ');
+					const grossStr = getNoteVal('Gross: GH₵ ') || getNoteVal('Gross: GHS ');
+					const allowStr = getNoteVal('Allowances: GH₵ ') || getNoteVal('Allowances: GHS ');
+					const dedStr   = getNoteVal('Deductions: GH₵ ') || getNoteVal('Deductions: GHS ');
 					grossTotal = parseFloat((grossStr || '0').replace(/,/g, '')) || 0;
 					allowTotal = parseFloat((allowStr || '0').replace(/,/g, '')) || 0;
 					dedTotal   = parseFloat((dedStr   || '0').replace(/,/g, '')) || 0;
@@ -8286,7 +9124,7 @@ function initAccountingPage() {
 					allowHtml = allowTotal > 0 ? `
 						<table class="sp-table">
 							<tr class="sp-sec-hdr"><td colspan="3">Allowances</td></tr>
-							<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GHS)</td></tr>
+							<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GH₵)</td></tr>
 							<tr class="sp-row"><td>Total Allowances</td><td class="sp-rate">\u2014</td><td class="sp-r">${fmtGHS(allowTotal)}</td></tr>
 							<tr class="sp-total"><td colspan="2">Total Allowances</td><td class="sp-r">${fmtGHS(allowTotal)}</td></tr>
 						</table>` : '';
@@ -8321,14 +9159,14 @@ function initAccountingPage() {
 					</div>
 					<table class="sp-table">
 						<tr class="sp-sec-hdr"><td colspan="3">Earnings</td></tr>
-						<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GHS)</td></tr>
+						<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GH₵)</td></tr>
 						${earningsHtml}
 						<tr class="sp-total"><td colspan="2">Total Gross Pay</td><td class="sp-r">${fmtGHS(grossTotal)}</td></tr>
 					</table>
 					${allowHtml}
 					<table class="sp-table">
 						<tr class="sp-sec-hdr"><td colspan="3">Deductions</td></tr>
-						<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GHS)</td></tr>
+						<tr class="sp-col-hdr"><td>Description</td><td class="sp-rate">Rate</td><td class="sp-r">Amount (GH₵)</td></tr>
 						${deductHtml}
 						<tr class="sp-total"><td colspan="2">Total Deductions</td><td class="sp-r sp-deduct">${fmtGHS(dedTotal)}</td></tr>
 					</table>
@@ -8417,7 +9255,7 @@ function initAccountingPage() {
 						<div class="worker-total">Total: ${formatCurrency(workerTotal)}</div>
 					</div>
 					<table>
-						<thead><tr><th>Date Paid</th><th>Month</th><th>Amount (GH)</th><th>Notes</th></tr></thead>
+						<thead><tr><th>Date Paid</th><th>Month</th><th>Amount (GH₵)</th><th>Notes</th></tr></thead>
 						<tbody>${bodyRows}<tr><td colspan="2" style="text-align:right;font-weight:700;">Total</td><td style="text-align:right;font-weight:700;">${formatCurrency(workerTotal)}</td><td></td></tr></tbody>
 					</table>
 				</section>
@@ -8491,6 +9329,8 @@ function initAccountingPage() {
 	}
 
 	renderAccountingPage();
+	taxLoadRecords();
+	refreshAccountingFromServer();
 
 	if (!window.__wwAccountingSyncBound) {
 		window.__wwAccountingSyncBound = true;
@@ -8513,6 +9353,429 @@ function initAccountingPage() {
 	}
 	document.addEventListener('ww-refresh-page', renderAccountingPage);
 }
+
+	function initVaultPage() {
+		if (document.body.getAttribute('data-page') !== 'vault') {
+			return;
+		}
+
+		const sectionTabs = [...document.querySelectorAll('.rv-tab[data-rv-section]')];
+		const searchEl = document.getElementById('rv-search');
+		const categoryEl = document.getElementById('rv-category-filter');
+		const dateFromEl = document.getElementById('rv-date-from');
+		const dateToEl = document.getElementById('rv-date-to');
+		const viewGridBtn = document.getElementById('rv-view-grid');
+		const viewListBtn = document.getElementById('rv-view-list');
+		const uploadOpenBtn = document.getElementById('rv-upload-open-btn');
+		const fileContainer = document.getElementById('rv-file-container');
+		const emptyState = document.getElementById('rv-empty-state');
+
+		const uploadModal = document.getElementById('rv-upload-modal');
+		const uploadModalClose = document.getElementById('rv-modal-close');
+		const uploadModalCancel = document.getElementById('rv-upload-cancel-btn');
+		const uploadSubmitBtn = document.getElementById('rv-upload-submit-btn');
+		const dropzone = document.getElementById('rv-dropzone');
+		const fileInput = document.getElementById('rv-file-input');
+		const selectedFileEl = document.getElementById('rv-selected-file');
+		const uploadCategoryEl = document.getElementById('rv-upload-category');
+		const uploadFileNameEl = document.getElementById('rv-upload-file-name');
+		const uploadAmountEl = document.getElementById('rv-upload-amount');
+		const uploadDateEl = document.getElementById('rv-upload-date');
+		const uploadNotesEl = document.getElementById('rv-upload-notes');
+		const receiptFieldsWrap = document.getElementById('rv-receipt-fields');
+		const modalTitleEl = document.getElementById('rv-modal-title');
+
+		const viewerModal = document.getElementById('rv-viewer-modal');
+		const viewerCloseBtn = document.getElementById('rv-viewer-close');
+		const viewerTitleEl = document.getElementById('rv-viewer-title');
+		const viewerImage = document.getElementById('rv-viewer-image');
+		const viewerPdf = document.getElementById('rv-viewer-pdf');
+
+		if (!fileContainer || !sectionTabs.length || !categoryEl) return;
+
+		const categoriesBySection = {
+			companyDocuments: ['License', 'Contract', 'Certificate', 'Insurance', 'Other'],
+			receipts: ['Purchase Receipt', 'Utility Payment', 'Salary Payment', 'Other'],
+		};
+
+		let currentSection = 'companyDocuments';
+		const vaultViewStorageKey = 'ww_vault_view_mode';
+		let currentView = (() => {
+			const saved = String(localStorage.getItem(vaultViewStorageKey) || '').trim().toLowerCase();
+			return saved === 'list' ? 'list' : 'grid';
+		})();
+		let files = [];
+		let stagedFile = null;
+		let viewerObjectUrl = '';
+
+		const getPreviewUrl = (fileId) => `${API_BASE}/api/record-vault/${currentSection}/${encodeURIComponent(fileId)}/download`;
+		const getDownloadUrl = (fileId) => `${API_BASE}/api/record-vault/${currentSection}/${encodeURIComponent(fileId)}/download?download=1`;
+
+		const isImageType = (contentType) => ['image/jpeg', 'image/jpg', 'image/png'].includes(String(contentType || '').toLowerCase());
+
+		const revokeViewerObjectUrl = () => {
+			if (!viewerObjectUrl) return;
+			try { URL.revokeObjectURL(viewerObjectUrl); } catch (_e) { /* ignore */ }
+			viewerObjectUrl = '';
+		};
+
+		const closeViewerModal = () => {
+			revokeViewerObjectUrl();
+			if (viewerModal) viewerModal.style.display = 'none';
+			if (viewerTitleEl) viewerTitleEl.textContent = 'Preview';
+			if (viewerImage) {
+				viewerImage.style.display = 'none';
+				viewerImage.removeAttribute('src');
+			}
+			if (viewerPdf) {
+				viewerPdf.style.display = 'none';
+				viewerPdf.removeAttribute('src');
+			}
+		};
+
+		const openViewerModal = async (file) => {
+			if (!file || !viewerModal) return;
+			revokeViewerObjectUrl();
+			const fileName = String(file.fileName || 'Preview').trim() || 'Preview';
+			const previewUrl = getPreviewUrl(file.fileId);
+
+			let blob;
+			try {
+				const response = await fetch(previewUrl, { credentials: 'include', cache: 'no-store' });
+				if (!response.ok) throw new Error(`Open failed (${response.status})`);
+				blob = await response.blob();
+			} catch (_e) {
+				alert('Could not open this file in-app. Please try again.');
+				return;
+			}
+
+			const resolvedType = String(file.contentType || blob.type || '').toLowerCase();
+			const isImage = isImageType(resolvedType);
+			viewerObjectUrl = URL.createObjectURL(blob);
+
+			if (viewerTitleEl) viewerTitleEl.textContent = fileName;
+			if (viewerImage) {
+				viewerImage.style.display = isImage ? 'block' : 'none';
+				if (isImage) {
+					viewerImage.src = viewerObjectUrl;
+					viewerImage.alt = fileName;
+				}
+			}
+			if (viewerPdf) {
+				viewerPdf.style.display = isImage ? 'none' : 'block';
+				if (!isImage) viewerPdf.src = `${viewerObjectUrl}#toolbar=1&navpanes=0&view=FitH`;
+			}
+			viewerModal.style.display = 'flex';
+		};
+
+		const triggerFileDownload = async (file) => {
+			if (!file) return;
+			const downloadUrl = getDownloadUrl(file.fileId);
+			try {
+				const response = await fetch(downloadUrl, { credentials: 'include', cache: 'no-store' });
+				if (!response.ok) throw new Error(`Download failed (${response.status})`);
+				const blob = await response.blob();
+				const objectUrl = URL.createObjectURL(blob);
+				const anchor = document.createElement('a');
+				anchor.href = objectUrl;
+				anchor.download = String(file.storageFileName || file.fileName || 'download').trim() || 'download';
+				document.body.appendChild(anchor);
+				anchor.click();
+				anchor.remove();
+				setTimeout(() => {
+					try { URL.revokeObjectURL(objectUrl); } catch (_e) { /* ignore */ }
+				}, 2000);
+			} catch (_e) {
+				alert('Could not download this file. Please try again.');
+			}
+		};
+
+		const formatBytes = (bytes) => {
+			const value = Number(bytes || 0);
+			if (!Number.isFinite(value) || value <= 0) return '0 KB';
+			if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+			return `${Math.max(1, Math.round(value / 1024))} KB`;
+		};
+
+		const setView = (nextView) => {
+			currentView = nextView === 'list' ? 'list' : 'grid';
+			try { localStorage.setItem(vaultViewStorageKey, currentView); } catch (_e) { /* ignore */ }
+			fileContainer.classList.toggle('is-list', currentView === 'list');
+			if (viewGridBtn) viewGridBtn.classList.toggle('is-active', currentView === 'grid');
+			if (viewListBtn) viewListBtn.classList.toggle('is-active', currentView === 'list');
+		};
+
+		const populateCategories = () => {
+			const categories = categoriesBySection[currentSection] || ['Other'];
+			categoryEl.innerHTML = `<option value="All">All Categories</option>${categories.map((cat) => `<option value="${escapeHtml(cat)}">${escapeHtml(cat)}</option>`).join('')}`;
+			if (uploadCategoryEl) {
+				uploadCategoryEl.innerHTML = categories.map((cat) => `<option value="${escapeHtml(cat)}">${escapeHtml(cat)}</option>`).join('');
+				const preferredDefault = categories.includes('Other') ? 'Other' : (categories[0] || '');
+				if (preferredDefault) uploadCategoryEl.value = preferredDefault;
+			}
+		};
+
+		const renderFiles = () => {
+			if (!files.length) {
+				fileContainer.innerHTML = '';
+				if (emptyState) emptyState.style.display = 'grid';
+				return;
+			}
+			if (emptyState) emptyState.style.display = 'none';
+
+			fileContainer.innerHTML = files.map((file) => {
+				const isImage = isImageType(file.contentType);
+				const fileName = escapeHtml(file.fileName || 'File');
+				const uploadedBy = escapeHtml(file.uploadedBy || 'Unknown');
+				const category = escapeHtml(file.category || 'Other');
+				const dateLabel = formatDateDisplay(String((currentSection === 'receipts' ? (file.date || file.uploadDate) : file.uploadDate) || '').slice(0, 10));
+				const notes = currentSection === 'receipts' && file.notes ? `<div class="rv-card-meta">Notes: ${escapeHtml(file.notes)}</div>` : '';
+				const amount = currentSection === 'receipts' && file.amount ? `<div class="rv-card-meta">Amount: ${escapeHtml(file.amount)}</div>` : '';
+				return `
+					<article class="rv-card" data-rv-file-id="${escapeHtml(file.fileId || '')}">
+						<div class="rv-thumb">
+							${isImage
+								? `<img src="${getPreviewUrl(file.fileId)}" alt="${fileName}" loading="lazy">`
+								: '<i class="fa-regular fa-file-pdf rv-file-icon" aria-hidden="true"></i>'}
+						</div>
+						<div class="rv-card-info">
+							<div class="rv-card-title">${fileName}</div>
+							<div class="rv-card-meta">Category: ${category}</div>
+							<div class="rv-card-meta">Date: ${escapeHtml(dateLabel)}</div>
+							<div class="rv-card-meta">Uploaded by: ${uploadedBy}</div>
+							<div class="rv-card-meta">File size: ${escapeHtml(formatBytes(file.fileSize))}</div>
+							${amount}
+							${notes}
+						</div>
+						<div class="rv-card-actions">
+							<button type="button" class="btn-secondary" data-rv-action="open"><i class="fa-regular fa-eye"></i> Open</button>
+							<button type="button" class="btn-secondary" data-rv-action="download"><i class="fa-solid fa-download"></i> Download</button>
+							<button type="button" class="btn-delete" data-rv-action="delete"><i class="fa-solid fa-trash"></i> Delete</button>
+						</div>
+					</article>
+				`;
+			}).join('');
+		};
+
+		const buildQuery = () => {
+			const params = new URLSearchParams();
+			if (searchEl && searchEl.value.trim()) params.set('search', searchEl.value.trim());
+			if (categoryEl && categoryEl.value && categoryEl.value !== 'All') params.set('category', categoryEl.value);
+			if (dateFromEl && dateFromEl.value) params.set('dateFrom', dateFromEl.value);
+			if (dateToEl && dateToEl.value) params.set('dateTo', dateToEl.value);
+			return params.toString();
+		};
+
+		const loadFiles = async () => {
+			try {
+				const query = buildQuery();
+				const url = `${API_BASE}/api/record-vault/${currentSection}${query ? `?${query}` : ''}`;
+				const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+				if (!res.ok) throw new Error('Failed to load files');
+				const payload = await res.json();
+				files = Array.isArray(payload.files) ? payload.files : [];
+				renderFiles();
+			} catch (_e) {
+				files = [];
+				renderFiles();
+			}
+		};
+
+		const closeUploadModal = () => {
+			if (uploadModal) uploadModal.style.display = 'none';
+			stagedFile = null;
+			if (selectedFileEl) {
+				selectedFileEl.style.display = 'none';
+				selectedFileEl.textContent = '';
+			}
+			if (fileInput) fileInput.value = '';
+			if (uploadCategoryEl) {
+				const categories = categoriesBySection[currentSection] || ['Other'];
+				const preferredDefault = categories.includes('Other') ? 'Other' : (categories[0] || '');
+				if (preferredDefault) uploadCategoryEl.value = preferredDefault;
+			}
+			if (uploadFileNameEl) uploadFileNameEl.value = '';
+			if (uploadAmountEl) uploadAmountEl.value = '';
+			if (uploadDateEl) uploadDateEl.value = '';
+			if (uploadNotesEl) uploadNotesEl.value = '';
+		};
+
+		const openUploadModal = () => {
+			if (modalTitleEl) modalTitleEl.textContent = currentSection === 'companyDocuments' ? 'Upload Company Document' : 'Upload Receipt / Payment';
+			if (receiptFieldsWrap) receiptFieldsWrap.style.display = currentSection === 'receipts' ? 'block' : 'none';
+			if (uploadModal) uploadModal.style.display = 'flex';
+		};
+
+		const stageFile = (file) => {
+			if (!file) return;
+			const allowed = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+			if (!allowed.includes(String(file.type || '').toLowerCase())) {
+				alert('Only PDF, JPG, and PNG files are allowed.');
+				return;
+			}
+			if (Number(file.size || 0) > 15 * 1024 * 1024) {
+				alert('File must be 15MB or smaller.');
+				return;
+			}
+			stagedFile = file;
+			if (uploadFileNameEl && !String(uploadFileNameEl.value || '').trim()) {
+				const nameBase = String(file.name || '').replace(/\.[^/.]+$/, '').trim();
+				const titleCase = String(nameBase || String(file.name || '').trim())
+					.toLowerCase()
+					.replace(/[_-]+/g, ' ')
+					.replace(/\s+/g, ' ')
+					.trim()
+					.replace(/\b\w/g, (m) => m.toUpperCase());
+				uploadFileNameEl.value = titleCase;
+			}
+			if (selectedFileEl) {
+				selectedFileEl.style.display = 'block';
+				selectedFileEl.textContent = `Selected: ${file.name} (${formatBytes(file.size)})`;
+			}
+		};
+
+		const submitUpload = async () => {
+			if (!stagedFile) {
+				alert('Please select a file to upload.');
+				return;
+			}
+			if (uploadSubmitBtn) {
+				uploadSubmitBtn.disabled = true;
+				uploadSubmitBtn.textContent = 'Uploading...';
+			}
+			try {
+				const formData = new FormData();
+				formData.append('file', stagedFile);
+				if (uploadFileNameEl && String(uploadFileNameEl.value || '').trim()) {
+					formData.append('fileName', String(uploadFileNameEl.value || '').trim());
+				}
+				formData.append('category', uploadCategoryEl ? uploadCategoryEl.value : 'Other');
+				formData.append('uploadedBy', (window.__wwCurrentUser && window.__wwCurrentUser.name) || localStorage.getItem('ww_user_name') || 'Unknown');
+				if (currentSection === 'receipts') {
+					formData.append('amount', uploadAmountEl ? uploadAmountEl.value : '');
+					formData.append('date', uploadDateEl ? uploadDateEl.value : '');
+					formData.append('notes', uploadNotesEl ? uploadNotesEl.value : '');
+				}
+				const res = await fetch(`${API_BASE}/api/record-vault/${currentSection}/upload`, {
+					method: 'POST',
+					credentials: 'include',
+					body: formData,
+				});
+				if (!res.ok) {
+					let message = 'Upload failed.';
+					try {
+						const payload = await res.json();
+						if (payload && payload.message) message = String(payload.message);
+					} catch (_jsonErr) {
+						message = `Upload failed (HTTP ${res.status}).`;
+					}
+					throw new Error(message);
+				}
+				closeUploadModal();
+				await loadFiles();
+			} catch (error) {
+				alert(error && error.message ? error.message : 'Upload failed. Please try again.');
+			} finally {
+				if (uploadSubmitBtn) {
+					uploadSubmitBtn.disabled = false;
+					uploadSubmitBtn.textContent = 'Upload';
+				}
+			}
+		};
+
+		sectionTabs.forEach((tab) => {
+			tab.addEventListener('click', () => {
+				const nextSection = tab.getAttribute('data-rv-section') || 'companyDocuments';
+				if (!categoriesBySection[nextSection]) return;
+				currentSection = nextSection;
+				sectionTabs.forEach((btn) => btn.classList.toggle('tab-active', btn === tab));
+				populateCategories();
+				loadFiles();
+			});
+		});
+
+		if (searchEl) searchEl.addEventListener('input', () => loadFiles());
+		if (categoryEl) categoryEl.addEventListener('change', () => loadFiles());
+		if (dateFromEl) dateFromEl.addEventListener('change', () => loadFiles());
+		if (dateToEl) dateToEl.addEventListener('change', () => loadFiles());
+		if (viewGridBtn) viewGridBtn.addEventListener('click', () => setView('grid'));
+		if (viewListBtn) viewListBtn.addEventListener('click', () => setView('list'));
+		if (uploadOpenBtn) uploadOpenBtn.addEventListener('click', openUploadModal);
+		if (uploadModalClose) uploadModalClose.addEventListener('click', closeUploadModal);
+		if (uploadModalCancel) uploadModalCancel.addEventListener('click', closeUploadModal);
+		if (uploadModal) {
+			uploadModal.addEventListener('click', (event) => {
+				if (event.target === uploadModal) closeUploadModal();
+			});
+		}
+		if (uploadSubmitBtn) uploadSubmitBtn.addEventListener('click', submitUpload);
+		if (viewerCloseBtn) viewerCloseBtn.addEventListener('click', closeViewerModal);
+		if (viewerModal) {
+			viewerModal.addEventListener('click', (event) => {
+				if (event.target === viewerModal) closeViewerModal();
+			});
+		}
+
+		if (dropzone && fileInput) {
+			dropzone.addEventListener('click', () => fileInput.click());
+			dropzone.addEventListener('dragover', (event) => {
+				event.preventDefault();
+				dropzone.classList.add('is-over');
+			});
+			dropzone.addEventListener('dragleave', (event) => {
+				event.preventDefault();
+				dropzone.classList.remove('is-over');
+			});
+			dropzone.addEventListener('drop', (event) => {
+				event.preventDefault();
+				dropzone.classList.remove('is-over');
+				const file = event.dataTransfer && event.dataTransfer.files ? event.dataTransfer.files[0] : null;
+				if (file) stageFile(file);
+			});
+			fileInput.addEventListener('change', () => {
+				const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+				if (file) stageFile(file);
+			});
+		}
+
+		fileContainer.addEventListener('click', async (event) => {
+			const btn = event.target.closest('[data-rv-action]');
+			if (!btn) return;
+			event.preventDefault();
+			event.stopPropagation();
+			const card = btn.closest('[data-rv-file-id]');
+			if (!card) return;
+			const fileId = String(card.getAttribute('data-rv-file-id') || '');
+			if (!fileId) return;
+			const file = files.find((row) => String(row.fileId || '') === fileId);
+			const action = btn.getAttribute('data-rv-action');
+			if (action === 'open') {
+				await openViewerModal(file);
+				return;
+			}
+			if (action === 'download') {
+				await triggerFileDownload(file);
+				return;
+			}
+			if (action === 'delete') {
+				if (!window.confirm('Delete this file? This cannot be undone.')) return;
+				try {
+					const res = await fetch(`${API_BASE}/api/record-vault/${currentSection}/${encodeURIComponent(fileId)}`, {
+						method: 'DELETE',
+						credentials: 'include',
+					});
+					if (!res.ok) throw new Error('Delete failed');
+					await loadFiles();
+				} catch (_e) {
+					alert('Could not delete this file.');
+				}
+			}
+		});
+
+		setView(currentView);
+		populateCategories();
+		loadFiles();
+	}
 
 function initProductionPage() {
 	if (document.body.getAttribute('data-page') !== 'production') {
@@ -9364,6 +10627,351 @@ function renderReportsData() {
 		return { day: dayLabels[d.getDay()], ...shiftBuckets[dayKey] };
 	});
 
+	// ── Production Performance Over Time (Daily/Monthly toggle + pan/zoom timeline) ──
+	const perfHost = document.getElementById('chart-production-performance');
+	const perfRangeWrap = document.getElementById('rep-performance-ranges');
+	const perfViewWrap = document.getElementById('rep-performance-views');
+	if (perfHost) {
+		const DAY_MS = 24 * 60 * 60 * 1000;
+		const fmtLong = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+		const fmtMonth = new Intl.DateTimeFormat('en-GB', { month: 'short', year: 'numeric' });
+
+		const parseDateStartMs = (raw) => {
+			const text = String(raw || '').trim();
+			if (!text) return null;
+			// Accept both date-only values (YYYY-MM-DD) and full datetime strings.
+			const date = /^\d{4}-\d{2}-\d{2}$/.test(text)
+				? new Date(text + 'T00:00:00')
+				: new Date(text);
+			if (Number.isNaN(date.getTime())) return null;
+			date.setHours(0, 0, 0, 0);
+			return date.getTime();
+		};
+
+		const monthStartMs = (ms) => {
+			const d = new Date(ms);
+			d.setHours(0, 0, 0, 0);
+			d.setDate(1);
+			return d.getTime();
+		};
+
+		const monthAverageOutput = (monthRows) => {
+			if (!Array.isArray(monthRows) || !monthRows.length) return 0;
+			const total = monthRows.reduce((sum, row) => sum + Number(row.output || 0), 0);
+			return total / monthRows.length;
+		};
+
+		const zoneForOutput = (output) => getProductionZoneInfo(output);
+
+		const addMonthsStartMs = (ms, count) => {
+			const d = new Date(ms);
+			d.setHours(0, 0, 0, 0);
+			d.setDate(1);
+			d.setMonth(d.getMonth() + count);
+			return d.getTime();
+		};
+
+		const allInvoiceRows = Array.isArray(getAllSalesData().invoices) ? getAllSalesData().invoices : [];
+		const outputStartMs = allInvoiceRows
+			.map((row) => parseDateStartMs(row && row.date))
+			.filter((ms) => Number.isFinite(ms))
+			.sort((a, b) => a - b)[0];
+
+		if (!Number.isFinite(outputStartMs)) {
+			perfHost.innerHTML = '<p style="color:#64748b;text-align:center;padding:48px 0">No output history found yet.</p>';
+		} else if (typeof Chart === 'undefined') {
+			perfHost.innerHTML = '<p style="color:#64748b;text-align:center;padding:48px 0">Chart library unavailable.</p>';
+		} else {
+			const dailyByDate = new Map();
+			const ensureDay = (ms) => {
+				if (!dailyByDate.has(ms)) dailyByDate.set(ms, { output: 0, dispatches: 0, revenue: 0 });
+				return dailyByDate.get(ms);
+			};
+
+			const invoiceDateMs = (inv, fallbackMonthKey) => {
+				const explicit = parseDateStartMs(inv && inv.date);
+				if (Number.isFinite(explicit)) return explicit;
+				if (/^\d{4}-\d{2}$/.test(String(fallbackMonthKey || ''))) {
+					return parseDateStartMs(`${fallbackMonthKey}-01`);
+				}
+				return null;
+			};
+
+			// Build a deduped invoice set from both merged sales data and per-month AppData buckets
+			// so records with missing explicit dates still contribute using their month bucket.
+			const perfInvoicesById = new Map();
+			for (const inv of getAllSalesData().invoices) {
+				if (!inv || !inv.id) continue;
+				const idKey = String(inv.id);
+				const monthKey = /^\d{4}-\d{2}$/.test(String(inv.month || '')) ? String(inv.month) : null;
+				const dateMs = invoiceDateMs(inv, monthKey);
+				if (!Number.isFinite(dateMs)) continue;
+				perfInvoicesById.set(idKey, { inv, monthKey, dateMs });
+			}
+			for (const monthKey of recoverSalesMonthsFromStorage()) {
+				if (!/^\d{4}-\d{2}$/.test(String(monthKey || ''))) continue;
+				const payload = getSalesMonthPayload(monthKey);
+				const monthInvoices = Array.isArray(payload && payload.invoices) ? payload.invoices : [];
+				for (const inv of monthInvoices) {
+					if (!inv || !inv.id) continue;
+					const idKey = String(inv.id);
+					const dateMs = invoiceDateMs(inv, monthKey);
+					if (!Number.isFinite(dateMs)) continue;
+					const existing = perfInvoicesById.get(idKey);
+					const existingHasExplicitDate = existing && Number.isFinite(parseDateStartMs(existing.inv && existing.inv.date));
+					const incomingHasExplicitDate = Number.isFinite(parseDateStartMs(inv && inv.date));
+					if (!existing || (!existingHasExplicitDate && incomingHasExplicitDate)) {
+						perfInvoicesById.set(idKey, { inv, monthKey, dateMs });
+					}
+				}
+			}
+
+			for (const { inv, dateMs } of perfInvoicesById.values()) {
+				const row = ensureDay(dateMs);
+				row.output += getInvoiceOutputBags(inv);
+				row.dispatches += 1;
+				if (String(inv && inv.status || '').toLowerCase() === 'paid') {
+					row.revenue += Number(inv && inv.amount || 0) || 0;
+				}
+			}
+
+			const today = new Date();
+			today.setHours(0, 0, 0, 0);
+			const endMs = today.getTime();
+			const startMonthMs = monthStartMs(outputStartMs);
+			const endMonthMs = monthStartMs(endMs);
+
+			const dailyRows = [];
+			for (let ms = outputStartMs; ms <= endMs; ms += DAY_MS) {
+				const row = dailyByDate.get(ms) || { output: 0, dispatches: 0, revenue: 0 };
+				dailyRows.push({ x: ms, output: row.output, dispatches: row.dispatches, revenue: row.revenue });
+			}
+
+			const monthlyByStart = new Map();
+			for (const row of dailyRows) {
+				const key = monthStartMs(row.x);
+				const bucket = monthlyByStart.get(key) || { x: key, outputTotal: 0, dispatches: 0, revenue: 0, dayCount: 0 };
+				bucket.outputTotal += row.output;
+				bucket.dispatches += row.dispatches;
+				bucket.revenue += row.revenue;
+				bucket.dayCount += 1;
+				monthlyByStart.set(key, bucket);
+			}
+			const monthlyRows = [];
+			for (let ms = startMonthMs; ms <= endMonthMs; ms = addMonthsStartMs(ms, 1)) {
+				const bucket = monthlyByStart.get(ms) || { x: ms, outputTotal: 0, dispatches: 0, revenue: 0, dayCount: 0 };
+				const daysInMonth = bucket.dayCount || new Date(new Date(ms).getFullYear(), new Date(ms).getMonth() + 1, 0).getDate();
+				monthlyRows.push({
+					x: ms,
+					output: daysInMonth > 0 ? (bucket.outputTotal / daysInMonth) : 0,
+					dispatches: bucket.dispatches,
+					revenue: bucket.revenue,
+				});
+			}
+
+			const dataByView = { daily: dailyRows, monthly: monthlyRows };
+			let currentView = 'daily';
+			let viewMin = Math.max(outputStartMs, endMs - (29 * DAY_MS));
+			let viewMax = endMs;
+			let currentZoneBands = [];
+
+			const labelForX = (ms) => {
+				if (currentView === 'monthly') return fmtMonth.format(new Date(ms));
+				return fmtLong.format(new Date(ms));
+			};
+
+			const setActivePerfRangeBtn = (rangeKey) => {
+				if (!perfRangeWrap) return;
+				perfRangeWrap.querySelectorAll('.rep-range-btn').forEach((btn) => {
+					btn.classList.toggle('is-active', String(btn.getAttribute('data-range')) === String(rangeKey));
+				});
+			};
+
+			const setActivePerfViewBtn = (viewKey) => {
+				if (!perfViewWrap) return;
+				perfViewWrap.querySelectorAll('.rep-view-btn').forEach((btn) => {
+					btn.classList.toggle('is-active', String(btn.getAttribute('data-view')) === String(viewKey));
+				});
+			};
+
+			const updateRangeButtonLabels = () => {
+				if (!perfRangeWrap) return;
+				const map = currentView === 'monthly'
+					? { '30d': 'Last 3M', '90d': '6M', '1y': '12M', 'all': 'All' }
+					: { '30d': 'Last 30D', '90d': '90D', '1y': '1Y', 'all': 'All' };
+				perfRangeWrap.querySelectorAll('.rep-range-btn').forEach((btn) => {
+					const key = String(btn.getAttribute('data-range') || '');
+					if (map[key]) btn.textContent = map[key];
+				});
+			};
+
+			const rangeToWindow = (rangeKey) => {
+				if (currentView === 'monthly') {
+					if (rangeKey === 'all') return { min: startMonthMs, max: endMonthMs };
+					if (rangeKey === '1y') return { min: Math.max(startMonthMs, addMonthsStartMs(endMonthMs, -11)), max: endMonthMs };
+					if (rangeKey === '90d') return { min: Math.max(startMonthMs, addMonthsStartMs(endMonthMs, -5)), max: endMonthMs };
+					return { min: Math.max(startMonthMs, addMonthsStartMs(endMonthMs, -2)), max: endMonthMs };
+				}
+				if (rangeKey === 'all') return { min: outputStartMs, max: endMs };
+				if (rangeKey === '1y') return { min: Math.max(outputStartMs, endMs - (364 * DAY_MS)), max: endMs };
+				if (rangeKey === '90d') return { min: Math.max(outputStartMs, endMs - (89 * DAY_MS)), max: endMs };
+				return { min: Math.max(outputStartMs, endMs - (29 * DAY_MS)), max: endMs };
+			};
+
+			const currentRows = () => dataByView[currentView] || [];
+
+			const buildZoneBands = () => {
+				const rows = currentRows();
+				return rows.map((row) => {
+					const zone = currentView === 'monthly' ? zoneForOutput(row.output) : zoneForOutput(row.output);
+					return { x: row.x, zone };
+				});
+			};
+
+			const paintZoneBands = (chart) => {
+				if (!chart || !chart.ctx || !chart.chartArea || !Array.isArray(currentZoneBands) || !currentZoneBands.length) return;
+				const { ctx, chartArea, scales } = chart;
+				const xScale = scales.x;
+				if (!xScale) return;
+				ctx.save();
+				const top = chartArea.top;
+				const height = chartArea.bottom - chartArea.top;
+				for (let i = 0; i < currentZoneBands.length; i += 1) {
+					const band = currentZoneBands[i];
+					const next = currentZoneBands[i + 1];
+					const xStart = xScale.getPixelForValue(band.x);
+					const xEnd = next ? xScale.getPixelForValue(next.x) : chartArea.right;
+					ctx.fillStyle = band.zone.band;
+					ctx.fillRect(Math.min(xStart, xEnd), top, Math.max(1, Math.abs(xEnd - xStart)), height);
+				}
+				ctx.restore();
+			};
+
+			const applyRangeWindow = (chart, rangeKey) => {
+				if (!chart) return;
+				const nextWindow = rangeToWindow(rangeKey);
+				viewMin = nextWindow.min;
+				viewMax = nextWindow.max;
+				const rows = currentRows();
+				currentZoneBands = buildZoneBands();
+				chart.data.datasets[0].data = rows.map((row) => ({ x: row.x, y: row.output }));
+				chart.data.datasets[1].data = rows.map((row) => ({ x: row.x, y: row.dispatches }));
+				chart.data.datasets[2].data = rows.map((row) => ({ x: row.x, y: row.revenue }));
+				chart.options.scales.x.min = viewMin;
+				chart.options.scales.x.max = viewMax;
+				chart.options.plugins.zoom.limits.x.min = currentView === 'monthly' ? startMonthMs : outputStartMs;
+				chart.options.plugins.zoom.limits.x.max = currentView === 'monthly' ? endMonthMs : endMs;
+				chart.options.plugins.zoom.limits.x.minRange = currentView === 'monthly' ? (27 * DAY_MS) : (7 * DAY_MS);
+				chart.update('none');
+				setActivePerfRangeBtn(rangeKey);
+			};
+
+			try {
+				const zoomPlugin = window.ChartZoom || window['chartjs-plugin-zoom'];
+				if (zoomPlugin && Chart.registry && Chart.registry.plugins && !Chart.registry.plugins.get('zoom')) {
+					Chart.register(zoomPlugin);
+				}
+				if (!window.__wwProductionZoneBandPlugin) {
+					window.__wwProductionZoneBandPlugin = {
+						id: 'wwProductionZoneBands',
+						beforeDraw(chart) {
+							paintZoneBands(chart);
+						},
+					};
+					Chart.register(window.__wwProductionZoneBandPlugin);
+				}
+			} catch (_e) {
+				// Continue without explicit registration if unavailable.
+			}
+
+			perfHost.innerHTML = '<canvas id="rep-production-performance-canvas"></canvas>';
+			const perfCtx = document.getElementById('rep-production-performance-canvas');
+			if (window.__repProdPerfChart) window.__repProdPerfChart.destroy();
+
+			window.__repProdPerfChart = new Chart(perfCtx, {
+				type: 'line',
+				data: {
+					datasets: [
+						{ label: 'Daily Output', data: [], borderColor: '#1d4ed8', backgroundColor: 'rgba(29, 78, 216, 0.12)', pointRadius: 0, pointHitRadius: 12, tension: 0.25, fill: true, yAxisID: 'y' },
+						{ label: 'Dispatch Records', data: [], borderColor: '#16a34a', backgroundColor: 'rgba(22, 163, 74, 0.12)', pointRadius: 0, pointHitRadius: 12, tension: 0.25, fill: false, yAxisID: 'y' },
+						{ label: 'Revenue (Paid)', data: [], borderColor: '#f59e0b', backgroundColor: 'rgba(245, 158, 11, 0.12)', pointRadius: 0, pointHitRadius: 12, tension: 0.25, fill: false, yAxisID: 'yRevenue' },
+					],
+				},
+				options: {
+					responsive: true,
+					maintainAspectRatio: false,
+					interaction: { mode: 'nearest', axis: 'x', intersect: false },
+					plugins: {
+						legend: { display: true, position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 11 } } },
+						tooltip: {
+							callbacks: {
+								title: (items) => {
+									const x = items && items[0] && items[0].parsed ? items[0].parsed.x : null;
+									return Number.isFinite(x) ? labelForX(x) : '';
+								},
+								label: (ctx) => {
+									if (ctx.dataset.label === 'Revenue (Paid)') return `${ctx.dataset.label}: ${formatCurrency(ctx.parsed.y)}`;
+									return `${ctx.dataset.label}: ${formatNumber(ctx.parsed.y)}`;
+								},
+							},
+						},
+						zoom: {
+							limits: { x: { min: outputStartMs, max: endMs, minRange: 7 * DAY_MS } },
+							pan: { enabled: true, mode: 'x' },
+							zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
+							onPanComplete: () => setActivePerfRangeBtn('custom'),
+							onZoomComplete: () => setActivePerfRangeBtn('custom'),
+						},
+					},
+					scales: {
+						x: {
+							type: 'linear',
+							min: viewMin,
+							max: viewMax,
+							ticks: {
+								autoSkip: true,
+								maxTicksLimit: 8,
+								callback: (value) => labelForX(Number(value)),
+							},
+							grid: { color: 'rgba(148,163,184,0.16)' },
+						},
+						y: { type: 'linear', position: 'left', beginAtZero: true, title: { display: true, text: 'Daily Output / Dispatches', font: { size: 11 } }, ticks: { callback: (v) => formatNumber(v) }, grid: { color: 'rgba(148,163,184,0.16)' } },
+						yRevenue: { type: 'linear', position: 'right', beginAtZero: true, title: { display: true, text: 'Revenue (GH₵)', font: { size: 11 } }, ticks: { callback: (v) => formatCurrency(v) }, grid: { drawOnChartArea: false } },
+					},
+				},
+			});
+
+			if (perfViewWrap && !perfViewWrap.__boundPerfView) {
+				perfViewWrap.__boundPerfView = true;
+				perfViewWrap.addEventListener('click', (event) => {
+					const btn = event.target.closest('.rep-view-btn');
+					if (!btn || !window.__repProdPerfChart) return;
+					const viewKey = String(btn.getAttribute('data-view') || '').trim();
+					if (viewKey !== 'daily' && viewKey !== 'monthly') return;
+					currentView = viewKey;
+					setActivePerfViewBtn(currentView);
+					updateRangeButtonLabels();
+					applyRangeWindow(window.__repProdPerfChart, currentView === 'monthly' ? '1y' : '30d');
+				});
+			}
+
+			if (perfRangeWrap && !perfRangeWrap.__boundPerfRange) {
+				perfRangeWrap.__boundPerfRange = true;
+				perfRangeWrap.addEventListener('click', (event) => {
+					const btn = event.target.closest('.rep-range-btn');
+					if (!btn || !window.__repProdPerfChart) return;
+					const rangeKey = String(btn.getAttribute('data-range') || '').trim();
+					if (!rangeKey) return;
+					applyRangeWindow(window.__repProdPerfChart, rangeKey);
+				});
+			}
+
+			setActivePerfViewBtn('daily');
+			updateRangeButtonLabels();
+			applyRangeWindow(window.__repProdPerfChart, '30d');
+		}
+	}
+
 	// ── KPI cards ──
 	const allSalesTotal = salesTrends.reduce((s, r) => s + r.sales, 0);
 	const latestSales = salesTrends.length > 0 ? salesTrends[salesTrends.length - 1].sales : 0;
@@ -9930,6 +11538,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 	bindPasswordToggles();
 	bindPasswordAssistanceForms();
 	enforceRoleAccess();
+	renderTopbarUserMenu(getCachedSessionUser());
 
 	// Hydrate localStorage from server before page inits
 	let authenticated = false;
@@ -9939,6 +11548,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 		if (meRes.ok) {
 			authenticated = true;
 			const me = await meRes.json();
+			cacheSessionUser(me?.user || {});
+			renderTopbarUserMenu(window.__wwCurrentUser);
 			const meEmail = String(me?.user?.email || '').trim().toLowerCase();
 			if (meEmail) localStorage.setItem('ww_user_email', meEmail);
 			const meRole = resolveEffectiveClientRole(normalizeRole(me?.user?.effectiveRole || me?.user?.role), meEmail);
@@ -9963,6 +11574,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 	initSalesInvoicesPage();
 	initPurchasePage();
 	initAccountingPage();
+	initVaultPage();
 	initProductionPage();
 	initReportsPage();
 
@@ -9979,10 +11591,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 					sales:      ['ww_seed_flags', 'ww_sales_months'],
 					dashboard:  ['ww_seed_flags', 'ww_sales_months', 'ww_raw_materials', 'ww_finished_products', 'ww_accounting_data_v2'],
 					inventory:  ['ww_raw_materials', 'ww_finished_products', 'ww_equipment', 'ww_bom_data'],
-					accounting: ['ww_accounting_data_v2', 'ww_cost_centre_budgets'],
+					accounting: ['ww_accounting_data_v2', 'ww_cost_centre_budgets', 'ww_tax_records'],
+					vault:      ['ww_record_vault'],
 					purchase:   ['ww_purchase_data_v2'],
 					production: ['ww_production_batches', 'ww_daily_production', 'ww_raw_materials', 'ww_finished_products'],
-					reports:    ['ww_sales_months', 'ww_accounting_data_v2'],
+					reports:    ['ww_sales_months', 'ww_accounting_data_v2', 'ww_production_batches', 'ww_daily_production'],
 				};
 				const priorityKeys = pageKeyMap[page] || ['ww_seed_flags', 'ww_sales_months'];
 				await loadBulkFromServer(priorityKeys);
@@ -10004,7 +11617,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 				// Load remaining keys for other pages in the background
 				const remainingKeys = ['ww_raw_materials','ww_finished_products','ww_production_batches',
-					'ww_daily_production','ww_purchase_data_v2','ww_accounting_data_v2',
+					'ww_daily_production','ww_purchase_data_v2','ww_accounting_data_v2','ww_record_vault','ww_tax_records',
 					'ww_cost_centre_budgets','ww_bom_data','ww_equipment','ww_market_yearly_values',
 				].filter((k) => !priorityKeys.includes(k));
 				if (remainingKeys.length) loadBulkFromServer(remainingKeys).catch(() => {});
@@ -10015,17 +11628,64 @@ document.addEventListener('DOMContentLoaded', async () => {
 	// ── SSE: instant cross-device sync ──
 	if (authenticated && isOpsPage && !window.__wwLiveSyncConnected) {
 		window.__wwLiveSyncConnected = true;
+		const handleRealtimeUpdate = async (payload) => {
+			if (!shouldProcessRealtimePayload(payload)) return;
+			if (window.__wwRemoteSyncInFlight) return;
+			window.__wwRemoteSyncInFlight = true;
+			try {
+				const changedKey = String(payload && payload.key || '').trim();
+				if (/^ww_inventory_\d{4}-\d{2}$/.test(changedKey)) {
+					await loadFromServerForceFresh(changedKey);
+					emitStorageKeyChange(changedKey);
+				}
+				flushPendingSalesSyncToServer().catch(() => {});
+				await pullRemoteDataAndRefreshUi();
+				document.dispatchEvent(new Event('ww-refresh-page'));
+			} catch (_e) {
+				/* noop */
+			} finally {
+				window.__wwRemoteSyncInFlight = false;
+			}
+		};
+
+		const connectSocket = async () => {
+			if (window.__wwSocketConnected) return;
+			if (typeof window.io !== 'function') {
+				await new Promise((resolve) => {
+					const existing = document.querySelector('script[data-ww-socketio="1"]');
+					if (existing) {
+						existing.addEventListener('load', () => resolve(), { once: true });
+						existing.addEventListener('error', () => resolve(), { once: true });
+						return;
+					}
+					const script = document.createElement('script');
+					script.src = (API_BASE || '') + '/socket.io/socket.io.js';
+					script.async = true;
+					script.dataset.wwSocketio = '1';
+					script.onload = () => resolve();
+					script.onerror = () => resolve();
+					document.head.appendChild(script);
+				});
+			}
+			if (typeof window.io !== 'function') return;
+			if (window.__wwSocket) {
+				try { window.__wwSocket.close(); } catch (_e) { /* noop */ }
+			}
+			const socket = window.io(API_BASE || undefined, {
+				withCredentials: true,
+				transports: ['websocket', 'polling'],
+			});
+			window.__wwSocket = socket;
+			socket.on('connect', () => { window.__wwSocketConnected = true; });
+			socket.on('disconnect', () => { window.__wwSocketConnected = false; });
+			socket.on('data_updated', handleRealtimeUpdate);
+		};
+
 		const connectSse = () => {
 			if (window.__wwSseSource) { try { window.__wwSseSource.close(); } catch (_e) {} }
 			const es = new EventSource(API_BASE + '/api/live-updates', { withCredentials: true });
 			window.__wwSseSource = es;
-			es.addEventListener('data_updated', async () => {
-				try {
-					flushPendingSalesSyncToServer().catch(() => {});
-					await pullRemoteDataAndRefreshUi();
-					document.dispatchEvent(new Event('ww-refresh-page'));
-				} catch (_e) {}
-			});
+			es.addEventListener('data_updated', handleRealtimeUpdate);
 			es.onerror = () => {
 				try { es.close(); } catch (_e) {}
 				window.__wwSseSource = null;
@@ -10034,6 +11694,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 			};
 		};
 		connectSse();
+		connectSocket().catch(() => {});
 		document.addEventListener('visibilitychange', async () => {
 			if (!document.hidden) {
 				try {
@@ -10042,6 +11703,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 				} catch (_e) {}
 			}
 		});
+		if (!window.__wwRealtimePoller) {
+			window.__wwRealtimePoller = setInterval(async () => {
+				if (document.hidden) return;
+				if (window.__wwSseSource || window.__wwSocketConnected) return;
+				try {
+					await pullRemoteDataAndRefreshUi();
+					document.dispatchEvent(new Event('ww-refresh-page'));
+				} catch (_e) { /* noop */ }
+			}, 15000);
+		}
 	}
 
 	// After all pages render, hide edit/delete in dynamic content for restricted roles

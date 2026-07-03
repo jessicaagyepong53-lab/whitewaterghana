@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Accounting & Finance</title>
-  <link rel="stylesheet" href="../src/script.css?v=20260519b">
+  <link rel="stylesheet" href="../src/script.css?v=20260702e">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
   <style>
     /* ── Salary Slip Generator ──────────────────────────────── */
@@ -371,6 +371,7 @@
     <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
     <a href="vendors.html"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
     <a href="accounting.html" class="is-active"><i class="fa-solid fa-calculator"></i> Accounting</a>
+    <a href="vault.html"><i class="fa-solid fa-box-archive"></i> Record Vault</a>
     <a href="production.html"><i class="fa-solid fa-industry"></i> Production</a>
     <a href="reports.html"><i class="fa-solid fa-chart-line"></i> Reports</a>
     <a href="users.html"><i class="fa-solid fa-users-gear"></i> User Management</a>
@@ -401,6 +402,7 @@
       <button class="tab-btn" data-tab="salaries" onclick="switchTab('acc','salaries')">Salaries</button>
       <button class="tab-btn" data-tab="assets" onclick="switchTab('acc','assets')">Assets</button>
       <button class="tab-btn" data-tab="summary" onclick="switchTab('acc','summary')">Account Summary</button>
+      <button class="tab-btn" data-tab="taxes" onclick="switchTab('acc','taxes')">Taxes</button>
       <button class="tab-btn" data-tab="currency" onclick="switchTab('acc','currency')">Multi-Currency</button>
     </div>
     <div id="acc-tab-ledger" class="tab-panel tab-active">
@@ -416,7 +418,7 @@
         <p style="margin-top:6px;">For every debit there should be a matching credit entry to keep the books balanced.</p>
       </div>
       <table class="data-table">
-        <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Type</th><th>Debit (GH)</th><th>Credit (GH)</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Type</th><th>Debit (GH₵)</th><th>Credit (GH₵)</th><th>Actions</th></tr></thead>
         <tbody id="ledger-tbody"></tbody>
       </table>
       <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="ledger">Add Entry <i class="fa-solid fa-plus"></i></button></div>
@@ -426,7 +428,7 @@
         <p><strong>Cashbook</strong> tracks all expenditure and costs. Each entry is recorded with a date, description, and amount. Running totals update automatically.</p>
       </div>
       <table class="data-table">
-        <thead><tr><th>Date</th><th>Description</th><th>Amount (GH)</th><th>Running Total</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Date</th><th>Description</th><th>Amount (GH₵)</th><th>Running Total</th><th>Actions</th></tr></thead>
         <tbody id="cashbook-tbody"></tbody>
       </table>
       <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="cashbook">Add Entry <i class="fa-solid fa-plus"></i></button></div>
@@ -448,7 +450,7 @@
         <button type="button" id="salary-week-print-btn" class="btn-print" style="margin-left:8px;"><i class="fa-solid fa-print"></i> Print</button>
       </div>
       <table class="data-table">
-        <thead><tr><th>Date Paid</th><th>Employee</th><th>Month</th><th>Amount (GH)</th><th>Notes</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Date Paid</th><th>Employee</th><th>Month</th><th>Amount (GH₵)</th><th>Notes</th><th>Actions</th></tr></thead>
         <tbody id="salaries-tbody"></tbody>
       </table>
       <div id="salaries-summary-cards" style="margin-top:14px;"></div>
@@ -543,7 +545,7 @@
           <!-- EARNINGS -->
           <table class="slip-section" id="slip-table-earnings">
             <tr class="slip-sec-hdr"><td colspan="3">Earnings</td></tr>
-            <tr class="slip-col-hdr"><td>Description</td><td class="col-rate">Rate</td><td class="col-amt">Amount (GHS)</td></tr>
+            <tr class="slip-col-hdr"><td>Description</td><td class="col-rate">Rate</td><td class="col-amt">Amount (GH₵)</td></tr>
             <tr class="slip-data-row">
               <td>Basic Salary</td>
               <td class="col-rate">&mdash;</td>
@@ -584,7 +586,7 @@
           <!-- ALLOWANCES -->
           <table class="slip-section" id="slip-table-allowances">
             <tr class="slip-sec-hdr"><td colspan="3">Allowances</td></tr>
-            <tr class="slip-col-hdr"><td>Description</td><td class="col-rate">Rate</td><td class="col-amt">Amount (GHS)</td></tr>
+            <tr class="slip-col-hdr"><td>Description</td><td class="col-rate">Rate</td><td class="col-amt">Amount (GH₵)</td></tr>
             <tr class="slip-data-row">
               <td>Transport Allowance</td>
               <td class="col-rate">&mdash;</td>
@@ -630,7 +632,7 @@
           <!-- DEDUCTIONS -->
           <table class="slip-section" id="slip-table-deductions">
             <tr class="slip-sec-hdr"><td colspan="3">Deductions</td></tr>
-            <tr class="slip-col-hdr"><td>Description</td><td class="col-rate">Rate</td><td class="col-amt">Amount (GHS)</td></tr>
+            <tr class="slip-col-hdr"><td>Description</td><td class="col-rate">Rate</td><td class="col-amt">Amount (GH₵)</td></tr>
             <tr class="slip-data-row" data-ssnit="1">
               <td>SSNIT Contribution</td>
               <td class="col-rate"><input class="rate-input" id="d-ssnit-rate" type="number" min="0" max="100" step="0.01" value="5.5" oninput="slipRecalc()">%</td>
@@ -674,7 +676,7 @@
               <div class="slip-netpay-label">NET PAY / TAKE HOME</div>
               <div class="slip-netpay-sub">Gross Pay + Allowances &minus; Deductions</div>
             </div>
-            <div class="slip-netpay-amount">GHS <span class="netpay-value" id="t-netpay">0.00</span></div>
+            <div class="slip-netpay-amount">GH₵ <span class="netpay-value" id="t-netpay">0.00</span></div>
           </div>
 
           <!-- Footer -->
@@ -719,13 +721,87 @@
         <p style="margin-top:6px;">Add accounts that match your books. Totals calculate automatically per category.</p>
       </div>
       <div class="category-grid" id="account-summary-grid"></div>
+
+      <section class="expense-breakdown-wrap" id="acc-expense-breakdown">
+        <div class="expense-breakdown-head">
+          <div>
+            <h3 class="expense-breakdown-title">Expense Distribution</h3>
+            <p class="expense-breakdown-subtitle">Category share for the selected period</p>
+          </div>
+          <div class="expense-period-control">
+            <label for="acc-expense-period-select">Period:</label>
+            <select id="acc-expense-period-select" class="form-control"></select>
+          </div>
+        </div>
+
+        <div class="pie-layout expense-distribution-layout">
+          <div id="acc-expense-distribution-chart" class="chart-wrap expense-chart-wrap" aria-label="Expense Distribution chart"></div>
+          <div class="expense-category-list" id="acc-expense-category-list"></div>
+        </div>
+
+        <div class="expense-total-line">
+          <span>Total Expenses</span>
+          <strong id="acc-expense-total-value">GH₵0.00</strong>
+        </div>
+
+        <h4 class="expense-detail-title">Cost Breakdown Details</h4>
+        <div class="expense-breakdown-cards" id="acc-expense-breakdown-cards"></div>
+      </section>
+
       <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="account">Add Account <i class="fa-solid fa-plus"></i></button></div>
+    </div>
+    <div id="acc-tab-taxes" class="tab-panel">
+      <div class="info-box" style="margin-bottom:14px;">
+        <p><strong>Tax Records &amp; Compliance</strong> keeps VAT, PAYE, withholding, and other tax obligations organized by period, due date, paid date, and status.</p>
+      </div>
+      <section class="tax-summary-row" id="tax-summary-row">
+        <article class="tax-summary-card">
+          <p class="tax-summary-label">Total Due</p>
+          <p class="tax-summary-value" id="tax-summary-total-due">GH₵0.00</p>
+          <p class="tax-summary-meta">Open obligations</p>
+        </article>
+        <article class="tax-summary-card">
+          <p class="tax-summary-label">Overdue Count</p>
+          <p class="tax-summary-value" id="tax-summary-overdue">0</p>
+          <p class="tax-summary-meta">Past due date</p>
+        </article>
+        <article class="tax-summary-card">
+          <p class="tax-summary-label">Paid This Month</p>
+          <p class="tax-summary-value" id="tax-summary-paid-month">GH₵0.00</p>
+          <p class="tax-summary-meta">Current month settled</p>
+        </article>
+      </section>
+      <div class="tax-card">
+        <div class="tax-card-header">
+          <h3>Tax Records</h3>
+          <button type="button" class="btn-secondary" id="tax-add-btn"><i class="fa-solid fa-plus"></i> Record Payment</button>
+        </div>
+        <div class="tax-table-wrap">
+          <table class="data-table tax-table">
+            <thead>
+              <tr>
+                <th>Tax ID</th>
+                <th>Type</th>
+                <th>Period</th>
+                <th>Amount (GH₵)</th>
+                <th>Due Date</th>
+                <th>Paid Date</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tax-records-tbody"></tbody>
+          </table>
+        </div>
+        <div id="tax-empty-state" class="acc-empty-state" style="display:none;">No tax records yet. Click “Record Payment” to add one.</div>
+        <div class="tax-note"><i class="fa-solid fa-circle-info"></i> Tax records are retained for accounting review and audit trails.</div>
+      </div>
     </div>
     <div id="acc-tab-currency" class="tab-panel">
       <div class="currency-grid" id="currency-grid"></div>
       <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="currency">Add Currency <i class="fa-solid fa-plus"></i></button></div>
       <div class="info-box">
-        <p>Multi-Currency Support<br>The system supports transactions in multiple currencies. Exchange rates are updated daily and all transactions are converted to the base currency (GHS) in the general ledger.</p>
+        <p>Multi-Currency Support<br>The system supports transactions in multiple currencies. Exchange rates are updated daily and all transactions are converted to the base currency (GH₵) in the general ledger.</p>
       </div>
     </div>
   </div>
@@ -745,8 +821,49 @@
       </form>
     </div>
   </div>
+  <div id="tax-record-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+    <div class="inv-modal">
+      <div class="inv-modal-header">
+        <h3 id="tax-modal-title">Record Tax Payment</h3>
+        <button type="button" class="inv-modal-close" id="tax-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="inv-modal-body">
+        <div class="inv-modal-field">
+          <label for="tax-input-type">Type</label>
+          <select id="tax-input-type">
+            <option value="VAT">VAT</option>
+            <option value="Income Tax">Income Tax</option>
+            <option value="Withholding Tax">Withholding Tax</option>
+            <option value="PAYE">PAYE</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        <div class="inv-modal-field">
+          <label for="tax-input-period">Period</label>
+          <input type="text" id="tax-input-period" placeholder="e.g. January 2026 or Q1 2026">
+        </div>
+        <div class="inv-modal-field">
+          <label for="tax-input-amount">Amount (GH₵)</label>
+          <input type="number" id="tax-input-amount" min="0" step="0.01" placeholder="e.g. 15750">
+        </div>
+        <div class="inv-modal-field">
+          <label for="tax-input-duedate">Due Date</label>
+          <input type="date" id="tax-input-duedate">
+        </div>
+        <div class="inv-modal-field" id="tax-paiddate-group" style="display:none;">
+          <label for="tax-input-paiddate">Paid Date</label>
+          <input type="date" id="tax-input-paiddate">
+        </div>
+      </div>
+      <div class="inv-modal-footer">
+        <button type="button" class="btn-secondary" id="tax-cancel-btn">Cancel</button>
+        <button type="button" class="btn-primary" id="tax-submit-btn">Save</button>
+      </div>
+    </div>
+  </div>
 </main>
-<script src="../src/script.js?v=20260519c"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="../src/script.js?v=20260702e"></script>
 <script>
   // ── Salary Slip Generator ────────────────────────────────────
   (function initSlip() {
@@ -821,9 +938,9 @@
       dept     ? `Dept: ${dept}`         : null,
       position ? `Position: ${position}` : null,
       empId    ? `ID: ${empId}`          : null,
-      `Gross: GHS ${fmt(gross)}`,
-      allowances > 0 ? `Allowances: GHS ${fmt(allowances)}` : null,
-      `Deductions: GHS ${fmt(deductions)}`,
+      `Gross: GH₵ ${fmt(gross)}`,
+      allowances > 0 ? `Allowances: GH₵ ${fmt(allowances)}` : null,
+      `Deductions: GH₵ ${fmt(deductions)}`,
     ].filter(Boolean);
 
     // Capture individual rows so the Print button can show the full slip
@@ -883,7 +1000,7 @@
         _editingSalaryRecord = null;
         saveAccountingDataToStorage();
         document.dispatchEvent(new Event('ww-refresh-page'));
-        showSlipToast(`\u2713 Updated: ${empName} — ${periodStr} — GHS ${fmt(net)}`);
+        showSlipToast(`\u2713 Updated: ${empName} — ${periodStr} — GH₵ ${fmt(net)}`);
         return;
       }
       // Record no longer exists — fall through to a normal save
@@ -912,7 +1029,7 @@
       });
       saveAccountingDataToStorage();
       document.dispatchEvent(new Event('ww-refresh-page'));
-      showSlipToast(`\u2713 Saved: ${empName} — ${periodStr} — GHS ${fmt(net)}`);
+      showSlipToast(`\u2713 Saved: ${empName} — ${periodStr} — GH₵ ${fmt(net)}`);
     } else {
       alert('Could not save: accounting system not ready. Please reload the page and try again.');
     }
@@ -1335,6 +1452,7 @@
         if (note.startsWith('Dept: ')) setDept(note.slice(6));
         else if (note.startsWith('Position: ')) setVal('emp-position', note.slice(10));
         else if (note.startsWith('ID: '))         setVal('emp-id',       note.slice(4));
+        else if (note.startsWith('Gross: GH₵ '))  gross = parseFloat(note.slice(11).replace(/,/g,'')) || 0;
         else if (note.startsWith('Gross: GHS '))  gross = parseFloat(note.slice(11).replace(/,/g,'')) || 0;
       });
       // Populate Basic Salary with gross total; leave the rest blank for the user to adjust

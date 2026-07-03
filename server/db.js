@@ -100,6 +100,8 @@ const salesOrderSchema = new mongoose.Schema({
   source:      { type: String, required: true },
   status:      { type: String, required: true },
   invoice_id:  { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice', default: null },
+  idempotency_key: { type: String },
+  client_txn_id: { type: String },
 }, { timestamps: true, toJSON: toJSONOpts });
 
 const invoiceSchema = new mongoose.Schema({
@@ -110,6 +112,8 @@ const invoiceSchema = new mongoose.Schema({
   issue_date:     { type: String, required: true },
   due_date:       { type: String, required: true },
   status:         { type: String, required: true },
+  idempotency_key: { type: String },
+  client_txn_id: { type: String },
 }, { timestamps: true, toJSON: toJSONOpts });
 
 const purchaseOrderSchema = new mongoose.Schema({
@@ -169,7 +173,14 @@ const storeOrderSchema = new mongoose.Schema({
   phone:            { type: String, required: true },
   notes:            { type: String, default: null },
   status:           { type: String, default: 'Pending' },
+  idempotency_key:  { type: String },
 }, { timestamps: true, toJSON: toJSONOpts });
+
+salesOrderSchema.index({ idempotency_key: 1 }, { unique: true, partialFilterExpression: { idempotency_key: { $type: 'string' } } });
+salesOrderSchema.index({ client_txn_id: 1 }, { unique: true, partialFilterExpression: { client_txn_id: { $type: 'string' } } });
+invoiceSchema.index({ idempotency_key: 1 }, { unique: true, partialFilterExpression: { idempotency_key: { $type: 'string' } } });
+invoiceSchema.index({ client_txn_id: 1 }, { unique: true, partialFilterExpression: { client_txn_id: { $type: 'string' } } });
+storeOrderSchema.index({ idempotency_key: 1 }, { unique: true, partialFilterExpression: { idempotency_key: { $type: 'string' } } });
 
 const storeProductSchema = new mongoose.Schema({
   name:        { type: String, required: true },
@@ -431,12 +442,41 @@ async function connectDB() {
   }
 }
 
+/* ═══════════════════════════════════════════════
+   GRIDFS (Record Vault file storage)
+   ═══════════════════════════════════════════════ */
+
+const VAULT_BUCKET_NAME = 'vault_files';
+
+// Returns a GridFSBucket bound to the active Mongoose connection. Files uploaded
+// through the Record Vault are streamed into this bucket; only their metadata is
+// mirrored into the AppData collection (key: ww_record_vault).
+function getGridFSBucket() {
+  if (mongoose.connection.readyState !== 1) {
+    throw new Error('Database not connected');
+  }
+  return new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+    bucketName: VAULT_BUCKET_NAME,
+  });
+}
+
+function isValidObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
+}
+
+function toObjectId(id) {
+  return new mongoose.Types.ObjectId(id);
+}
+
 module.exports = {
   connectDB,
   nowIso,
   computeInventoryStatus,
   refreshCustomerStats,
   refreshInventoryStatuses,
+  getGridFSBucket,
+  isValidObjectId,
+  toObjectId,
   User,
   Session,
   Customer,

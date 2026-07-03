@@ -21,6 +21,7 @@
     <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
     <a href="vendors.html"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
     <a href="accounting.html"><i class="fa-solid fa-calculator"></i> Accounting</a>
+    <a href="vault.html"><i class="fa-solid fa-box-archive"></i> Record Vault</a>
     <a href="production.html"><i class="fa-solid fa-industry"></i> Production</a>
     <a href="reports.html"><i class="fa-solid fa-chart-line"></i> Reports</a>
     <a href="users.html" class="is-active"><i class="fa-solid fa-users-gear"></i> User Management</a>
@@ -81,6 +82,7 @@
           <tr><td>Sales &amp; Invoicing</td><td>Full</td><td>Add only</td></tr>
           <tr><td>Purchase &amp; Vendors</td><td>Full</td><td>Add only</td></tr>
           <tr><td>Accounting</td><td>Full</td><td>No</td></tr>
+          <tr><td>Record Vault</td><td>Full</td><td>No</td></tr>
           <tr><td>Production</td><td>Full</td><td>No</td></tr>
           <tr><td>Reports &amp; Analytics</td><td>Full</td><td>No</td></tr>
           <tr><td>User Management</td><td>Full</td><td>No</td></tr>
@@ -108,6 +110,7 @@
           <option value="accounting">Accounting</option>
           <option value="purchaseOrders">Purchase Orders</option>
           <option value="factory-equipment">Factory Equipment</option>
+          <option value="record-vault">Record Vault</option>
         </select>
         <button type="button" class="btn-secondary" id="trash-undo-last-btn" title="Undo the most recent restore" style="padding:6px 10px;font-size:.82rem">
           <i class="fa-solid fa-rotate-right"></i> Undo Last Restore
@@ -169,8 +172,8 @@
 <script>
 (function() {
   const ACCESS_LEVELS = {
-    ceo: 'Full Access � All Modules',
-    manager: 'Full Access � All Modules',
+    ceo: 'Full Access - All Modules',
+    manager: 'Full Access - All Modules',
     supervisor: 'Inventory, Sales, Purchase (Add only)',
     staff: 'Inventory, Sales, Purchase (Add only)',
   };
@@ -385,6 +388,7 @@
     inventory: 'Inventory', machines: 'Machines', production: 'Production',
     sales: 'Sales', invoices: 'Invoices', accounting: 'Accounting',
     purchaseOrders: 'Purchase Orders', 'factory-equipment': 'Factory Equipment',
+    'record-vault': 'Record Vault',
   };
 
   function getRecordSummary(item) {

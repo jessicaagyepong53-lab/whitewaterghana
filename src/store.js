@@ -8,10 +8,20 @@
 	// ── State ──
 	let currentCustomer = null;
 	let cart = JSON.parse(localStorage.getItem('ww_store_cart') || '[]');
+	let checkoutInFlight = false;
+	let checkoutRequestKey = '';
 
 	const $ = (sel, ctx) => (ctx || document).querySelector(sel);
 	const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 	const fmt = (n) => `GH₵ ${Number(n || 0).toLocaleString('en-GH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+	const hashString = (text) => {
+		let h = 2166136261;
+		for (let i = 0; i < text.length; i += 1) {
+			h ^= text.charCodeAt(i);
+			h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+		}
+		return (h >>> 0).toString(16);
+	};
 
 	// ═══════ INIT ═══════
 	async function init() {
@@ -318,9 +328,11 @@
 
 	window.handleCheckout = async function (e) {
 		e.preventDefault();
+		if (checkoutInFlight) return;
 		const form = e.target;
 		const errEl = $('#checkout-error');
 		errEl.textContent = '';
+		const submitBtn = form.querySelector('button[type="submit"], input[type="submit"]');
 
 		const body = {
 			items: cart.map((i) => ({ productId: i.productId, qty: i.qty })),
@@ -331,11 +343,30 @@
 			notes: form.notes.value.trim(),
 		};
 
+		if (!checkoutRequestKey) {
+			const customerToken = String(currentCustomer?.email || currentCustomer?.id || '').trim().toLowerCase();
+			const payloadToken = JSON.stringify({
+				items: body.items,
+				deliveryAddress: body.deliveryAddress,
+				deliveryCity: body.deliveryCity,
+				deliveryRegion: body.deliveryRegion,
+				phone: body.phone,
+				notes: body.notes,
+			});
+			checkoutRequestKey = `store-${Date.now()}-${hashString(customerToken + '|' + payloadToken)}`;
+		}
+
+		checkoutInFlight = true;
+		if (submitBtn) submitBtn.disabled = true;
+
 		try {
 			const res = await fetch('/api/store/orders', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body),
+				headers: {
+					'Content-Type': 'application/json',
+					'X-Idempotency-Key': checkoutRequestKey,
+				},
+				body: JSON.stringify({ ...body, idempotencyKey: checkoutRequestKey }),
 			});
 			const data = await res.json();
 			if (!res.ok) throw new Error(data.message || 'Order failed');
@@ -348,8 +379,12 @@
 			closeModal();
 			$('#success-message').textContent = `Order ${data.order.orderCode} placed successfully! Total: ${fmt(data.order.total)}. We'll process it shortly.`;
 			openModal('success');
+			checkoutRequestKey = '';
 		} catch (err) {
 			errEl.textContent = err.message;
+		} finally {
+			checkoutInFlight = false;
+			if (submitBtn) submitBtn.disabled = false;
 		}
 	};
 

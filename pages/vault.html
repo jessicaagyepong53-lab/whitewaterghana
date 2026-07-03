@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Record Vault</title>
+  <link rel="stylesheet" href="../src/script.css?v=20260702c">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+</head>
+<body class="ops-page" data-page="vault">
+<aside class="ops-sidebar" id="ops-sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-with-logo">
+      <img src="../images/New%20Logo.jpeg" alt="White Water Wells logo" class="brand-logo">
+      <span class="sidebar-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+    </div>
+  </div>
+  <nav class="ops-nav">
+    <a href="dashboard.html"><i class="fa-solid fa-gauge"></i> Dashboard</a>
+    <a href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i> Inventory &amp; Stock</a>
+    <a href="invoices.html"><i class="fa-solid fa-file-invoice-dollar"></i> Sales &amp; Invoicing</a>
+    <a href="vendors.html"><i class="fa-solid fa-cart-shopping"></i> Purchase &amp; Vendors</a>
+    <a href="accounting.html"><i class="fa-solid fa-calculator"></i> Accounting</a>
+    <a href="vault.html" class="is-active"><i class="fa-solid fa-box-archive"></i> Record Vault</a>
+    <a href="production.html"><i class="fa-solid fa-industry"></i> Production</a>
+    <a href="reports.html"><i class="fa-solid fa-chart-line"></i> Reports</a>
+    <a href="users.html"><i class="fa-solid fa-users-gear"></i> User Management</a>
+    <a href="../login.html" class="logout-link"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
+  </nav>
+  <div class="sidebar-footer">
+    <hr>
+    <span class="sidebar-slogan">Pure. Safe. Reliable Drinking Water.</span>
+    <span>&copy; 2026 White Water Factory</span>
+  </div>
+</aside>
+<header class="ops-topbar">
+  <h1>
+    <img src="../images/New%20Logo.jpeg" alt="White Water Wells logo" class="brand-logo">
+    <span class="brand-title"><span class="brand-main">White Water Wells LTD</span><br><span class="brand-sub">Factory Management</span></span>
+  </h1>
+</header>
+<main class="ops-main">
+  <div class="page-header">
+    <h2>Record Vault</h2>
+    <p>Store and organize company documents, receipts, and payment records.</p>
+  </div>
+
+  <div class="panel">
+    <div class="tab-bar rv-tab-bar">
+      <button class="tab-btn tab-active rv-tab" data-rv-section="companyDocuments">Company Documents</button>
+      <button class="tab-btn rv-tab" data-rv-section="receipts">Receipts &amp; Payments</button>
+    </div>
+
+    <div class="rv-toolbar">
+      <input type="text" id="rv-search" class="rv-input" placeholder="Search by file name...">
+      <select id="rv-category-filter" class="rv-input"></select>
+      <input type="date" id="rv-date-from" class="rv-input">
+      <input type="date" id="rv-date-to" class="rv-input">
+      <div class="rv-view-toggle" aria-label="View mode toggle">
+        <button type="button" id="rv-view-grid" class="rv-view-btn is-active" title="Grid view"><i class="fa-solid fa-grip"></i></button>
+        <button type="button" id="rv-view-list" class="rv-view-btn" title="List view"><i class="fa-solid fa-list"></i></button>
+      </div>
+      <button type="button" class="btn-secondary" id="rv-upload-open-btn"><i class="fa-solid fa-upload"></i> Upload File</button>
+    </div>
+
+    <div id="rv-empty-state" class="rv-empty-state" style="display:none;">
+      <i class="fa-regular fa-folder-open"></i>
+      <p>No files found for this section and filter.</p>
+    </div>
+
+    <div id="rv-file-container" class="rv-grid"></div>
+  </div>
+</main>
+
+<div id="rv-upload-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+  <div class="inv-modal rv-modal">
+    <div class="inv-modal-header">
+      <h3 id="rv-modal-title">Upload File</h3>
+      <button type="button" class="inv-modal-close" id="rv-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="inv-modal-body">
+      <div id="rv-dropzone" class="rv-dropzone">
+        <p><i class="fa-solid fa-file-arrow-up"></i> Drag and drop a file here, or click to browse</p>
+        <p class="rv-dropzone-hint">Allowed: PDF, JPG, PNG • Max size: 15MB</p>
+        <input type="file" id="rv-file-input" accept=".pdf,.jpg,.jpeg,.png" style="display:none;">
+      </div>
+      <div id="rv-selected-file" class="rv-selected-file" style="display:none;"></div>
+
+      <div class="inv-modal-field">
+        <label for="rv-upload-category">Category</label>
+        <select id="rv-upload-category" class="rv-input"></select>
+      </div>
+
+      <div class="inv-modal-field">
+        <label for="rv-upload-file-name">Save As (optional)</label>
+        <input type="text" id="rv-upload-file-name" class="rv-input" placeholder="Leave blank to use selected file name">
+      </div>
+
+      <div id="rv-receipt-fields" style="display:none;">
+        <div class="inv-modal-field">
+          <label for="rv-upload-amount">Amount (plain text)</label>
+          <input type="text" id="rv-upload-amount" class="rv-input" placeholder="e.g. GH₵15,000">
+        </div>
+        <div class="inv-modal-field">
+          <label for="rv-upload-date">Date</label>
+          <input type="date" id="rv-upload-date" class="rv-input">
+        </div>
+        <div class="inv-modal-field">
+          <label for="rv-upload-notes">Notes</label>
+          <textarea id="rv-upload-notes" class="rv-input" rows="3" placeholder="Optional notes"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="inv-modal-footer">
+      <button type="button" class="btn-secondary" id="rv-upload-cancel-btn">Cancel</button>
+      <button type="button" class="btn-primary" id="rv-upload-submit-btn">Upload</button>
+    </div>
+  </div>
+</div>
+
+<div id="rv-viewer-modal" class="rv-viewer-overlay" role="dialog" aria-modal="true" style="display:none">
+  <div class="rv-viewer-modal">
+    <div class="rv-viewer-head">
+      <h3 id="rv-viewer-title" class="rv-viewer-title">Preview</h3>
+      <button type="button" id="rv-viewer-close" class="rv-viewer-close" aria-label="Close preview">&times;</button>
+    </div>
+    <div class="rv-viewer-body">
+      <img id="rv-viewer-image" class="rv-viewer-image" alt="File preview" style="display:none;">
+      <iframe id="rv-viewer-pdf" class="rv-viewer-pdf" title="Document preview" style="display:none;"></iframe>
+    </div>
+  </div>
+</div>
+
+<script src="../src/script.js?v=20260702c"></script>
+</body>
+</html>
