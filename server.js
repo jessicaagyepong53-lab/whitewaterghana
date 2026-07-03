@@ -1266,6 +1266,34 @@ function broadcastRealtimeUpdate(payload) {
 
 }
 
+function extractRealtimeSource(req) {
+
+  const body = req && req.body && typeof req.body === 'object' ? req.body : null;
+
+  let instanceId = '';
+
+  if (body && body.__source && typeof body.__source === 'object') {
+
+    instanceId = String(body.__source.instanceId || '').trim();
+
+  }
+
+  if (!instanceId && body && typeof body.__source_instance === 'string') {
+
+    instanceId = String(body.__source_instance || '').trim();
+
+  }
+
+  if (!instanceId) {
+
+    instanceId = String((req && req.headers && req.headers['x-ww-source-instance']) || '').trim();
+
+  }
+
+  return instanceId ? { instanceId } : null;
+
+}
+
 io.on('connection', (_socket) => {
 
   // connection lifecycle intentionally passive; server pushes data updates only
@@ -2448,7 +2476,7 @@ async function readTaxRecords() {
 
 }
 
-async function writeTaxRecords(records) {
+async function writeTaxRecords(records, source = null) {
 
   const normalized = normalizeTaxRecords(records);
 
@@ -2464,7 +2492,7 @@ async function writeTaxRecords(records) {
 
   if (typeof broadcastRealtimeUpdate === 'function') {
 
-    broadcastRealtimeUpdate({ key: TAX_RECORDS_KEY });
+    broadcastRealtimeUpdate({ key: TAX_RECORDS_KEY, source });
 
   }
 
@@ -2538,7 +2566,9 @@ app.post('/api/tax-records', ensureAuthenticated, ensureRole('accounting'), asyn
 
     record.status = computeTaxRecordStatus(record);
 
-    const saved = await writeTaxRecords([...records, record]);
+    const source = extractRealtimeSource(req);
+
+    const saved = await writeTaxRecords([...records, record], source);
 
     const inserted = saved.find((row) => row.taxId === record.taxId) || record;
 
@@ -2588,7 +2618,9 @@ app.patch('/api/tax-records/:taxId', ensureAuthenticated, ensureRole('accounting
 
     records[idx] = nextRecord;
 
-    const saved = await writeTaxRecords(records);
+    const source = extractRealtimeSource(req);
+
+    const saved = await writeTaxRecords(records, source);
 
     const updated = saved.find((row) => row.taxId === taxId) || nextRecord;
 
@@ -2623,7 +2655,9 @@ app.delete('/api/tax-records/:taxId', ensureAuthenticated, ensureRole('accountin
 
     const nextRecords = records.filter((row) => row.taxId !== taxId);
 
-    await writeTaxRecords(nextRecords);
+    const source = extractRealtimeSource(req);
+
+    await writeTaxRecords(nextRecords, source);
 
     res.json({ ok: true });
 
@@ -3301,7 +3335,9 @@ app.put('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, next
 
     await FactoryEquipment.updateOne({ _id: req.params.id }, update);
 
-    if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key: 'ww_equipment' });
+    const source = extractRealtimeSource(req);
+
+    if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key: 'ww_equipment', source });
 
     res.json({ ok: true });
 
@@ -3329,7 +3365,9 @@ app.post('/api/factory-equipment', ensureAuthenticated, async (req, res, next) =
 
     });
 
-    if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key: 'ww_equipment' });
+    const source = extractRealtimeSource(req);
+
+    if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key: 'ww_equipment', source });
 
     res.status(201).json({ id: doc._id, code: doc.code });
 
@@ -3351,7 +3389,9 @@ app.delete('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, n
 
     await FactoryEquipment.deleteOne({ _id: req.params.id });
 
-    if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key: 'ww_equipment' });
+    const source = extractRealtimeSource(req);
+
+    if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key: 'ww_equipment', source });
 
     res.json({ ok: true });
 
@@ -4893,6 +4933,19 @@ function normalizeRecordVaultData(raw) {
 
     receipts: Array.isArray(data.receipts) ? data.receipts : [],
 
+    folders: Array.isArray(data.folders)
+      ? data.folders
+        .filter((row) => row && typeof row === 'object')
+        .map((row) => ({
+          folderId: String(row.folderId || '').trim(),
+          section: String(row.section || '').trim(),
+          name: String(row.name || '').trim() || 'Folder',
+          parentFolderId: String(row.parentFolderId || '').trim() || null,
+          createdAt: String(row.createdAt || '').trim() || nowIso(),
+        }))
+        .filter((row) => row.folderId && isRecordVaultSection(row.section))
+      : [],
+
   };
 
 }
@@ -4905,7 +4958,7 @@ async function readRecordVaultData() {
 
 }
 
-async function writeRecordVaultData(data) {
+async function writeRecordVaultData(data, source = null) {
 
   const normalized = normalizeRecordVaultData(data);
 
@@ -4921,7 +4974,7 @@ async function writeRecordVaultData(data) {
 
   if (typeof broadcastRealtimeUpdate === 'function') {
 
-    broadcastRealtimeUpdate({ key: RECORD_VAULT_KEY });
+    broadcastRealtimeUpdate({ key: RECORD_VAULT_KEY, source });
 
   }
 
@@ -4933,11 +4986,51 @@ function recordVaultDateMs(entry) {
 
   const raw = entry && (entry.date || entry.uploadDate);
 
-  const ms = Date.parse(String(raw || ''));
+  const text = String(raw || '').trim();
+
+  const slash = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+
+  let ms = Number.NaN;
+
+  if (slash) {
+
+    const first = Number(slash[1]);
+
+    const second = Number(slash[2]);
+
+    const year = Number(slash[3]);
+
+    let day = first;
+
+    let month = second;
+
+    if (first <= 12 && second > 12) {
+
+      month = first;
+
+      day = second;
+
+    }
+
+    ms = new Date(year, month - 1, day).getTime();
+
+  } else {
+
+    ms = Date.parse(text);
+
+  }
 
   return Number.isFinite(ms) ? ms : 0;
 
 }
+
+  normalized.companyDocuments = Array.isArray(normalized.companyDocuments)
+    ? [...normalized.companyDocuments].sort((a, b) => recordVaultDateMs(a) - recordVaultDateMs(b))
+    : [];
+
+  normalized.receipts = Array.isArray(normalized.receipts)
+    ? [...normalized.receipts].sort((a, b) => recordVaultDateMs(a) - recordVaultDateMs(b))
+    : [];
 
 function sanitizeFileName(name) {
 
@@ -5021,6 +5114,8 @@ app.get('/api/record-vault/:section', ensureAuthenticated, ensureRole('vault'), 
 
     const dateToMs = Date.parse(String(req.query.dateTo || ''));
 
+    const folderId = String(req.query.folderId || '').trim();
+
     if (search) {
 
       files = files.filter((entry) => String(entry.fileName || '').toLowerCase().includes(search));
@@ -5045,9 +5140,197 @@ app.get('/api/record-vault/:section', ensureAuthenticated, ensureRole('vault'), 
 
     }
 
+    if (folderId && folderId !== 'root') {
+
+      files = files.filter((entry) => String(entry.folderId || '') === folderId);
+
+    } else {
+
+      files = files.filter((entry) => !String(entry.folderId || '').trim());
+
+    }
+
     files.sort((a, b) => recordVaultDateMs(b) - recordVaultDateMs(a));
 
     res.json({ files });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.get('/api/record-vault/:section/folders', ensureAuthenticated, ensureRole('vault'), async (req, res, next) => {
+
+  try {
+
+    const section = String(req.params.section || '');
+
+    if (!isRecordVaultSection(section)) throw createError(400, 'Invalid section');
+
+    const parentFolderId = String(req.query.parentFolderId || '').trim();
+
+    const allData = await readRecordVaultData();
+
+    let folders = Array.isArray(allData.folders) ? [...allData.folders] : [];
+
+    folders = folders.filter((entry) => String(entry.section || '') === section);
+
+    if (parentFolderId && parentFolderId !== 'root') {
+
+      folders = folders.filter((entry) => String(entry.parentFolderId || '') === parentFolderId);
+
+    } else {
+
+      folders = folders.filter((entry) => !String(entry.parentFolderId || '').trim());
+
+    }
+
+    folders.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'en', { sensitivity: 'base' }));
+
+    res.json({ folders });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.post('/api/record-vault/:section/folders', ensureAuthenticated, ensureRole('vault'), async (req, res, next) => {
+
+  try {
+
+    const section = String(req.params.section || '');
+
+    if (!isRecordVaultSection(section)) throw createError(400, 'Invalid section');
+
+    const name = String(req.body.name || '').trim();
+
+    if (!name) throw createError(400, 'Folder name is required');
+
+    const parentFolderId = String(req.body.parentFolderId || '').trim() || null;
+
+    const allData = await readRecordVaultData();
+
+    allData.folders = Array.isArray(allData.folders) ? allData.folders : [];
+
+    if (parentFolderId) {
+
+      const parent = allData.folders.find((entry) => String(entry.folderId || '') === parentFolderId && String(entry.section || '') === section);
+
+      if (!parent) throw createError(404, 'Parent folder not found');
+
+    }
+
+    const folder = {
+
+      folderId: crypto.randomUUID(),
+
+      section,
+
+      name,
+
+      parentFolderId,
+
+      createdAt: nowIso(),
+
+    };
+
+    allData.folders.push(folder);
+
+    const source = extractRealtimeSource(req);
+
+    await writeRecordVaultData(allData, source);
+
+    res.status(201).json({ ok: true, folder });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.patch('/api/record-vault/:section/folders/:folderId', ensureAuthenticated, ensureRole('vault'), async (req, res, next) => {
+
+  try {
+
+    const section = String(req.params.section || '');
+
+    const folderId = String(req.params.folderId || '').trim();
+
+    if (!isRecordVaultSection(section)) throw createError(400, 'Invalid section');
+
+    if (!folderId) throw createError(400, 'Folder id is required');
+
+    const name = String(req.body.name || '').trim();
+
+    if (!name) throw createError(400, 'Folder name is required');
+
+    const allData = await readRecordVaultData();
+
+    allData.folders = Array.isArray(allData.folders) ? allData.folders : [];
+
+    const index = allData.folders.findIndex((entry) => String(entry.folderId || '') === folderId && String(entry.section || '') === section);
+
+    if (index < 0) throw createError(404, 'Folder not found');
+
+    allData.folders[index] = { ...allData.folders[index], name };
+
+    const source = extractRealtimeSource(req);
+
+    await writeRecordVaultData(allData, source);
+
+    res.json({ ok: true, folder: allData.folders[index] });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.delete('/api/record-vault/:section/folders/:folderId', ensureAuthenticated, ensureRole('vault'), async (req, res, next) => {
+
+  try {
+
+    const section = String(req.params.section || '');
+
+    const folderId = String(req.params.folderId || '').trim();
+
+    if (!isRecordVaultSection(section)) throw createError(400, 'Invalid section');
+
+    if (!folderId) throw createError(400, 'Folder id is required');
+
+    const allData = await readRecordVaultData();
+
+    allData.folders = Array.isArray(allData.folders) ? allData.folders : [];
+
+    const existing = allData.folders.find((entry) => String(entry.folderId || '') === folderId && String(entry.section || '') === section);
+
+    if (!existing) throw createError(404, 'Folder not found');
+
+    const hasSubfolders = allData.folders.some((entry) => String(entry.parentFolderId || '') === folderId && String(entry.section || '') === section);
+
+    const fileRows = Array.isArray(allData[section]) ? allData[section] : [];
+
+    const hasFiles = fileRows.some((entry) => String(entry.folderId || '') === folderId);
+
+    if (hasSubfolders || hasFiles) throw createError(400, 'Folder is not empty. Move or delete its contents first.');
+
+    allData.folders = allData.folders.filter((entry) => !(String(entry.folderId || '') === folderId && String(entry.section || '') === section));
+
+    const source = extractRealtimeSource(req);
+
+    await writeRecordVaultData(allData, source);
+
+    res.json({ ok: true });
 
   } catch (error) {
 
@@ -5119,6 +5402,18 @@ app.post('/api/record-vault/:section/upload', ensureAuthenticated, ensureRole('v
 
     const uploadDateIso = nowIso();
 
+    const folderId = String(req.body.folderId || '').trim() || null;
+
+    const allData = await readRecordVaultData();
+
+    if (folderId) {
+
+      const folder = (allData.folders || []).find((entry) => String(entry.folderId || '') === folderId && String(entry.section || '') === section);
+
+      if (!folder) throw createError(404, 'Folder not found');
+
+    }
+
     const record = {
 
       fileId,
@@ -5137,6 +5432,8 @@ app.post('/api/record-vault/:section/upload', ensureAuthenticated, ensureRole('v
 
       contentType: normalizedContentType,
 
+      folderId,
+
     };
 
     if (section === 'receipts') {
@@ -5149,11 +5446,11 @@ app.post('/api/record-vault/:section/upload', ensureAuthenticated, ensureRole('v
 
     }
 
-    const allData = await readRecordVaultData();
-
     allData[section].push(record);
 
-    await writeRecordVaultData(allData);
+    const source = extractRealtimeSource(req);
+
+    await writeRecordVaultData(allData, source);
 
     res.status(201).json({ ok: true, file: record });
 
@@ -5238,7 +5535,9 @@ app.delete('/api/record-vault/:section/:fileId', ensureAuthenticated, ensureRole
 
     allData[section] = allData[section].filter((row) => String(row.fileId || '') !== fileId);
 
-    await writeRecordVaultData(allData);
+    const source = extractRealtimeSource(req);
+
+    await writeRecordVaultData(allData, source);
 
     res.json({ ok: true });
 

@@ -762,7 +762,8 @@ function setLastDataUpdateStamp(value) {
 }
 
 function putAppDataKeyToServer(key, data, logResult = true) {
-	const body = JSON.stringify({ data, __source: getSyncSourceMeta() });
+	const normalizedData = normalizeChronologicalDataForKey(key, data);
+	const body = JSON.stringify({ data: normalizedData, __source: getSyncSourceMeta() });
 	return fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), {
 		method: 'PUT', credentials: 'include',
 		headers: { 'Content-Type': 'application/json' },
@@ -922,45 +923,46 @@ async function loadFromServer(key) {
 		if (res.ok) {
 			const json = await res.json();
 			if (json.data !== null && json.data !== undefined) {
+				const incomingData = normalizeChronologicalDataForKey(key, json.data);
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
 					const hasPending = hasPendingSalesSyncForKey(key);
 					if (hasPending) {
 						const pendingPayload = getPendingSalesSyncPayload(salesMonth) || getSalesMonthPayload(salesMonth);
-						const mergedPending = mergeSalesMonthPayloads(pendingPayload, json.data, salesMonth);
+						const mergedPending = mergeSalesMonthPayloads(pendingPayload, incomingData, salesMonth);
 						localStorage.setItem(key, JSON.stringify(mergedPending));
 						setProtectedSalesPayload(salesMonth, mergedPending);
-						if (areSalesPayloadsEquivalent(mergedPending, json.data)) clearPendingSalesSync(salesMonth);
+						if (areSalesPayloadsEquivalent(mergedPending, incomingData)) clearPendingSalesSync(salesMonth);
 						else queuePendingSalesSync(salesMonth, mergedPending);
 						return mergedPending;
 					}
 					if (SALES_SERVER_AUTHORITATIVE_MODE) {
-						localStorage.setItem(key, JSON.stringify(json.data));
-						setProtectedSalesPayload(salesMonth, json.data);
+						localStorage.setItem(key, JSON.stringify(incomingData));
+						setProtectedSalesPayload(salesMonth, incomingData);
 						clearPendingSalesSync(salesMonth);
-						return json.data;
+						return incomingData;
 					}
 					if (isCanonicalExcelMarchMonth(salesMonth)) {
-						localStorage.setItem(key, JSON.stringify(json.data));
-						setProtectedSalesPayload(salesMonth, json.data);
+						localStorage.setItem(key, JSON.stringify(incomingData));
+						setProtectedSalesPayload(salesMonth, incomingData);
 						clearPendingSalesSync(salesMonth);
-						return json.data;
+						return incomingData;
 					}
 					if (!hasPending) {
-						localStorage.setItem(key, JSON.stringify(json.data));
-						setProtectedSalesPayload(salesMonth, json.data);
+						localStorage.setItem(key, JSON.stringify(incomingData));
+						setProtectedSalesPayload(salesMonth, incomingData);
 						clearPendingSalesSync(salesMonth);
-						return json.data;
+						return incomingData;
 					}
 					const localPayload = getSalesMonthPayload(salesMonth);
-					const merged = mergeSalesMonthPayloads(localPayload, json.data, salesMonth);
+					const merged = mergeSalesMonthPayloads(localPayload, incomingData, salesMonth);
 					localStorage.setItem(key, JSON.stringify(merged));
-					if (areSalesPayloadsEquivalent(merged, json.data)) clearPendingSalesSync(salesMonth);
+					if (areSalesPayloadsEquivalent(merged, incomingData)) clearPendingSalesSync(salesMonth);
 					else queuePendingSalesSync(salesMonth, merged);
 					return merged;
 				}
-				localStorage.setItem(key, JSON.stringify(json.data));
-				return json.data;
+				localStorage.setItem(key, JSON.stringify(incomingData));
+				return incomingData;
 			}
 		}
 	} catch (_e) { /* fall back to localStorage */ }
@@ -976,26 +978,27 @@ async function loadFromServerForceFresh(key) {
 		if (res.ok) {
 			const json = await res.json();
 			if (json.data !== null && json.data !== undefined) {
+				const incomingData = normalizeChronologicalDataForKey(key, json.data);
 				const salesMonth = getSalesMonthFromStorageKey(key);
 				if (salesMonth) {
 					const hasPending = hasPendingSalesSyncForKey(key);
 					if (hasPending) {
 						const pendingPayload = getPendingSalesSyncPayload(salesMonth) || getSalesMonthPayload(salesMonth);
-						const mergedPending = mergeSalesMonthPayloads(pendingPayload, json.data, salesMonth);
+						const mergedPending = mergeSalesMonthPayloads(pendingPayload, incomingData, salesMonth);
 						localStorage.setItem(key, JSON.stringify(mergedPending));
 						setProtectedSalesPayload(salesMonth, mergedPending);
-						if (areSalesPayloadsEquivalent(mergedPending, json.data)) clearPendingSalesSync(salesMonth);
+						if (areSalesPayloadsEquivalent(mergedPending, incomingData)) clearPendingSalesSync(salesMonth);
 						else queuePendingSalesSync(salesMonth, mergedPending);
 						return mergedPending;
 					}
 					// Server-authoritative month refresh to eliminate split-brain local state.
-					localStorage.setItem(key, JSON.stringify(json.data));
-					setProtectedSalesPayload(salesMonth, json.data);
+					localStorage.setItem(key, JSON.stringify(incomingData));
+					setProtectedSalesPayload(salesMonth, incomingData);
 					clearPendingSalesSync(salesMonth);
-					return json.data;
+					return incomingData;
 				}
-				localStorage.setItem(key, JSON.stringify(json.data));
-				return json.data;
+				localStorage.setItem(key, JSON.stringify(incomingData));
+				return incomingData;
 			}
 		}
 	} catch (_e) { /* fall back to localStorage */ }
@@ -1172,6 +1175,7 @@ async function loadBulkFromServer(keys) {
 			if (json.items) {
 				for (const [k, v] of Object.entries(json.items)) {
 					if (v === null || v === undefined) continue;
+					const normalizedIncoming = normalizeChronologicalDataForKey(k, v);
 					// Equipment has a dedicated collection endpoint.
 					// Ignore key/value payload for ww_equipment to avoid stale overwrite.
 					if (k === 'ww_equipment') continue;
@@ -1185,28 +1189,28 @@ async function loadBulkFromServer(keys) {
 								try {
 									const localRaw = localStorage.getItem(k);
 									const localData = localRaw ? JSON.parse(localRaw) : {};
-									const merged = mergeSalesMonthPayloads(localData, v, salesMonth);
+									const merged = mergeSalesMonthPayloads(localData, normalizedIncoming, salesMonth);
 									localStorage.setItem(k, JSON.stringify(merged));
 									setProtectedSalesPayload(salesMonth, merged);
 									queuePendingSalesSync(salesMonth, merged);
 								} catch (_mergeErr) { /* keep local data on merge failure */ }
 							} else {
-								localStorage.setItem(k, JSON.stringify(v));
-								setProtectedSalesPayload(salesMonth, v);
+								localStorage.setItem(k, JSON.stringify(normalizedIncoming));
+								setProtectedSalesPayload(salesMonth, normalizedIncoming);
 								clearPendingSalesSync(salesMonth);
 							}
 							continue;
 						}
 						if (isCanonicalExcelMarchMonth(salesMonth)) {
-							localStorage.setItem(k, JSON.stringify(v));
-							setProtectedSalesPayload(salesMonth, v);
+							localStorage.setItem(k, JSON.stringify(normalizedIncoming));
+							setProtectedSalesPayload(salesMonth, normalizedIncoming);
 							clearPendingSalesSync(salesMonth);
 							continue;
 						}
 						const existing = getSalesMonthPayload(salesMonth);
-						const merged = mergeSalesMonthPayloads(existing, v, salesMonth);
+						const merged = mergeSalesMonthPayloads(existing, normalizedIncoming, salesMonth);
 						localStorage.setItem(k, JSON.stringify(merged));
-						if (areSalesPayloadsEquivalent(merged, v)) {
+						if (areSalesPayloadsEquivalent(merged, normalizedIncoming)) {
 							clearPendingSalesSync(salesMonth);
 						} else {
 							queuePendingSalesSync(salesMonth, merged);
@@ -1214,7 +1218,7 @@ async function loadBulkFromServer(keys) {
 						continue;
 					}
 					if (hasPendingSalesSyncForKey(k)) continue;
-					localStorage.setItem(k, JSON.stringify(v));
+					localStorage.setItem(k, JSON.stringify(normalizedIncoming));
 				}
 				return json.items;
 			}
@@ -1311,6 +1315,151 @@ function formatDateDisplay(dateStr) {
 	const d = new Date(dateStr + 'T00:00:00');
 	if (isNaN(d)) return dateStr;
 	return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
+}
+
+function parseDateLikeToMs(value) {
+	const text = String(value || '').trim();
+	if (!text) return Number.NaN;
+
+	if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+		const [year, month, day] = text.split('-').map(Number);
+		const dt = new Date(year, month - 1, day);
+		return Number.isFinite(dt.getTime()) ? dt.getTime() : Number.NaN;
+	}
+
+	const slash = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+	if (slash) {
+		const first = Number(slash[1]);
+		const second = Number(slash[2]);
+		const year = Number(slash[3]);
+		let day = first;
+		let month = second;
+		if (first <= 12 && second > 12) {
+			month = first;
+			day = second;
+		}
+		const dt = new Date(year, month - 1, day);
+		return Number.isFinite(dt.getTime()) ? dt.getTime() : Number.NaN;
+	}
+
+	const fallback = Date.parse(text);
+	return Number.isFinite(fallback) ? fallback : Number.NaN;
+}
+
+function compareDateLikeValues(a, b) {
+	const ams = parseDateLikeToMs(a);
+	const bms = parseDateLikeToMs(b);
+	const aOk = Number.isFinite(ams);
+	const bOk = Number.isFinite(bms);
+	if (aOk && bOk && ams !== bms) return ams - bms;
+	if (aOk !== bOk) return aOk ? -1 : 1;
+	return String(a || '').localeCompare(String(b || ''));
+}
+
+function sortRowsChronologically(rows, dateFields) {
+	if (!Array.isArray(rows) || rows.length <= 1) return Array.isArray(rows) ? [...rows] : [];
+	const fields = Array.isArray(dateFields) && dateFields.length
+		? dateFields
+		: ['date', 'orderDate', 'uploadDate', 'createdAt', 'updatedAt'];
+	const withMeta = rows.map((row, index) => {
+		let ms = Number.NaN;
+		for (const field of fields) {
+			ms = parseDateLikeToMs(row && row[field]);
+			if (Number.isFinite(ms)) break;
+		}
+		return { row, index, ms };
+	});
+	withMeta.sort((a, b) => {
+		const aOk = Number.isFinite(a.ms);
+		const bOk = Number.isFinite(b.ms);
+		if (aOk && bOk && a.ms !== b.ms) return a.ms - b.ms;
+		if (aOk !== bOk) return aOk ? -1 : 1;
+		return a.index - b.index;
+	});
+	return withMeta.map((entry) => entry.row);
+}
+
+function normalizeChronologicalDataForKey(key, data) {
+	const month = getSalesMonthFromStorageKey(key);
+	if (month) {
+		const payload = data && typeof data === 'object' ? { ...data } : {};
+		payload.invoices = sortRowsChronologically(payload.invoices, ['date', 'orderDate', 'createdAt']);
+		payload.salesOrders = sortRowsChronologically(payload.salesOrders, ['orderDate', 'date', 'createdAt']);
+		return payload;
+	}
+
+	if (key === 'ww_purchase_data_v2') {
+		const payload = data && typeof data === 'object' ? { ...data } : {};
+		payload.purchaseOrders = sortRowsChronologically(payload.purchaseOrders, ['date', 'orderDate', 'createdAt']);
+		return payload;
+	}
+
+	if (key === 'ww_accounting_data_v2') {
+		const payload = data && typeof data === 'object' ? { ...data } : {};
+		payload.ledger = sortRowsChronologically(payload.ledger, ['date', 'createdAt']);
+		payload.cashbook = sortRowsChronologically(payload.cashbook, ['date', 'createdAt']);
+		payload.summary = sortRowsChronologically(payload.summary, ['date', 'createdAt']);
+		payload.salaries = sortRowsChronologically(payload.salaries, ['date', 'createdAt']);
+		payload.assets = sortRowsChronologically(payload.assets, ['date', 'createdAt']);
+		return payload;
+	}
+
+	if (key === 'ww_production_batches') {
+		return sortRowsChronologically(data, ['date', 'createdAt']);
+	}
+
+	if (key === 'ww_tax_records') {
+		return sortRowsChronologically(data, ['date', 'dueDate', 'createdAt']);
+	}
+
+	if (key === 'ww_record_vault') {
+		const payload = data && typeof data === 'object' ? { ...data } : {};
+		payload.companyDocuments = sortRowsChronologically(payload.companyDocuments, ['uploadDate', 'date', 'createdAt']);
+		payload.receipts = sortRowsChronologically(payload.receipts, ['date', 'uploadDate', 'createdAt']);
+		return payload;
+	}
+
+	if (/^ww_inventory_\d{4}-\d{2}$/.test(String(key || ''))) {
+		const payload = data && typeof data === 'object' ? { ...data } : {};
+		payload.finishedProducts = sortRowsChronologically(payload.finishedProducts, ['date', 'addedDate', 'createdAt']);
+		payload.rawMaterials = sortRowsChronologically(payload.rawMaterials, ['restocked', 'date', 'createdAt']);
+		payload.equipment = sortRowsChronologically(payload.equipment, ['nextMaintenance', 'lastMaintenance', 'createdAt']);
+		payload.customers = sortRowsChronologically(payload.customers, ['lastOrder', 'createdAt']);
+		return payload;
+	}
+
+	return data;
+}
+
+function normalizeChronologicalOrderAcrossAppDataStorage() {
+	try {
+		for (let i = 0; i < localStorage.length; i += 1) {
+			const key = localStorage.key(i);
+			if (!key) continue;
+			if (
+				key !== 'ww_purchase_data_v2'
+				&& key !== 'ww_accounting_data_v2'
+				&& key !== 'ww_production_batches'
+				&& key !== 'ww_record_vault'
+				&& key !== 'ww_tax_records'
+				&& !/^ww_inventory_\d{4}-\d{2}$/.test(key)
+				&& !/^ww_sales_\d{4}-\d{2}$/.test(key)
+			) {
+				continue;
+			}
+			const raw = localStorage.getItem(key);
+			if (!raw) continue;
+			let parsed;
+			try {
+				parsed = JSON.parse(raw);
+			} catch (_e) {
+				continue;
+			}
+			const normalized = normalizeChronologicalDataForKey(key, parsed);
+			const normalizedRaw = JSON.stringify(normalized);
+			if (normalizedRaw !== raw) localStorage.setItem(key, normalizedRaw);
+		}
+	} catch (_e) { /* ignore */ }
 }
 
 function statusPillClass(status) {
@@ -2492,6 +2641,7 @@ async function saveOneEquipmentToServer(eq) {
 				details: eq.details,
 				lastMaintenance: eq.lastMaintenance,
 				nextMaintenance: eq.nextMaintenance,
+				__source: getSyncSourceMeta(),
 			}),
 		});
 		if (!res.ok) {
@@ -3723,6 +3873,7 @@ async function initInventoryPage() {
 				invTrace('month:load:legacy-bootstrap', { month, finishedProducts: finishedProducts.length, equipment: equipment.length });
 			}
 		}
+		finishedProducts = sortRowsChronologically(finishedProducts, ['date', 'addedDate', 'createdAt']);
 		invTrace('month:load:done', { month, rawMaterials: rawMaterials.length, finishedProducts: finishedProducts.length, equipment: equipment.length, customers: customers.length });
 	};
 
@@ -4255,16 +4406,27 @@ async function initInventoryPage() {
 				const v = Number(getValue(id));
 				return Number.isFinite(v) && v >= 0 ? v : 0;
 			};
+			const validateInventoryEntryMonth = (fieldId, dateValue, fieldLabel) => {
+				return validateIsoDateForLockedMonth(dateValue, currentInventoryMonth, {
+					fieldId,
+					fieldLabel,
+					inputId: `inv-field-${fieldId}`,
+					mismatchSummary: `Entries in this inventory month must use a ${monthLabel(resolveLockedEntryMonth(currentInventoryMonth))} date.`,
+					notify: true,
+				});
+			};
 
 			if (currentEntity === 'material') {
 				const material = getValue('material');
 				if (!material) return;
+				const restockedDate = getValue('restocked') || todayForInput;
+				if (!validateInventoryEntryMonth('restocked', restockedDate, 'Last Restocked date')) return;
 				if (editingIdx >= 0 && rawMaterials[editingIdx]) {
 					rawMaterials[editingIdx].material = material;
 					rawMaterials[editingIdx].quantity = getNum('quantity');
 					rawMaterials[editingIdx].minLevel = getNum('minLevel');
 					rawMaterials[editingIdx].supplier = getValue('supplier') || 'N/A';
-					rawMaterials[editingIdx].restocked = getValue('restocked') || todayForInput;
+					rawMaterials[editingIdx].restocked = restockedDate;
 				} else {
 					rawMaterials.push({
 						id: nextNumericId(rawMaterials),
@@ -4272,7 +4434,7 @@ async function initInventoryPage() {
 						quantity: getNum('quantity'),
 						minLevel: getNum('minLevel'),
 						supplier: getValue('supplier') || 'N/A',
-						restocked: getValue('restocked') || todayForInput,
+						restocked: restockedDate,
 					});
 				}
 				persistInventoryMonthState();
@@ -4281,19 +4443,21 @@ async function initInventoryPage() {
 			if (currentEntity === 'product') {
 				const product = getValue('product');
 				if (!product) return;
+				const productDate = getValue('date') || getTodayDateStr();
+				if (!validateInventoryEntryMonth('date', productDate, 'Product date')) return;
 				invTrace('product:submit', { mode: editingIdx >= 0 ? 'edit' : 'add', editingIdx, beforeCount: finishedProducts.length, product });
 				if (editingIdx >= 0 && finishedProducts[editingIdx]) {
 					finishedProducts[editingIdx].product = product;
 					finishedProducts[editingIdx].qty = getNum('qty');
 					finishedProducts[editingIdx].location = getValue('location') || 'Warehouse A';
-					finishedProducts[editingIdx].date = getValue('date') || finishedProducts[editingIdx].date || finishedProducts[editingIdx].addedDate;
+					finishedProducts[editingIdx].date = productDate;
 				} else {
 					finishedProducts.push({
 						id: nextNumericId(finishedProducts),
 						product,
 						qty: getNum('qty'),
 						location: getValue('location') || 'Warehouse A',
-						date: getValue('date') || getTodayDateStr(),
+						date: productDate,
 						status: 'ready for sale',
 						addedDate: getTodayDateStr(),
 					});
@@ -4305,12 +4469,16 @@ async function initInventoryPage() {
 			if (currentEntity === 'equipment') {
 				const equipmentName = getValue('equipmentName');
 				if (!equipmentName) return;
+				const lastMaintenanceDate = getValue('lastMaintenance') || todayForInput;
+				const nextMaintenanceDate = getValue('nextMaintenance') || todayForInput;
+				if (!validateInventoryEntryMonth('lastMaintenance', lastMaintenanceDate, 'Last maintenance date')) return;
+				if (!validateInventoryEntryMonth('nextMaintenance', nextMaintenanceDate, 'Next maintenance date')) return;
 				invTrace('equipment:submit', { mode: editingIdx >= 0 ? 'edit' : 'add', editingIdx, beforeCount: equipment.length, equipmentName });
 				if (editingIdx >= 0 && equipment[editingIdx]) {
 					equipment[editingIdx].equipment = equipmentName;
 					equipment[editingIdx].details = getValue('details');
-					equipment[editingIdx].lastMaintenance = getValue('lastMaintenance') || todayForInput;
-					equipment[editingIdx].nextMaintenance = getValue('nextMaintenance') || todayForInput;
+					equipment[editingIdx].lastMaintenance = lastMaintenanceDate;
+					equipment[editingIdx].nextMaintenance = nextMaintenanceDate;
 					const saved = await saveOneEquipmentToServer(equipment[editingIdx]);
 					invTrace('equipment:submit:edit:server-save', {
 						success: !!saved,
@@ -4323,8 +4491,8 @@ async function initInventoryPage() {
 						equipment: equipmentName,
 						details: getValue('details'),
 						status: 'operational',
-						lastMaintenance: getValue('lastMaintenance') || todayForInput,
-						nextMaintenance: getValue('nextMaintenance') || todayForInput,
+						lastMaintenance: lastMaintenanceDate,
+						nextMaintenance: nextMaintenanceDate,
 					};
 					// Push optimistically so it renders immediately, but hold off on
 					// persisting to localStorage until the server returns the real ID.
@@ -4336,7 +4504,7 @@ async function initInventoryPage() {
 						const r = await fetch(API_BASE + '/api/factory-equipment', {
 							method: 'POST', credentials: 'include',
 							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify(newEq),
+							body: JSON.stringify({ ...newEq, __source: getSyncSourceMeta() }),
 						});
 						if (r.ok) {
 							const result = await r.json();
@@ -4359,17 +4527,19 @@ async function initInventoryPage() {
 			if (currentEntity === 'customer') {
 				const name = getValue('name');
 				if (!name) return;
+				const lastOrderDate = getValue('lastOrder');
+				if (lastOrderDate && !validateInventoryEntryMonth('lastOrder', lastOrderDate, 'Last order date')) return;
 				if (editingIdx >= 0 && customers[editingIdx]) {
 					customers[editingIdx].name = name;
 					customers[editingIdx].contact = getValue('contact') || '000-000-0000';
-					customers[editingIdx].lastOrder = getValue('lastOrder') || '-';
+					customers[editingIdx].lastOrder = lastOrderDate || '-';
 				} else {
 					customers.push({
 						id: nextNumericId(customers),
 						name,
 						contact: getValue('contact') || '000-000-0000',
 						orders: 0,
-						lastOrder: getValue('lastOrder') || '-',
+						lastOrder: lastOrderDate || '-',
 						status: 'active',
 					});
 				}
@@ -4443,7 +4613,11 @@ async function initInventoryPage() {
 					}
 					equipment.splice(idx, 1);
 					if (removed && removed.id) {
-						fetch(API_BASE + '/api/factory-equipment/' + removed.id, { method: 'DELETE', credentials: 'include' }).catch(() => {});
+						fetch(API_BASE + '/api/factory-equipment/' + removed.id, {
+							method: 'DELETE',
+							credentials: 'include',
+							headers: { 'x-ww-source-instance': getSyncSourceMeta().instanceId || '' },
+						}).catch(() => {});
 					}
 					persistInventoryMonthState();
 				}
@@ -4581,6 +4755,48 @@ function monthLabel(month) {
 	const [y, m] = month.split('-');
 	const names = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
 	return `${names[parseInt(m, 10)] || m} ${y}`;
+}
+
+function resolveLockedEntryMonth(preferredMonth) {
+	const value = String(preferredMonth || '').trim();
+	if (/^\d{4}-\d{2}$/.test(value)) return value;
+	return getTodayDateStr().slice(0, 7);
+}
+
+function validateIsoDateForLockedMonth(isoDate, lockedMonth, options = {}) {
+	const value = String(isoDate || '').trim();
+	const month = resolveLockedEntryMonth(lockedMonth);
+	const fieldLabel = String(options.fieldLabel || 'Date').trim();
+	const fieldId = String(options.fieldId || 'date').trim();
+	const mismatchSummary = options.mismatchSummary || `Entries in this view must use a ${monthLabel(month)} date.`;
+	const setFieldError = typeof options.setFieldError === 'function' ? options.setFieldError : null;
+	const setSummary = typeof options.setSummary === 'function' ? options.setSummary : null;
+	const inputEl = options.inputEl || (options.inputId ? document.getElementById(options.inputId) : null);
+
+	const raiseError = (message, summaryMessage) => {
+		if (setFieldError) setFieldError(fieldId, message);
+		if (setSummary) setSummary(summaryMessage || message);
+		if (inputEl && typeof inputEl.setCustomValidity === 'function') {
+			inputEl.setCustomValidity(message);
+			if (typeof inputEl.reportValidity === 'function') inputEl.reportValidity();
+			setTimeout(() => {
+				try { inputEl.setCustomValidity(''); } catch (_e) { /* ignore */ }
+			}, 0);
+			if (typeof inputEl.focus === 'function') inputEl.focus();
+		}
+		if (options.notify !== false && !setSummary) {
+			window.alert(summaryMessage || message);
+		}
+	};
+
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+		raiseError(`${fieldLabel} must be a valid date.`, 'Please fix the highlighted date field.');
+		return false;
+	}
+	if (value.slice(0, 7) === month) return true;
+
+	raiseError(`${fieldLabel} must be within ${monthLabel(month)}.`, mismatchSummary);
+	return false;
 }
 
 function getInvoiceMonth(invoice) {
@@ -5314,6 +5530,8 @@ function seedMarchSalesData() {
 function saveSalesDataToStorage() {
 	const month = currentSalesMonth;
 	const key = monthStorageKey(month);
+	salesModuleData.invoices = sortRowsChronologically(salesModuleData.invoices, ['date', 'orderDate', 'createdAt']);
+	salesModuleData.salesOrders = sortRowsChronologically(salesModuleData.salesOrders, ['orderDate', 'date', 'createdAt']);
 	const monthInvoices = (Array.isArray(salesModuleData.invoices) ? salesModuleData.invoices : [])
 		.filter((inv) => isInvoiceInMonthBucket(inv, month));
 	const activeInvoiceIds = new Set(monthInvoices.map((inv) => String(inv.id)).filter(Boolean));
@@ -6047,21 +6265,8 @@ async function initSalesInvoicesPage() {
 	window.addEventListener('beforeunload', () => { if (editingSiIdx < 0 && currentEntity) saveModalDraft(currentEntity); });
 
 	const openModal = (entity, editId, resumeDraft = false) => {
-		let config = SI_MODAL_CONFIGS[entity];
+		const config = SI_MODAL_CONFIGS[entity];
 		if (!config || !addModal) return;
-		if (entity === 'invoice') {
-			const editingInvoice = editId != null
-				? salesModuleData.invoices.find((inv) => String(inv.id) === String(editId))
-				: null;
-			config = {
-				...config,
-				fields: config.fields.map((field) => (
-					field.id === 'product'
-						? { ...field, options: getAvailableInvoiceProducts(editingInvoice?.product || editingInvoice?.items?.[0]?.name) }
-						: field
-				)),
-			};
-		}
 		currentEntity = entity;
 		// Resolve editing index from ID so we always get the right record regardless of array order
 		if (editId != null) {
@@ -6188,22 +6393,17 @@ async function initSalesInvoicesPage() {
 	};
 
 	const validateEntryMonth = (fieldId, isoDate) => {
-		const value = String(isoDate || '').trim();
-		if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-			setFieldValidationError(fieldId, 'Please provide a valid date.');
-			const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
-			if (summary) summary.textContent = 'Please fix the highlighted date field.';
-			return false;
-		}
-		const selectedMonth = String(currentSalesMonth || '').trim();
-		if (!/^\d{4}-\d{2}$/.test(selectedMonth)) return true;
-		if (value.slice(0, 7) === selectedMonth) return true;
-		setFieldValidationError(fieldId, `Date must be within ${monthLabel(selectedMonth)}.`);
-		const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
-		if (summary) summary.textContent = `Entries in this view must use a ${monthLabel(selectedMonth)} date.`;
-		const dateField = document.getElementById(`si-field-${fieldId}`);
-		if (dateField) dateField.focus();
-		return false;
+		return validateIsoDateForLockedMonth(isoDate, currentSalesMonth, {
+			fieldId,
+			fieldLabel: 'Date',
+			inputId: `si-field-${fieldId}`,
+			setFieldError: setFieldValidationError,
+			setSummary: (message) => {
+				const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
+				if (summary) summary.textContent = message;
+			},
+			notify: false,
+		});
 	};
 
 	if (modalForm && !modalForm.dataset.bound) {
@@ -6512,11 +6712,11 @@ async function initSalesInvoicesPage() {
 		const invoiceRows = salesModuleData.invoices.map((invoice, origIdx) => {
 			return { ...invoice, _origIdx: origIdx };
 		}).sort((a, b) => {
-			const dateDiff = String(a.date || '').localeCompare(String(b.date || ''));
+			const dateDiff = compareDateLikeValues(a.date, b.date);
 			return dateDiff !== 0 ? dateDiff : getIdNum(a.id) - getIdNum(b.id);
 		});
 		const orders = salesModuleData.salesOrders.map((order, origIdx) => ({ ...order, _origIdx: origIdx })).sort((a, b) => {
-			const dateDiff = String(a.orderDate || a.date || '').localeCompare(String(b.orderDate || b.date || ''));
+			const dateDiff = compareDateLikeValues(a.orderDate || a.date, b.orderDate || b.date);
 			return dateDiff !== 0 ? dateDiff : getIdNum(a.id) - getIdNum(b.id);
 		});
 
@@ -6870,6 +7070,7 @@ function loadPurchaseDataFromStorage() {
 }
 
 function savePurchaseDataToStorage() {
+	purchaseModuleData.purchaseOrders = sortRowsChronologically(purchaseModuleData.purchaseOrders, ['date', 'orderDate', 'createdAt']);
 	localStorage.setItem('ww_purchase_data_v2', JSON.stringify(purchaseModuleData));
 	syncToServer('ww_purchase_data_v2', purchaseModuleData);
 	try {
@@ -7129,6 +7330,20 @@ function initPurchasePage() {
 
 	const getValue = (id) => { const el = document.getElementById(`pu-field-${id}`); return el ? el.value.trim() : ''; };
 	const getNum = (id) => { const v = Number(getValue(id)); return Number.isFinite(v) && v >= 0 ? v : 0; };
+	const setModalSummary = (message) => {
+		const summary = modalFieldsEl ? modalFieldsEl.querySelector('#pu-modal-error-summary') : null;
+		if (summary) summary.textContent = message;
+	};
+	const validatePurchaseEntryMonth = (fieldId, isoDate, fieldLabel) => {
+		return validateIsoDateForLockedMonth(isoDate, '', {
+			fieldId,
+			fieldLabel,
+			inputId: `pu-field-${fieldId}`,
+			setFieldError: setFieldValidationError,
+			setSummary: setModalSummary,
+			notify: false,
+		});
+	};
 
 	if (modalForm && !modalForm.dataset.bound) {
 		modalForm.dataset.bound = '1';
@@ -7141,12 +7356,16 @@ function initPurchasePage() {
 				const supplier = getValue('supplier');
 				const item = getValue('item');
 				if (!supplier || !item) return;
+				const poDate = getValue('date') || todayStr;
+				const expectedDate = getValue('expectedDate') || todayStr;
+				if (!validatePurchaseEntryMonth('date', poDate, 'Order date')) return;
+				if (!validatePurchaseEntryMonth('expectedDate', expectedDate, 'Expected delivery date')) return;
 				if (editingId) {
 					const po = purchaseModuleData.purchaseOrders.find((p) => p.id === editingId);
 					if (po) {
 						po.supplier = supplier;
-						po.date = getValue('date') || todayStr;
-						po.expectedDate = getValue('expectedDate') || todayStr;
+						po.date = poDate;
+						po.expectedDate = expectedDate;
 						po.status = getValue('status') || 'pending';
 						po.items = [{ name: item, qty: getNum('qty') || 1, unitCost: getNum('unitCost') }];
 					}
@@ -7154,8 +7373,8 @@ function initPurchasePage() {
 					purchaseModuleData.purchaseOrders.push({
 						id: nextPoId(),
 						supplier,
-						date: getValue('date') || todayStr,
-						expectedDate: getValue('expectedDate') || todayStr,
+						date: poDate,
+						expectedDate: expectedDate,
 						status: getValue('status') || 'pending',
 						items: [{ name: item, qty: getNum('qty') || 1, unitCost: getNum('unitCost') }],
 					});
@@ -7564,6 +7783,11 @@ function seedMarchSalaries() {
 }
 
 function saveAccountingDataToStorage() {
+	accountingData.ledger = sortRowsChronologically(accountingData.ledger, ['date', 'createdAt']);
+	accountingData.cashbook = sortRowsChronologically(accountingData.cashbook, ['date', 'createdAt']);
+	accountingData.summary = sortRowsChronologically(accountingData.summary, ['date', 'createdAt']);
+	accountingData.salaries = sortRowsChronologically(accountingData.salaries, ['date', 'createdAt']);
+	accountingData.assets = sortRowsChronologically(accountingData.assets, ['date', 'createdAt']);
 	localStorage.setItem('ww_accounting_data_v2', JSON.stringify(accountingData));
 	syncToServer('ww_accounting_data_v2', accountingData);
 	try {
@@ -7921,11 +8145,17 @@ function initAccountingPage() {
 					alert('Please select a paid date.');
 					return;
 				}
+				if (!validateIsoDateForLockedMonth(paidDate, resolveAccountingLockedMonth(), {
+					fieldLabel: 'Paid date',
+					inputEl: taxInputPaidDate,
+					mismatchSummary: `Entries in this view must use a ${monthLabel(resolveLockedEntryMonth(resolveAccountingLockedMonth()))} date.`,
+					notify: true,
+				})) return;
 				const res = await fetch(API_BASE + '/api/tax-records/' + encodeURIComponent(taxEditingId), {
 					method: 'PATCH',
 					credentials: 'include',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ paidDate }),
+					body: JSON.stringify({ paidDate, __source: getSyncSourceMeta() }),
 				});
 				if (!res.ok) throw new Error('Could not update tax record');
 			} else {
@@ -7937,11 +8167,17 @@ function initAccountingPage() {
 					alert('Please fill Type, Period, Amount, and Due Date.');
 					return;
 				}
+				if (!validateIsoDateForLockedMonth(dueDate, resolveAccountingLockedMonth(), {
+					fieldLabel: 'Due date',
+					inputEl: taxInputDueDate,
+					mismatchSummary: `Entries in this view must use a ${monthLabel(resolveLockedEntryMonth(resolveAccountingLockedMonth()))} date.`,
+					notify: true,
+				})) return;
 				const res = await fetch(API_BASE + '/api/tax-records', {
 					method: 'POST',
 					credentials: 'include',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ type, period, amount, dueDate }),
+					body: JSON.stringify({ type, period, amount, dueDate, __source: getSyncSourceMeta() }),
 				});
 				if (!res.ok) throw new Error('Could not create tax record');
 			}
@@ -8283,6 +8519,48 @@ function initAccountingPage() {
 
 	const getValue = (id) => { const el = document.getElementById(`acc-field-${id}`); return el ? el.value.trim() : ''; };
 	const getNum = (id) => { const v = Number(getValue(id)); return Number.isFinite(v) && v >= 0 ? v : 0; };
+	const setAccountingModalSummary = (message) => {
+		const summary = modalFieldsEl ? modalFieldsEl.querySelector('#acc-modal-error-summary') : null;
+		if (summary) summary.textContent = message;
+	};
+	const resolveAccountingLockedMonth = () => {
+		if (/^\d{4}-\d{2}$/.test(String(currentExpensePeriod || '')) && currentExpensePeriod !== '__all__') {
+			return String(currentExpensePeriod);
+		}
+		if (/^\d{4}-\d{2}$/.test(String(currentSalaryMonth || '')) && currentSalaryMonth !== '__all__') {
+			return String(currentSalaryMonth);
+		}
+		return '';
+	};
+	const validateAccountingEntryMonth = (fieldId, isoDate, fieldLabel) => {
+		return validateIsoDateForLockedMonth(isoDate, resolveAccountingLockedMonth(), {
+			fieldId,
+			fieldLabel,
+			inputId: `acc-field-${fieldId}`,
+			setFieldError: setFieldValidationError,
+			setSummary: setAccountingModalSummary,
+			notify: false,
+		});
+	};
+	const validateAccountingMonthField = (fieldId, monthValue, fieldLabel) => {
+		const lockedMonth = resolveLockedEntryMonth(resolveAccountingLockedMonth());
+		const value = String(monthValue || '').trim();
+		if (/^\d{4}-\d{2}$/.test(value) && value === lockedMonth) return true;
+		setFieldValidationError(fieldId, `${fieldLabel} must be within ${monthLabel(lockedMonth)}.`);
+		setAccountingModalSummary(`Entries in this view must use a ${monthLabel(lockedMonth)} date.`);
+		const input = document.getElementById(`acc-field-${fieldId}`);
+		if (input) {
+			input.focus();
+			if (typeof input.setCustomValidity === 'function') {
+				input.setCustomValidity(`${fieldLabel} must be within ${monthLabel(lockedMonth)}.`);
+				if (typeof input.reportValidity === 'function') input.reportValidity();
+				setTimeout(() => {
+					try { input.setCustomValidity(''); } catch (_e) { /* ignore */ }
+				}, 0);
+			}
+		}
+		return false;
+	};
 
 	if (modalForm && !modalForm.dataset.bound) {
 		modalForm.dataset.bound = '1';
@@ -8295,8 +8573,10 @@ function initAccountingPage() {
 				const desc = getValue('desc');
 				const account = getValue('account');
 				if (!desc || !account) return;
+				const ledgerDate = getValue('date') || todayStr;
+				if (!validateAccountingEntryMonth('date', ledgerDate, 'Ledger date')) return;
 				const data = {
-					date: getValue('date') || todayStr,
+					date: ledgerDate,
 					desc,
 					account,
 					type: getValue('type') || 'asset',
@@ -8313,8 +8593,10 @@ function initAccountingPage() {
 			if (currentEntity === 'cashbook') {
 				const desc = getValue('desc');
 				if (!desc) return;
+				const cashbookDate = getValue('date') || todayStr;
+				if (!validateAccountingEntryMonth('date', cashbookDate, 'Cashbook date')) return;
 				const data = {
-					date: getValue('date') || todayStr,
+					date: cashbookDate,
 					desc,
 					amount: getNum('amount'),
 				};
@@ -8354,6 +8636,8 @@ function initAccountingPage() {
 				if (!employee) return;
 				const dateVal = getValue('date') || todayStr;
 				const monthVal = getValue('month') || String(dateVal).slice(0, 7);
+				if (!validateAccountingEntryMonth('date', dateVal, 'Salary paid date')) return;
+				if (!validateAccountingMonthField('month', monthVal, 'Salary month')) return;
 				const weekStart = getWeekStart(dateVal);
 				const keepMarchWeekly = monthVal === '2026-03' && isMarchWeeklyWindow(weekStart);
 				const userNotes = [getValue('note1'), getValue('note2'), getValue('note3'), getValue('note4'), getValue('note5')].filter(Boolean);
@@ -8394,8 +8678,10 @@ function initAccountingPage() {
 			if (currentEntity === 'asset-item') {
 				const name = getValue('name');
 				if (!name) return;
+				const assetDate = getValue('date') || todayStr;
+				if (!validateAccountingEntryMonth('date', assetDate, 'Asset date')) return;
 				const data = {
-					date: getValue('date') || todayStr,
+					date: assetDate,
 					name,
 					category: getValue('category') || 'Other',
 					value: getNum('value'),
@@ -8911,7 +9197,7 @@ function initAccountingPage() {
 			if (assetsArr.length === 0) {
 				assetsBody.innerHTML = assetDraftRow || '<tr><td colspan="6" style="text-align:center;color:#94a3b8;">No assets yet. Click "Add Asset" to start.</td></tr>';
 			} else {
-				const sorted = assetsArr.map((a, i) => ({ ...a, _idx: i })).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+				const sorted = assetsArr.map((a, i) => ({ ...a, _idx: i })).sort((a, b) => compareDateLikeValues(a.date, b.date));
 				let html = '';
 				let grandTotal = 0;
 				// Group by category
@@ -9086,7 +9372,7 @@ function initAccountingPage() {
 		}
 
 		selectedRows.sort((a, b) => {
-			const dateCmp = String(a.date || '').localeCompare(String(b.date || ''));
+			const dateCmp = compareDateLikeValues(a.date, b.date);
 			if (dateCmp !== 0) return dateCmp;
 			return String(a.employee || '').localeCompare(String(b.employee || ''));
 		});
@@ -9412,14 +9698,25 @@ function initAccountingPage() {
 		const uploadAmountEl = document.getElementById('rv-upload-amount');
 		const uploadDateEl = document.getElementById('rv-upload-date');
 		const uploadNotesEl = document.getElementById('rv-upload-notes');
+		const uploadTargetFolderEl = document.getElementById('rv-upload-target-folder');
 		const receiptFieldsWrap = document.getElementById('rv-receipt-fields');
 		const modalTitleEl = document.getElementById('rv-modal-title');
+		const breadcrumbEl = document.getElementById('rv-breadcrumb');
+		const newFolderOpenBtn = document.getElementById('rv-new-folder-open-btn');
+		const newFolderModal = document.getElementById('rv-new-folder-modal');
+		const newFolderCloseBtn = document.getElementById('rv-new-folder-close');
+		const newFolderCancelBtn = document.getElementById('rv-new-folder-cancel-btn');
+		const newFolderSubmitBtn = document.getElementById('rv-new-folder-submit-btn');
+		const newFolderNameEl = document.getElementById('rv-new-folder-name');
 
 		const viewerModal = document.getElementById('rv-viewer-modal');
 		const viewerCloseBtn = document.getElementById('rv-viewer-close');
 		const viewerTitleEl = document.getElementById('rv-viewer-title');
+		const viewerBody = document.getElementById('rv-viewer-body');
+		const viewerLoading = document.getElementById('rv-viewer-loading');
+		const viewerPdfPages = document.getElementById('rv-viewer-pdf-pages');
+		const viewerPageCounter = document.getElementById('rv-viewer-page-counter');
 		const viewerImage = document.getElementById('rv-viewer-image');
-		const viewerPdf = document.getElementById('rv-viewer-pdf');
 
 		if (!fileContainer || !sectionTabs.length || !categoryEl) return;
 
@@ -9434,9 +9731,14 @@ function initAccountingPage() {
 			const saved = String(localStorage.getItem(vaultViewStorageKey) || '').trim().toLowerCase();
 			return saved === 'list' ? 'list' : 'grid';
 		})();
+		let currentFolderId = null;
+		let folderPath = [];
+		let folders = [];
 		let files = [];
 		let stagedFile = null;
 		let viewerObjectUrl = '';
+		let viewerRenderToken = 0;
+		let viewerScrollHandler = null;
 
 		const getPreviewUrl = (fileId) => `${API_BASE}/api/record-vault/${currentSection}/${encodeURIComponent(fileId)}/download`;
 		const getDownloadUrl = (fileId) => `${API_BASE}/api/record-vault/${currentSection}/${encodeURIComponent(fileId)}/download?download=1`;
@@ -9449,25 +9751,77 @@ function initAccountingPage() {
 			viewerObjectUrl = '';
 		};
 
+		const clearViewerScrollHandler = () => {
+			if (!viewerBody || !viewerScrollHandler) return;
+			viewerBody.removeEventListener('scroll', viewerScrollHandler);
+			viewerScrollHandler = null;
+		};
+
+		const clearViewerPdfPreview = () => {
+			clearViewerScrollHandler();
+			if (viewerPdfPages) {
+				viewerPdfPages.innerHTML = '';
+				viewerPdfPages.style.display = 'none';
+			}
+			if (viewerPageCounter) {
+				viewerPageCounter.style.display = 'none';
+				viewerPageCounter.textContent = 'Page 1 of 1';
+			}
+		};
+
+		const setupViewerPageCounter = (totalPages) => {
+			if (!viewerBody || !viewerPdfPages || !viewerPageCounter) return;
+			const canvases = [...viewerPdfPages.querySelectorAll('.rv-viewer-pdf-page')];
+			if (!canvases.length) return;
+			const updateCounter = () => {
+				const bodyRect = viewerBody.getBoundingClientRect();
+				const viewportMid = bodyRect.top + bodyRect.height / 2;
+				let currentPage = 1;
+				canvases.forEach((canvas, index) => {
+					const rect = canvas.getBoundingClientRect();
+					if (rect.top <= viewportMid) currentPage = index + 1;
+				});
+				viewerPageCounter.textContent = `Page ${currentPage} of ${totalPages}`;
+			};
+			clearViewerScrollHandler();
+			viewerScrollHandler = updateCounter;
+			viewerBody.addEventListener('scroll', viewerScrollHandler, { passive: true });
+			updateCounter();
+		};
+
 		const closeViewerModal = () => {
+			viewerRenderToken += 1;
+			clearViewerPdfPreview();
 			revokeViewerObjectUrl();
 			if (viewerModal) viewerModal.style.display = 'none';
 			if (viewerTitleEl) viewerTitleEl.textContent = 'Preview';
+			if (viewerLoading) {
+				viewerLoading.style.display = 'none';
+				viewerLoading.textContent = 'Loading document...';
+			}
 			if (viewerImage) {
 				viewerImage.style.display = 'none';
 				viewerImage.removeAttribute('src');
-			}
-			if (viewerPdf) {
-				viewerPdf.style.display = 'none';
-				viewerPdf.removeAttribute('src');
 			}
 		};
 
 		const openViewerModal = async (file) => {
 			if (!file || !viewerModal) return;
+			const renderToken = ++viewerRenderToken;
+			clearViewerPdfPreview();
 			revokeViewerObjectUrl();
 			const fileName = String(file.fileName || 'Preview').trim() || 'Preview';
 			const previewUrl = getPreviewUrl(file.fileId);
+			if (viewerTitleEl) viewerTitleEl.textContent = fileName;
+			if (viewerImage) {
+				viewerImage.style.display = 'none';
+				viewerImage.removeAttribute('src');
+			}
+			if (viewerLoading) {
+				viewerLoading.style.display = 'block';
+				viewerLoading.textContent = 'Loading document...';
+			}
+			viewerModal.style.display = 'flex';
 
 			let blob;
 			try {
@@ -9475,27 +9829,75 @@ function initAccountingPage() {
 				if (!response.ok) throw new Error(`Open failed (${response.status})`);
 				blob = await response.blob();
 			} catch (_e) {
+				if (viewerLoading) viewerLoading.style.display = 'none';
 				alert('Could not open this file in-app. Please try again.');
 				return;
 			}
 
+			if (renderToken !== viewerRenderToken) return;
+
 			const resolvedType = String(file.contentType || blob.type || '').toLowerCase();
 			const isImage = isImageType(resolvedType);
-			viewerObjectUrl = URL.createObjectURL(blob);
 
-			if (viewerTitleEl) viewerTitleEl.textContent = fileName;
-			if (viewerImage) {
-				viewerImage.style.display = isImage ? 'block' : 'none';
-				if (isImage) {
+			if (isImage) {
+				viewerObjectUrl = URL.createObjectURL(blob);
+				if (viewerLoading) viewerLoading.style.display = 'none';
+				if (viewerImage) {
+					viewerImage.style.display = 'block';
 					viewerImage.src = viewerObjectUrl;
 					viewerImage.alt = fileName;
 				}
+				return;
 			}
-			if (viewerPdf) {
-				viewerPdf.style.display = isImage ? 'none' : 'block';
-				if (!isImage) viewerPdf.src = `${viewerObjectUrl}#toolbar=1&navpanes=0&view=FitH`;
+
+			if (!window.pdfjsLib || typeof window.pdfjsLib.getDocument !== 'function') {
+				if (viewerLoading) {
+					viewerLoading.style.display = 'block';
+					viewerLoading.textContent = 'PDF preview unavailable. Please download the file.';
+				}
+				return;
 			}
-			viewerModal.style.display = 'flex';
+
+			try {
+				const pdfData = new Uint8Array(await blob.arrayBuffer());
+				const loadingTask = window.pdfjsLib.getDocument({ data: pdfData });
+				const pdf = await loadingTask.promise;
+				if (renderToken !== viewerRenderToken) return;
+				if (viewerPageCounter) {
+					viewerPageCounter.style.display = 'inline-block';
+					viewerPageCounter.textContent = `Page 1 of ${pdf.numPages}`;
+				}
+				if (viewerPdfPages) {
+					viewerPdfPages.style.display = 'flex';
+				}
+
+				for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
+					if (renderToken !== viewerRenderToken) return;
+					const page = await pdf.getPage(pageNum);
+					const baseViewport = page.getViewport({ scale: 1 });
+					const maxCanvasWidth = Math.max(320, Number((viewerBody && viewerBody.clientWidth) || 960) - 40);
+					const fitScale = Math.min(2, Math.max(1, maxCanvasWidth / baseViewport.width));
+					const viewport = page.getViewport({ scale: fitScale });
+
+					const canvas = document.createElement('canvas');
+					canvas.className = 'rv-viewer-pdf-page';
+					canvas.width = Math.floor(viewport.width);
+					canvas.height = Math.floor(viewport.height);
+
+					const context = canvas.getContext('2d');
+					if (!context) continue;
+					await page.render({ canvasContext: context, viewport }).promise;
+					if (viewerPdfPages) viewerPdfPages.appendChild(canvas);
+				}
+
+				if (viewerLoading) viewerLoading.style.display = 'none';
+				setupViewerPageCounter(pdf.numPages);
+			} catch (_e) {
+				if (viewerLoading) {
+					viewerLoading.style.display = 'block';
+					viewerLoading.textContent = 'Could not load PDF preview. Please download the file.';
+				}
+			}
 		};
 
 		const triggerFileDownload = async (file) => {
@@ -9545,15 +9947,59 @@ function initAccountingPage() {
 			}
 		};
 
+		const getCurrentFolderLabel = () => (folderPath.length ? String(folderPath[folderPath.length - 1].name || '').trim() || 'Home' : 'Home');
+
+		const updateUploadTargetLabel = () => {
+			if (uploadTargetFolderEl) uploadTargetFolderEl.textContent = getCurrentFolderLabel();
+		};
+
+		const renderBreadcrumb = () => {
+			if (!breadcrumbEl) return;
+			let html = `<button type="button" class="rv-breadcrumb-item ${folderPath.length === 0 ? 'active' : ''}" data-rv-breadcrumb-home="1">Home</button>`;
+			folderPath.forEach((crumb, index) => {
+				const isLast = index === folderPath.length - 1;
+				html += '<span class="rv-breadcrumb-sep">/</span>';
+				html += `<button type="button" class="rv-breadcrumb-item ${isLast ? 'active' : ''}" data-rv-breadcrumb-index="${index}">${escapeHtml(crumb.name || 'Folder')}</button>`;
+			});
+			breadcrumbEl.innerHTML = html;
+			updateUploadTargetLabel();
+		};
+
+		const closeNewFolderModal = () => {
+			if (newFolderModal) newFolderModal.style.display = 'none';
+			if (newFolderNameEl) newFolderNameEl.value = '';
+		};
+
+		const openNewFolderModal = () => {
+			if (!newFolderModal) return;
+			if (newFolderNameEl) newFolderNameEl.value = '';
+			newFolderModal.style.display = 'flex';
+			if (newFolderNameEl) newFolderNameEl.focus();
+		};
+
 		const renderFiles = () => {
-			if (!files.length) {
+			if (!folders.length && !files.length) {
 				fileContainer.innerHTML = '';
 				if (emptyState) emptyState.style.display = 'grid';
 				return;
 			}
 			if (emptyState) emptyState.style.display = 'none';
 
-			fileContainer.innerHTML = files.map((file) => {
+			const folderCards = folders.map((folder) => {
+				const folderName = escapeHtml(folder.name || 'Folder');
+				return `
+					<article class="rv-folder-card" data-rv-folder-open="${escapeHtml(folder.folderId || '')}">
+						<div class="rv-folder-icon"><i class="fa-regular fa-folder"></i></div>
+						<div class="rv-folder-name">${folderName}</div>
+						<div class="rv-folder-actions">
+							<button type="button" data-rv-folder-action="rename" data-rv-folder-id="${escapeHtml(folder.folderId || '')}" data-rv-folder-name="${folderName}">Rename</button>
+							<button type="button" data-rv-folder-action="delete" data-rv-folder-id="${escapeHtml(folder.folderId || '')}">Delete</button>
+						</div>
+					</article>
+				`;
+			}).join('');
+
+			const fileCards = files.map((file) => {
 				const isImage = isImageType(file.contentType);
 				const fileName = escapeHtml(file.fileName || 'File');
 				const uploadedBy = escapeHtml(file.uploadedBy || 'Unknown');
@@ -9585,6 +10031,8 @@ function initAccountingPage() {
 					</article>
 				`;
 			}).join('');
+
+			fileContainer.innerHTML = `${folderCards}${fileCards}`;
 		};
 
 		const buildQuery = () => {
@@ -9593,7 +10041,21 @@ function initAccountingPage() {
 			if (categoryEl && categoryEl.value && categoryEl.value !== 'All') params.set('category', categoryEl.value);
 			if (dateFromEl && dateFromEl.value) params.set('dateFrom', dateFromEl.value);
 			if (dateToEl && dateToEl.value) params.set('dateTo', dateToEl.value);
+			params.set('folderId', currentFolderId || 'root');
 			return params.toString();
+		};
+
+		const loadFolders = async () => {
+			const parentFolderId = currentFolderId || 'root';
+			try {
+				const url = `${API_BASE}/api/record-vault/${currentSection}/folders?parentFolderId=${encodeURIComponent(parentFolderId)}`;
+				const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+				if (!res.ok) throw new Error('Failed to load folders');
+				const payload = await res.json();
+				folders = Array.isArray(payload.folders) ? payload.folders : [];
+			} catch (_e) {
+				folders = [];
+			}
 		};
 
 		const loadFiles = async () => {
@@ -9609,6 +10071,11 @@ function initAccountingPage() {
 				files = [];
 				renderFiles();
 			}
+		};
+
+		const refreshVaultView = async () => {
+			await loadFolders();
+			await loadFiles();
 		};
 
 		const closeUploadModal = () => {
@@ -9633,7 +10100,78 @@ function initAccountingPage() {
 		const openUploadModal = () => {
 			if (modalTitleEl) modalTitleEl.textContent = currentSection === 'companyDocuments' ? 'Upload Company Document' : 'Upload Receipt / Payment';
 			if (receiptFieldsWrap) receiptFieldsWrap.style.display = currentSection === 'receipts' ? 'block' : 'none';
+			updateUploadTargetLabel();
 			if (uploadModal) uploadModal.style.display = 'flex';
+		};
+
+		const submitNewFolder = async () => {
+			const name = String(newFolderNameEl && newFolderNameEl.value || '').trim();
+			if (!name) {
+				alert('Please enter a folder name.');
+				return;
+			}
+			if (newFolderSubmitBtn) {
+				newFolderSubmitBtn.disabled = true;
+				newFolderSubmitBtn.textContent = 'Creating...';
+			}
+			try {
+				const res = await fetch(`${API_BASE}/api/record-vault/${currentSection}/folders`, {
+					method: 'POST',
+					credentials: 'include',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name, parentFolderId: currentFolderId || null }),
+				});
+				if (!res.ok) {
+					const payload = await res.json().catch(() => ({}));
+					throw new Error(String(payload.message || payload.error || 'Could not create folder.'));
+				}
+				closeNewFolderModal();
+				await refreshVaultView();
+			} catch (error) {
+				alert(error && error.message ? error.message : 'Could not create folder.');
+			} finally {
+				if (newFolderSubmitBtn) {
+					newFolderSubmitBtn.disabled = false;
+					newFolderSubmitBtn.textContent = 'Create';
+				}
+			}
+		};
+
+		const renameFolder = async (folderId, currentName) => {
+			const nextName = String(window.prompt('Rename folder:', currentName || '') || '').trim();
+			if (!nextName || nextName === currentName) return;
+			try {
+				const res = await fetch(`${API_BASE}/api/record-vault/${currentSection}/folders/${encodeURIComponent(folderId)}`, {
+					method: 'PATCH',
+					credentials: 'include',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name: nextName }),
+				});
+				if (!res.ok) {
+					const payload = await res.json().catch(() => ({}));
+					throw new Error(String(payload.message || payload.error || 'Could not rename folder.'));
+				}
+				await refreshVaultView();
+			} catch (error) {
+				alert(error && error.message ? error.message : 'Could not rename folder.');
+			}
+		};
+
+		const deleteFolder = async (folderId) => {
+			if (!window.confirm('Delete this folder? It must be empty first.')) return;
+			try {
+				const res = await fetch(`${API_BASE}/api/record-vault/${currentSection}/folders/${encodeURIComponent(folderId)}`, {
+					method: 'DELETE',
+					credentials: 'include',
+				});
+				if (!res.ok) {
+					const payload = await res.json().catch(() => ({}));
+					throw new Error(String(payload.message || payload.error || 'Could not delete folder.'));
+				}
+				await refreshVaultView();
+			} catch (error) {
+				alert(error && error.message ? error.message : 'Could not delete folder.');
+			}
 		};
 
 		const stageFile = (file) => {
@@ -9680,8 +10218,17 @@ function initAccountingPage() {
 					formData.append('fileName', String(uploadFileNameEl.value || '').trim());
 				}
 				formData.append('category', uploadCategoryEl ? uploadCategoryEl.value : 'Other');
+				formData.append('folderId', currentFolderId || '');
 				formData.append('uploadedBy', (window.__wwCurrentUser && window.__wwCurrentUser.name) || localStorage.getItem('ww_user_name') || 'Unknown');
+				formData.append('__source_instance', getSyncSourceMeta().instanceId || '');
 				if (currentSection === 'receipts') {
+					const receiptDate = String(uploadDateEl ? uploadDateEl.value : '').trim();
+					if (receiptDate && !validateIsoDateForLockedMonth(receiptDate, '', {
+						fieldLabel: 'Receipt date',
+						inputEl: uploadDateEl,
+						mismatchSummary: `Entries in this view must use a ${monthLabel(resolveLockedEntryMonth(''))} date.`,
+						notify: true,
+					})) return;
 					formData.append('amount', uploadAmountEl ? uploadAmountEl.value : '');
 					formData.append('date', uploadDateEl ? uploadDateEl.value : '');
 					formData.append('notes', uploadNotesEl ? uploadNotesEl.value : '');
@@ -9702,7 +10249,7 @@ function initAccountingPage() {
 					throw new Error(message);
 				}
 				closeUploadModal();
-				await loadFiles();
+				await refreshVaultView();
 			} catch (error) {
 				alert(error && error.message ? error.message : 'Upload failed. Please try again.');
 			} finally {
@@ -9718,9 +10265,12 @@ function initAccountingPage() {
 				const nextSection = tab.getAttribute('data-rv-section') || 'companyDocuments';
 				if (!categoriesBySection[nextSection]) return;
 				currentSection = nextSection;
+				currentFolderId = null;
+				folderPath = [];
 				sectionTabs.forEach((btn) => btn.classList.toggle('tab-active', btn === tab));
 				populateCategories();
-				loadFiles();
+				renderBreadcrumb();
+				refreshVaultView();
 			});
 		});
 
@@ -9739,6 +10289,43 @@ function initAccountingPage() {
 			});
 		}
 		if (uploadSubmitBtn) uploadSubmitBtn.addEventListener('click', submitUpload);
+		if (newFolderOpenBtn) newFolderOpenBtn.addEventListener('click', openNewFolderModal);
+		if (newFolderCloseBtn) newFolderCloseBtn.addEventListener('click', closeNewFolderModal);
+		if (newFolderCancelBtn) newFolderCancelBtn.addEventListener('click', closeNewFolderModal);
+		if (newFolderSubmitBtn) newFolderSubmitBtn.addEventListener('click', submitNewFolder);
+		if (newFolderNameEl) {
+			newFolderNameEl.addEventListener('keydown', (event) => {
+				if (event.key === 'Enter') {
+					event.preventDefault();
+					submitNewFolder();
+				}
+			});
+		}
+		if (newFolderModal) {
+			newFolderModal.addEventListener('click', (event) => {
+				if (event.target === newFolderModal) closeNewFolderModal();
+			});
+		}
+		if (breadcrumbEl) {
+			breadcrumbEl.addEventListener('click', async (event) => {
+				const homeBtn = event.target.closest('[data-rv-breadcrumb-home]');
+				if (homeBtn && !homeBtn.classList.contains('active')) {
+					currentFolderId = null;
+					folderPath = [];
+					renderBreadcrumb();
+					await refreshVaultView();
+					return;
+				}
+				const indexBtn = event.target.closest('[data-rv-breadcrumb-index]');
+				if (!indexBtn || indexBtn.classList.contains('active')) return;
+				const index = Number(indexBtn.getAttribute('data-rv-breadcrumb-index'));
+				if (!Number.isInteger(index) || index < 0 || index >= folderPath.length) return;
+				folderPath = folderPath.slice(0, index + 1);
+				currentFolderId = String(folderPath[index].folderId || '') || null;
+				renderBreadcrumb();
+				await refreshVaultView();
+			});
+		}
 		if (viewerCloseBtn) viewerCloseBtn.addEventListener('click', closeViewerModal);
 		if (viewerModal) {
 			viewerModal.addEventListener('click', (event) => {
@@ -9769,6 +10356,36 @@ function initAccountingPage() {
 		}
 
 		fileContainer.addEventListener('click', async (event) => {
+			const folderActionBtn = event.target.closest('[data-rv-folder-action]');
+			if (folderActionBtn) {
+				event.preventDefault();
+				event.stopPropagation();
+				const folderAction = String(folderActionBtn.getAttribute('data-rv-folder-action') || '');
+				const folderId = String(folderActionBtn.getAttribute('data-rv-folder-id') || '').trim();
+				if (!folderId) return;
+				if (folderAction === 'rename') {
+					await renameFolder(folderId, String(folderActionBtn.getAttribute('data-rv-folder-name') || '').trim());
+					return;
+				}
+				if (folderAction === 'delete') {
+					await deleteFolder(folderId);
+					return;
+				}
+			}
+
+			const folderCard = event.target.closest('[data-rv-folder-open]');
+			if (folderCard) {
+				const folderId = String(folderCard.getAttribute('data-rv-folder-open') || '').trim();
+				if (!folderId) return;
+				const folder = folders.find((row) => String(row.folderId || '') === folderId);
+				if (!folder) return;
+				folderPath.push({ folderId, name: String(folder.name || 'Folder') });
+				currentFolderId = folderId;
+				renderBreadcrumb();
+				await refreshVaultView();
+				return;
+			}
+
 			const btn = event.target.closest('[data-rv-action]');
 			if (!btn) return;
 			event.preventDefault();
@@ -9795,7 +10412,7 @@ function initAccountingPage() {
 						credentials: 'include',
 					});
 					if (!res.ok) throw new Error('Delete failed');
-					await loadFiles();
+					await refreshVaultView();
 				} catch (_e) {
 					alert('Could not delete this file.');
 				}
@@ -9804,7 +10421,8 @@ function initAccountingPage() {
 
 		setView(currentView);
 		populateCategories();
-		loadFiles();
+		renderBreadcrumb();
+		refreshVaultView();
 	}
 
 function initProductionPage() {
@@ -9828,6 +10446,7 @@ function initProductionPage() {
 		if (Array.isArray(stored)) prodBatches = stored;
 	} catch (_) { /* ignore */ }
 	function saveBatches() {
+		prodBatches = sortRowsChronologically(prodBatches, ['date', 'createdAt']);
 		localStorage.setItem(BATCH_KEY, JSON.stringify(prodBatches));
 		syncToServer(BATCH_KEY, prodBatches);
 		/* Sync daily production log from batches (dashboard reads this) */
@@ -10000,10 +10619,18 @@ function initProductionPage() {
 			const fd = new FormData(batchForm);
 			const product = (fd.get('product') || '').toString().trim();
 			if (!product) return;
+			const batchDate = (fd.get('date') || todayStr).toString();
+			const batchDateInput = batchFields ? batchFields.querySelector('[name="date"]') : null;
+			if (!validateIsoDateForLockedMonth(batchDate, '', {
+				fieldLabel: 'Batch date',
+				inputEl: batchDateInput,
+				mismatchSummary: `Entries in this view must use a ${monthLabel(resolveLockedEntryMonth(''))} date.`,
+				notify: true,
+			})) return;
 			const data = {
 				product,
 				qty: parseInt(fd.get('qty')) || 0,
-				date: fd.get('date') || todayStr,
+				date: batchDate,
 				shift: fd.get('shift') || 'Morning',
 				time: fd.get('time') || '06:00',
 				cost: parseFloat(fd.get('cost')) || 0,
@@ -10434,20 +11061,70 @@ window.exportReports = function () {
 
 	const title = 'White Water Wells - Reports';
 	const stamp = new Date().toLocaleString('en-GB');
+	const mainClone = main.cloneNode(true);
+
+	// Force all report tab panels to be included in export output.
+	const exportTabLabels = new Map();
+	mainClone.querySelectorAll('.tab-bar .tab-btn[data-tab]').forEach((btn) => {
+		exportTabLabels.set(String(btn.getAttribute('data-tab') || ''), String(btn.textContent || '').trim());
+	});
+	mainClone.querySelectorAll('.tab-panel[id^="rep-tab-"]').forEach((panel) => {
+		panel.classList.add('tab-active');
+		const panelId = String(panel.id || '');
+		const tabKey = panelId.replace('rep-tab-', '');
+		if (!panel.querySelector('.rep-export-tab-title')) {
+			const heading = document.createElement('h3');
+			heading.className = 'rep-export-tab-title';
+			heading.textContent = exportTabLabels.get(tabKey) || 'Report Section';
+			panel.prepend(heading);
+		}
+	});
+
+	// Preserve chart visuals by replacing canvases with embedded images.
+	const sourceCanvases = main.querySelectorAll('canvas');
+	const cloneCanvases = mainClone.querySelectorAll('canvas');
+	for (let i = 0; i < Math.min(sourceCanvases.length, cloneCanvases.length); i += 1) {
+		const sourceCanvas = sourceCanvases[i];
+		const cloneCanvas = cloneCanvases[i];
+		try {
+			const src = sourceCanvas.toDataURL('image/png');
+			const rect = sourceCanvas.getBoundingClientRect();
+			const img = document.createElement('img');
+			img.src = src;
+			img.alt = 'Chart snapshot';
+			img.style.width = `${Math.max(1, Math.round(rect.width))}px`;
+			img.style.maxWidth = '100%';
+			img.style.height = 'auto';
+			img.style.display = 'block';
+			cloneCanvas.replaceWith(img);
+		} catch (_e) {
+			// Keep cloned canvas if conversion fails.
+		}
+	}
+
+	const exportBtnClone = mainClone.querySelector('#rep-export-btn');
+	if (exportBtnClone) exportBtnClone.remove();
+
+	const styleHref = `${window.location.origin}/src/script.css`;
 	const exportHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
+  <link rel="stylesheet" href="${styleHref}">
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; background: #fff; color: #0f172a; }
+    body { margin: 0; background: #fff; color: #0f172a; }
     .export-wrap { padding: 20px; }
     .export-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #e2e8f0; margin-bottom: 12px; padding-bottom: 8px; }
     .export-head h1 { font-size: 1.1rem; margin: 0; }
     .export-head p { font-size: 0.85rem; color: #64748b; margin: 0; }
-    .ops-sidebar, .ops-topbar, .logout-link, .btn-print, .tab-bar button, .btn-edit, .btn-delete, .rep-budget-btn, .modal-backdrop { display: none !important; }
-    .panel, .stat-card, .kpi-card-v2, .data-table, .chart-wrap { break-inside: avoid; }
+	    .ops-sidebar, .ops-topbar, .logout-link, .btn-edit, .btn-delete, .rep-budget-btn, .modal-backdrop, .tab-bar { display: none !important; }
+	    .tab-panel { display: block !important; }
+	    .tab-panel + .tab-panel { margin-top: 18px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
+	    .rep-export-tab-title { margin: 0 0 10px; font-size: 1rem; color: #0f172a; }
+    .panel, .stat-card, .kpi-card-v2, .data-table, .chart-wrap, .rep-performance-card { break-inside: avoid; }
+    .chart-wrap img { max-width: 100%; height: auto; }
     @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
   </style>
 </head>
@@ -10457,7 +11134,7 @@ window.exportReports = function () {
       <h1>${title}</h1>
       <p>Generated: ${stamp}</p>
     </div>
-    ${main.innerHTML}
+    ${mainClone.innerHTML}
   </div>
 </body>
 </html>`;
@@ -10702,8 +11379,20 @@ function renderReportsData() {
 		};
 
 		const allInvoiceRows = Array.isArray(getAllSalesData().invoices) ? getAllSalesData().invoices : [];
-		const outputStartMs = allInvoiceRows
-			.map((row) => parseDateStartMs(row && row.date))
+		const allBatchRows = (() => {
+			try {
+				const parsed = JSON.parse(localStorage.getItem('ww_production_batches') || '[]');
+				return Array.isArray(parsed) ? parsed : [];
+			} catch (_e) {
+				return [];
+			}
+		})();
+		const dailyLogRows = Object.entries(getDailyProductionLog()).map(([date, qty]) => ({ date, qty: Number(qty) || 0 }));
+		const fallbackOutputRows = allBatchRows.length
+			? allBatchRows.map((row) => ({ date: row && row.date, qty: Number(row && row.qty) || 0 }))
+			: dailyLogRows;
+		const outputStartMs = [...allInvoiceRows.map((row) => row && row.date), ...fallbackOutputRows.map((row) => row && row.date)]
+			.map((row) => parseDateStartMs(row))
 			.filter((ms) => Number.isFinite(ms))
 			.sort((a, b) => a - b)[0];
 
@@ -10763,6 +11452,13 @@ function renderReportsData() {
 				if (String(inv && inv.status || '').toLowerCase() === 'paid') {
 					row.revenue += Number(inv && inv.amount || 0) || 0;
 				}
+			}
+
+			for (const prod of fallbackOutputRows) {
+				const dateMs = parseDateStartMs(prod && prod.date);
+				if (!Number.isFinite(dateMs)) continue;
+				const row = ensureDay(dateMs);
+				if (row.output <= 0) row.output += Number(prod && prod.qty || 0) || 0;
 			}
 
 			const today = new Date();
@@ -11561,6 +12257,7 @@ function bindPasswordAssistanceForms() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+	normalizeChronologicalOrderAcrossAppDataStorage();
 	initSidebarToggle();
 	bindLogoutLinks();
 	bindAuthPanels();

@@ -6,6 +6,12 @@
   <title>Record Vault</title>
   <link rel="stylesheet" href="../src/script.css?v=20260702c">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    if (window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+  </script>
 </head>
 <body class="ops-page" data-page="vault">
 <aside class="ops-sidebar" id="ops-sidebar">
@@ -51,6 +57,11 @@
       <button class="tab-btn rv-tab" data-rv-section="receipts">Receipts &amp; Payments</button>
     </div>
 
+    <div class="rv-folder-bar">
+      <div id="rv-breadcrumb" class="rv-breadcrumb"></div>
+      <button type="button" class="btn-secondary" id="rv-new-folder-open-btn"><i class="fa-regular fa-folder"></i> New Folder</button>
+    </div>
+
     <div class="rv-toolbar">
       <input type="text" id="rv-search" class="rv-input" placeholder="Search by file name...">
       <select id="rv-category-filter" class="rv-input"></select>
@@ -92,6 +103,11 @@
       </div>
 
       <div class="inv-modal-field">
+        <label for="rv-upload-target-folder">Uploading to</label>
+        <div id="rv-upload-target-folder" class="rv-upload-target">Home</div>
+      </div>
+
+      <div class="inv-modal-field">
         <label for="rv-upload-file-name">Save As (optional)</label>
         <input type="text" id="rv-upload-file-name" class="rv-input" placeholder="Leave blank to use selected file name">
       </div>
@@ -118,15 +134,38 @@
   </div>
 </div>
 
+<div id="rv-new-folder-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+  <div class="inv-modal rv-modal rv-new-folder-modal">
+    <div class="inv-modal-header">
+      <h3>New Folder</h3>
+      <button type="button" class="inv-modal-close" id="rv-new-folder-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="inv-modal-body">
+      <div class="inv-modal-field">
+        <label for="rv-new-folder-name">Folder Name</label>
+        <input type="text" id="rv-new-folder-name" class="rv-input" placeholder="e.g. Water, Images, Documents">
+      </div>
+    </div>
+    <div class="inv-modal-footer">
+      <button type="button" class="btn-secondary" id="rv-new-folder-cancel-btn">Cancel</button>
+      <button type="button" class="btn-primary" id="rv-new-folder-submit-btn">Create</button>
+    </div>
+  </div>
+</div>
+
 <div id="rv-viewer-modal" class="rv-viewer-overlay" role="dialog" aria-modal="true" style="display:none">
   <div class="rv-viewer-modal">
     <div class="rv-viewer-head">
       <h3 id="rv-viewer-title" class="rv-viewer-title">Preview</h3>
-      <button type="button" id="rv-viewer-close" class="rv-viewer-close" aria-label="Close preview">&times;</button>
+      <div class="rv-viewer-head-right">
+        <span id="rv-viewer-page-counter" class="rv-viewer-page-counter" style="display:none;">Page 1 of 1</span>
+        <button type="button" id="rv-viewer-close" class="rv-viewer-close" aria-label="Close preview">&times;</button>
+      </div>
     </div>
-    <div class="rv-viewer-body">
+    <div id="rv-viewer-body" class="rv-viewer-body">
+      <div id="rv-viewer-loading" class="rv-viewer-loading" style="display:none;">Loading document...</div>
+      <div id="rv-viewer-pdf-pages" class="rv-viewer-pdf-pages" style="display:none;"></div>
       <img id="rv-viewer-image" class="rv-viewer-image" alt="File preview" style="display:none;">
-      <iframe id="rv-viewer-pdf" class="rv-viewer-pdf" title="Document preview" style="display:none;"></iframe>
     </div>
   </div>
 </div>
