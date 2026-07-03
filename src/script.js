@@ -1842,8 +1842,18 @@ function resolvePageHref(pageKey) {
 	return window.location.pathname.includes('/pages/') ? fileName : `pages/${fileName}`;
 }
 
-function canEditDelete(role) {
-	return role === 'ceo' || role === 'manager';
+function readStoredCanEditDelete() {
+	const raw = localStorage.getItem('ww_can_edit_delete');
+	if (raw === '1' || raw === 'true') return true;
+	if (raw === '0' || raw === 'false') return false;
+	return undefined;
+}
+
+function canEditDelete(role, explicitPermission = window.__wwCanEditDelete) {
+	const normalizedRole = String(role || '').trim().toLowerCase();
+	if (normalizedRole === 'ceo' || normalizedRole === 'manager') return true;
+	if (typeof explicitPermission === 'boolean') return explicitPermission;
+	return normalizedRole === 'supervisor';
 }
 
 function enforceRoleAccess() {
@@ -1854,6 +1864,7 @@ function enforceRoleAccess() {
 	}
 	const role = fromQuery || normalizeRole(localStorage.getItem('ww_user_role')) || 'staff';
 	window.__wwUserRole = role;
+	window.__wwCanEditDelete = readStoredCanEditDelete();
 	const currentPage = document.body.getAttribute('data-page');
 	if (!currentPage) return;
 
@@ -1880,7 +1891,7 @@ function enforceRoleAccess() {
 	}
 
 	// Hide edit/delete buttons for supervisor & staff
-	if (!canEditDelete(role)) {
+	if (!canEditDelete(role, window.__wwCanEditDelete)) {
 		document.querySelectorAll('.btn-edit, .btn-delete, [data-action="edit"], [data-action="delete"]').forEach((btn) => {
 			btn.style.display = 'none';
 		});
@@ -1945,6 +1956,7 @@ function bindLogoutLinks() {
 			}
 			localStorage.removeItem('ww_user_email');
 			localStorage.removeItem('ww_user_role');
+			localStorage.removeItem('ww_can_edit_delete');
 			localStorage.removeItem('ww_user_name');
 			window.location.href = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
 		});
@@ -1978,10 +1990,12 @@ function getCachedSessionUser() {
 		email,
 	);
 	const name = String(localStorage.getItem('ww_user_name') || '').trim();
+	const canEditDeleteValue = readStoredCanEditDelete();
 	return {
 		name: name || 'User',
 		email,
 		role,
+		canEditDelete: canEditDeleteValue,
 		roleLabel: toRoleLabel(role),
 	};
 }
@@ -1991,10 +2005,17 @@ function cacheSessionUser(user) {
 	const email = String(user.email || '').trim().toLowerCase();
 	const role = resolveEffectiveClientRole(normalizeRole(user.effectiveRole || user.role || 'staff'), email);
 	const name = String(user.name || '').trim() || 'User';
+	const canEditDeleteValue = typeof user.canEditDelete === 'boolean'
+		? user.canEditDelete
+		: readStoredCanEditDelete();
 	if (email) localStorage.setItem('ww_user_email', email);
 	if (role) localStorage.setItem('ww_user_role', role);
+	if (typeof canEditDeleteValue === 'boolean') {
+		localStorage.setItem('ww_can_edit_delete', canEditDeleteValue ? '1' : '0');
+		window.__wwCanEditDelete = canEditDeleteValue;
+	}
 	if (name) localStorage.setItem('ww_user_name', name);
-	window.__wwCurrentUser = { name, email, role, roleLabel: toRoleLabel(role) };
+	window.__wwCurrentUser = { name, email, role, canEditDelete: canEditDeleteValue, roleLabel: toRoleLabel(role) };
 	return window.__wwCurrentUser;
 }
 
@@ -2127,6 +2148,7 @@ function renderTopbarUserMenu(userInput) {
 					} catch (_error) { /* redirect anyway */ }
 					localStorage.removeItem('ww_user_email');
 					localStorage.removeItem('ww_user_role');
+					localStorage.removeItem('ww_can_edit_delete');
 					localStorage.removeItem('ww_user_name');
 					window.location.href = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
 				}
@@ -2226,6 +2248,10 @@ function bindRolePersistenceOnAuthForms() {
 				if (loginEmail) localStorage.setItem('ww_user_email', loginEmail);
 				const role = resolveEffectiveClientRole(normalizeRole(data.user?.effectiveRole || data.user?.role), loginEmail);
 				localStorage.setItem('ww_user_role', role);
+				if (typeof data.user?.canEditDelete === 'boolean') {
+					localStorage.setItem('ww_can_edit_delete', data.user.canEditDelete ? '1' : '0');
+					window.__wwCanEditDelete = data.user.canEditDelete;
+				}
 				if (data.user?.name) localStorage.setItem('ww_user_name', String(data.user.name));
 				upsertSystemUser(data.user?.name || '', email, role);
 				setAuthMessage('Login successful! Redirecting…', false);
@@ -2268,6 +2294,10 @@ function bindRolePersistenceOnAuthForms() {
 				if (registerEmail) localStorage.setItem('ww_user_email', registerEmail);
 				const role = resolveEffectiveClientRole(normalizeRole(data.user?.effectiveRole || data.user?.role), registerEmail);
 				localStorage.setItem('ww_user_role', role);
+				if (typeof data.user?.canEditDelete === 'boolean') {
+					localStorage.setItem('ww_can_edit_delete', data.user.canEditDelete ? '1' : '0');
+					window.__wwCanEditDelete = data.user.canEditDelete;
+				}
 				if (data.user?.name || name) localStorage.setItem('ww_user_name', String(data.user?.name || name));
 				upsertSystemUser(name, email, role);
 				setAuthMessage('Account created! Redirecting…', false);

@@ -63,7 +63,7 @@
     <div id="um-tab-users-list" class="tab-panel tab-active">
       <table class="data-table">
         <thead>
-          <tr><th>Name</th><th>Email</th><th>Role</th><th>Access Level</th><th>Status</th><th>Last Login</th><th>Actions</th></tr>
+          <tr><th>Name</th><th>Email</th><th>Role</th><th>Edit/Delete Rights</th><th>Status</th><th>Last Login</th><th>Actions</th></tr>
         </thead>
         <tbody id="users-tbody"></tbody>
       </table>
@@ -78,9 +78,9 @@
         </thead>
         <tbody>
           <tr><td>Dashboard</td><td>Yes</td><td>No</td></tr>
-          <tr><td>Inventory &amp; Stock</td><td>Full</td><td>Add only</td></tr>
-          <tr><td>Sales &amp; Invoicing</td><td>Full</td><td>Add only</td></tr>
-          <tr><td>Purchase &amp; Vendors</td><td>Full</td><td>Add only</td></tr>
+          <tr><td>Inventory &amp; Stock</td><td>Full</td><td>Supervisor: Edit/Delete enabled by default; Staff: Add only unless granted</td></tr>
+          <tr><td>Sales &amp; Invoicing</td><td>Full</td><td>Supervisor: Edit/Delete enabled by default; Staff: Add only unless granted</td></tr>
+          <tr><td>Purchase &amp; Vendors</td><td>Full</td><td>Supervisor: Edit/Delete enabled by default; Staff: Add only unless granted</td></tr>
           <tr><td>Accounting</td><td>Full</td><td>No</td></tr>
           <tr><td>Record Vault</td><td>Full</td><td>No</td></tr>
           <tr><td>Production</td><td>Full</td><td>No</td></tr>
@@ -89,7 +89,7 @@
         </tbody>
       </table>
       <div class="info-box">
-        <p>Supervisors and staff can submit edit/delete requests which go to the CEO Approval Queue before taking effect.</p>
+        <p>CEO and Manager can grant or revoke edit/delete rights per user from the user edit form at any time.</p>
       </div>
     </div>
     <div id="um-tab-trash-bin" class="tab-panel">
@@ -138,6 +138,12 @@
           <div class="inv-modal-field"><label for="um-email">Email <span class="req">*</span></label><input id="um-email" type="email" required placeholder="user@whitewater.com"></div>
           <div class="inv-modal-field"><label for="um-role">Role <span class="req">*</span></label><select id="um-role" required><option value="CEO">CEO</option><option value="Manager">Manager</option><option value="Supervisor">Supervisor</option><option value="Staff">Staff</option></select></div>
           <div class="inv-modal-field"><label for="um-password">Temporary Password <span class="req">*</span></label><input id="um-password" type="password" required placeholder="Set initial password" minlength="6"></div>
+          <div class="inv-modal-field">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input id="um-can-edit-delete" type="checkbox" style="width:auto;">
+              <span>Allow this user to edit/delete records</span>
+            </label>
+          </div>
         </div>
         <div class="inv-modal-footer">
           <button type="button" class="btn-secondary" id="um-modal-cancel">Cancel</button>
@@ -167,15 +173,38 @@
       </form>
     </div>
   </div>
+
+  <!-- Rights History Modal -->
+  <div id="um-rights-history-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+    <div class="inv-modal" style="max-width:760px;width:min(96vw,760px)">
+      <div class="inv-modal-header">
+        <h3 id="um-rights-history-title">Rights History</h3>
+        <button type="button" class="inv-modal-close" id="um-rights-history-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="inv-modal-body" style="max-height:58vh;overflow:auto">
+        <table class="data-table" style="margin:0">
+          <thead>
+            <tr><th>Changed At</th><th>Changed By</th><th>From</th><th>To</th><th>Note</th></tr>
+          </thead>
+          <tbody id="um-rights-history-tbody">
+            <tr><td colspan="5" style="color:#64748b;text-align:center;padding:14px">No history yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="inv-modal-footer">
+        <button type="button" class="btn-secondary" id="um-rights-history-cancel">Close</button>
+      </div>
+    </div>
+  </div>
 </main>
 <script src="../src/script.js?v=20260519b"></script>
 <script>
 (function() {
   const ACCESS_LEVELS = {
-    ceo: 'Full Access - All Modules',
-    manager: 'Full Access - All Modules',
-    supervisor: 'Inventory, Sales, Purchase (Add only)',
-    staff: 'Inventory, Sales, Purchase (Add only)',
+    ceo: 'Always enabled',
+    manager: 'Always enabled',
+    supervisor: 'Enabled by default',
+    staff: 'Grant required',
   };
 
   const usersTbody = document.getElementById('users-tbody');
@@ -183,6 +212,19 @@
 
   let cachedUsers = [];
   let editingUserId = null;
+
+  function isRoleAlwaysEnabled(role) {
+    var normalized = String(role || '').toLowerCase();
+    return normalized === 'ceo' || normalized === 'manager';
+  }
+
+  function effectiveCanEditDelete(user) {
+    if (!user) return false;
+    var role = String(user.role || '').toLowerCase();
+    if (isRoleAlwaysEnabled(role)) return true;
+    if (typeof user.canEditDelete === 'boolean') return user.canEditDelete;
+    return role === 'supervisor';
+  }
 
   function formatRoleLabel(role) {
     var normalized = String(role || '').trim().toLowerCase();
@@ -198,23 +240,38 @@
     return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
 
+  function formatRightsAudit(user) {
+    if (!user || !user.rightsUpdatedBy || !user.rightsUpdatedAt) return '';
+    var dt = new Date(user.rightsUpdatedAt);
+    var when = isNaN(dt)
+      ? String(user.rightsUpdatedAt)
+      : dt.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return '<div style="font-size:.72rem;color:#64748b;margin-top:4px">Changed by ' + String(user.rightsUpdatedBy) + ' on ' + when + '</div>';
+  }
+
   function renderTable(users) {
     cachedUsers = users;
     if (!usersTbody) return;
     if (users.length === 0) {
-      usersTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No users yet � users appear here when they sign up or log in.</td></tr>';
+      usersTbody.innerHTML = '<tr><td colspan="8" style="color:#64748b;text-align:center;padding:20px">No users yet - users appear here when they sign up or log in.</td></tr>';
     } else {
       usersTbody.innerHTML = users.map(function(u) {
         const role = (u.role || '').toLowerCase();
-        const access = ACCESS_LEVELS[role] || 'Per role defaults';
+        const access = effectiveCanEditDelete(u)
+          ? '<span class="status-pill status-green">Enabled</span>'
+          : '<span class="status-pill status-gray">Disabled</span>';
+        const toggleTitle = effectiveCanEditDelete(u) ? 'Revoke edit/delete rights' : 'Grant edit/delete rights';
+        const toggleIcon = effectiveCanEditDelete(u) ? 'fa-user-lock' : 'fa-user-check';
+        const roleHint = ACCESS_LEVELS[role] || 'Per role defaults';
+        const rightsAudit = formatRightsAudit(u);
         return '<tr>' +
           '<td>' + (u.name || '') + '</td>' +
           '<td>' + (u.email || '') + '</td>' +
           '<td>' + formatRoleLabel(u.role) + '</td>' +
-          '<td>' + access + '</td>' +
+          '<td>' + access + '<div style="font-size:.75rem;color:#64748b;margin-top:4px">' + roleHint + '</div>' + rightsAudit + '</td>' +
           '<td><span class="status-pill ' + (u.status === 'Active' ? 'pill-success' : 'pill-warning') + '">' + (u.status || 'Active') + '</span></td>' +
           '<td>' + formatLogin(u.lastLogin) + '</td>' +
-          '<td><div class="row-actions"><button class="btn-edit um-edit-btn" data-id="' + u.id + '" title="Edit"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-edit um-reset-pwd-btn" data-id="' + u.id + '" title="Reset Password" style="color:#f59e0b"><i class="fa-solid fa-key"></i></button><button class="btn-delete um-delete-btn" data-id="' + u.id + '" title="Delete"><i class="fa-solid fa-trash"></i></button></div></td>' +
+          '<td><div class="row-actions"><button class="btn-edit um-toggle-rights-btn" data-id="' + u.id + '" title="' + toggleTitle + '"><i class="fa-solid ' + toggleIcon + '"></i></button><button class="btn-edit um-rights-history-btn" data-id="' + u.id + '" title="View rights history"><i class="fa-solid fa-clock-rotate-left"></i></button><button class="btn-edit um-edit-btn" data-id="' + u.id + '" title="Edit"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-edit um-reset-pwd-btn" data-id="' + u.id + '" title="Reset Password" style="color:#f59e0b"><i class="fa-solid fa-key"></i></button><button class="btn-delete um-delete-btn" data-id="' + u.id + '" title="Delete"><i class="fa-solid fa-trash"></i></button></div></td>' +
         '</tr>';
       }).join('');
     }
@@ -229,7 +286,7 @@
       renderTable(users);
     } catch (err) {
       console.error('Error loading users:', err);
-      if (usersTbody) usersTbody.innerHTML = '<tr><td colspan="7" style="color:#ef4444;text-align:center;padding:20px">Failed to load users from server.</td></tr>';
+      if (usersTbody) usersTbody.innerHTML = '<tr><td colspan="8" style="color:#ef4444;text-align:center;padding:20px">Failed to load users from server.</td></tr>';
     }
   }
 
@@ -248,6 +305,11 @@
   const resetUserInput = document.getElementById('um-reset-user');
   const resetPasswordInput = document.getElementById('um-reset-password');
   const resetConfirmInput = document.getElementById('um-reset-confirm');
+  const rightsHistoryModal = document.getElementById('um-rights-history-modal');
+  const rightsHistoryCloseBtn = document.getElementById('um-rights-history-close');
+  const rightsHistoryCancelBtn = document.getElementById('um-rights-history-cancel');
+  const rightsHistoryTitle = document.getElementById('um-rights-history-title');
+  const rightsHistoryTbody = document.getElementById('um-rights-history-tbody');
   let resettingUserId = null;
 
   function closeModal() { editingUserId = null; if (modal) modal.style.display = 'none'; if (form) form.reset(); var h = modal && modal.querySelector('.inv-modal-header h3'); if (h) h.textContent = 'Add New User'; }
@@ -257,19 +319,110 @@
     if (resetForm) resetForm.reset();
     if (resetUserInput) resetUserInput.value = '';
   }
+  function closeRightsHistoryModal() {
+    if (rightsHistoryModal) rightsHistoryModal.style.display = 'none';
+    if (rightsHistoryTitle) rightsHistoryTitle.textContent = 'Rights History';
+    if (rightsHistoryTbody) rightsHistoryTbody.innerHTML = '<tr><td colspan="5" style="color:#64748b;text-align:center;padding:14px">No history yet.</td></tr>';
+  }
 
-  if (addBtn) addBtn.addEventListener('click', function() { editingUserId = null; if (modal) modal.style.display = 'flex'; });
+  function formatRightsValue(value) {
+    if (value === true) return '<span class="status-pill status-green">Enabled</span>';
+    if (value === false) return '<span class="status-pill status-gray">Disabled</span>';
+    return '<span style="color:#64748b">—</span>';
+  }
+
+  async function openRightsHistory(user) {
+    if (!user || !user.id) return;
+    if (rightsHistoryTitle) rightsHistoryTitle.textContent = 'Rights History - ' + (user.name || 'User');
+    if (rightsHistoryTbody) rightsHistoryTbody.innerHTML = '<tr><td colspan="5" style="color:#64748b;text-align:center;padding:14px">Loading...</td></tr>';
+    if (rightsHistoryModal) rightsHistoryModal.style.display = 'flex';
+
+    try {
+      var res = await fetch('/api/users/' + user.id + '/rights-history', { credentials: 'include' });
+      var rows = await res.json().catch(function() { return []; });
+      if (!res.ok) {
+        if (rightsHistoryTbody) rightsHistoryTbody.innerHTML = '<tr><td colspan="5" style="color:#ef4444;text-align:center;padding:14px">Failed to load rights history.</td></tr>';
+        return;
+      }
+      if (!Array.isArray(rows) || rows.length === 0) {
+        if (rightsHistoryTbody) rightsHistoryTbody.innerHTML = '<tr><td colspan="5" style="color:#64748b;text-align:center;padding:14px">No rights changes recorded yet.</td></tr>';
+        return;
+      }
+      if (rightsHistoryTbody) {
+        rightsHistoryTbody.innerHTML = rows.map(function(row) {
+          return '<tr>' +
+            '<td>' + formatLogin(row.changedAt) + '</td>' +
+            '<td>' + (row.changedBy || 'System') + '</td>' +
+            '<td>' + formatRightsValue(row.oldCanEditDelete) + '</td>' +
+            '<td>' + formatRightsValue(row.newCanEditDelete) + '</td>' +
+            '<td>' + (row.note || 'Rights updated') + '</td>' +
+          '</tr>';
+        }).join('');
+      }
+    } catch (_err) {
+      if (rightsHistoryTbody) rightsHistoryTbody.innerHTML = '<tr><td colspan="5" style="color:#ef4444;text-align:center;padding:14px">Failed to load rights history.</td></tr>';
+    }
+  }
+
+  if (addBtn) addBtn.addEventListener('click', function() {
+    editingUserId = null;
+    if (form) form.reset();
+    if (modal) modal.style.display = 'flex';
+    if (roleSelect) roleSelect.dispatchEvent(new Event('change'));
+  });
   if (closeBtn) closeBtn.addEventListener('click', closeModal);
   if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
   if (modal) modal.addEventListener('click', function(e) { if (e.target === modal) closeModal(); });
   if (resetCloseBtn) resetCloseBtn.addEventListener('click', closeResetModal);
   if (resetCancelBtn) resetCancelBtn.addEventListener('click', closeResetModal);
   if (resetModal) resetModal.addEventListener('click', function(e) { if (e.target === resetModal) closeResetModal(); });
+  if (rightsHistoryCloseBtn) rightsHistoryCloseBtn.addEventListener('click', closeRightsHistoryModal);
+  if (rightsHistoryCancelBtn) rightsHistoryCancelBtn.addEventListener('click', closeRightsHistoryModal);
+  if (rightsHistoryModal) rightsHistoryModal.addEventListener('click', function(e) { if (e.target === rightsHistoryModal) closeRightsHistoryModal(); });
 
   if (usersTbody) usersTbody.addEventListener('click', async function(e) {
     var editBtn = e.target.closest('.um-edit-btn');
+    var toggleRightsBtn = e.target.closest('.um-toggle-rights-btn');
+    var rightsHistoryBtn = e.target.closest('.um-rights-history-btn');
     var deleteBtn = e.target.closest('.um-delete-btn');
     var resetPwdBtn = e.target.closest('.um-reset-pwd-btn');
+    if (rightsHistoryBtn) {
+      var historyId = rightsHistoryBtn.dataset.id;
+      var historyUser = cachedUsers.find(function(x) { return String(x.id) === historyId; });
+      if (!historyUser) return;
+      openRightsHistory(historyUser);
+      return;
+    }
+    if (toggleRightsBtn) {
+      var toggleId = toggleRightsBtn.dataset.id;
+      var toggleUser = cachedUsers.find(function(x) { return String(x.id) === toggleId; });
+      if (!toggleUser) return;
+      var nextCanEdit = !effectiveCanEditDelete(toggleUser);
+      if (isRoleAlwaysEnabled(toggleUser.role) && !nextCanEdit) {
+        alert('CEO and Manager always have edit/delete rights.');
+        return;
+      }
+      var confirmationText = nextCanEdit
+        ? 'Grant edit/delete rights to "' + toggleUser.name + '"?'
+        : 'Revoke edit/delete rights from "' + toggleUser.name + '"?';
+      if (!confirm(confirmationText)) return;
+      try {
+        var toggleRes = await fetch('/api/users/' + toggleId, {
+          method: 'PUT', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ canEditDelete: nextCanEdit }),
+        });
+        if (!toggleRes.ok) {
+          var toggleErr = await toggleRes.json().catch(function() { return {}; });
+          alert(toggleErr.message || 'Failed to update rights');
+          return;
+        }
+        loadUsers();
+      } catch (_err) {
+        alert('Failed to update rights');
+      }
+      return;
+    }
     if (editBtn) {
       var id = editBtn.dataset.id;
       var u = cachedUsers.find(function(x) { return String(x.id) === id; });
@@ -292,6 +445,12 @@
         roleEl.value = nextRole;
       }
       document.getElementById('um-password').value = '';
+      var canEditEl = document.getElementById('um-can-edit-delete');
+      if (canEditEl) {
+        var roleAlwaysEnabled = isRoleAlwaysEnabled(u.role);
+        canEditEl.checked = effectiveCanEditDelete(u);
+        canEditEl.disabled = roleAlwaysEnabled;
+      }
     }
     if (resetPwdBtn) {
       var id3 = resetPwdBtn.dataset.id;
@@ -321,11 +480,12 @@
     var email = document.getElementById('um-email').value.trim();
     var role = document.getElementById('um-role').value;
     var password = document.getElementById('um-password').value;
+    var canEditDelete = !!(document.getElementById('um-can-edit-delete') && document.getElementById('um-can-edit-delete').checked);
     if (!name || !email) return;
 
     try {
       if (editingUserId) {
-        var body = { name: name, email: email, role: role.toLowerCase() };
+        var body = { name: name, email: email, role: role.toLowerCase(), canEditDelete: canEditDelete };
         if (password) body.password = password;
         var res = await fetch('/api/users/' + editingUserId, {
           method: 'PUT', credentials: 'include',
@@ -338,7 +498,7 @@
         var res2 = await fetch('/api/users', {
           method: 'POST', credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: name, email: email, role: role.toLowerCase(), password: password }),
+          body: JSON.stringify({ name: name, email: email, role: role.toLowerCase(), password: password, canEditDelete: canEditDelete }),
         });
         if (!res2.ok) { var err2 = await res2.json().catch(function() { return {}; }); alert(err2.message || 'Create failed'); return; }
       }
@@ -346,6 +506,26 @@
       closeModal();
     } catch (err) { alert('Operation failed'); }
   });
+
+  var roleSelect = document.getElementById('um-role');
+  if (roleSelect) {
+    roleSelect.addEventListener('change', function() {
+      var canEditEl = document.getElementById('um-can-edit-delete');
+      if (!canEditEl) return;
+      var selectedRole = String(roleSelect.value || '').toLowerCase();
+      var alwaysEnabled = isRoleAlwaysEnabled(selectedRole);
+      if (alwaysEnabled) {
+        canEditEl.checked = true;
+        canEditEl.disabled = true;
+      } else {
+        canEditEl.disabled = false;
+        if (!editingUserId) {
+          canEditEl.checked = selectedRole === 'supervisor';
+        }
+      }
+    });
+    roleSelect.dispatchEvent(new Event('change'));
+  }
 
   if (resetForm) resetForm.addEventListener('submit', async function(e) {
     e.preventDefault();

@@ -72,6 +72,8 @@ const {
 
   TrashBin,
 
+  UserRightsAudit,
+
 } = require('./server/db');
 
 
@@ -105,6 +107,21 @@ const SPECIAL_ACCESS_OVERRIDES = {
   [DEV_EMAIL]: ['ceo', 'supervisor'],
 
 };
+
+function defaultCanEditDeleteForRole(role) {
+  const normalized = String(role || '').trim().toLowerCase();
+  return ['ceo', 'manager', 'supervisor'].includes(normalized);
+}
+
+function resolveCanEditDelete(userLike) {
+  const role = String(userLike && userLike.role || '').trim().toLowerCase();
+  if (role === 'ceo' || role === 'manager') return true;
+  const explicit = userLike && (typeof userLike.canEditDelete === 'boolean'
+    ? userLike.canEditDelete
+    : (typeof userLike.can_edit_delete === 'boolean' ? userLike.can_edit_delete : undefined));
+  if (typeof explicit === 'boolean') return explicit;
+  return defaultCanEditDeleteForRole(role);
+}
 
 
 
@@ -364,6 +381,7 @@ async function getSession(token) {
     email: u.email,
 
     role: u.role,
+  canEditDelete: resolveCanEditDelete(u),
 
     status: u.status,
 
@@ -622,6 +640,9 @@ async function getCollection(resource) {
       return rows.map(r => ({
 
         id: r._id, name: r.name, email: r.email, role: r.role, status: r.status,
+  canEditDelete: resolveCanEditDelete(r),
+  rightsUpdatedBy: r.rights_updated_by || null,
+  rightsUpdatedAt: r.rights_updated_at || null,
 
         lastLogin: r.last_login, createdAt: r.createdAt,
 
@@ -915,7 +936,9 @@ async function applyApprovalMutation(approvalId) {
 
 function requireApprovalForRole(user) {
 
-  return ['supervisor', 'staff'].includes(user.role);
+  const normalizedRole = String(user && user.role || '').trim().toLowerCase();
+  if (!['supervisor', 'staff'].includes(normalizedRole)) return false;
+  return !resolveCanEditDelete(user);
 
 }
 
@@ -1318,6 +1341,7 @@ app.post('/api/auth/register', async (req, res, next) => {
       password_hash: bcrypt.hashSync(password, 10),
 
       role: authorized.role,
+  can_edit_delete: defaultCanEditDeleteForRole(authorized.role),
 
       status: 'Active',
 
@@ -1337,7 +1361,7 @@ app.post('/api/auth/register', async (req, res, next) => {
 
     res.status(201).json({
 
-      user: { id: user._id, name, email, role: authorized.role, status: 'Active' },
+      user: { id: user._id, name, email, role: authorized.role, status: 'Active', canEditDelete: resolveCanEditDelete(user) },
 
     });
 
@@ -1408,6 +1432,7 @@ app.post('/api/auth/login', async (req, res, next) => {
         email: user.email,
 
         role: user.role,
+  canEditDelete: resolveCanEditDelete(user),
 
         effectiveRole,
 
@@ -2650,6 +2675,13 @@ app.post('/api/users', ensureAuthenticated, ensureRole('users'), async (req, res
 
     requireFields(req.body, ['name', 'email', 'role', 'password']);
 
+    const nextRole = String(req.body.role).trim().toLowerCase();
+    const explicitCanEditDelete = typeof req.body.canEditDelete === 'boolean' ? !!req.body.canEditDelete : undefined;
+    const nextCanEditDelete = (nextRole === 'ceo' || nextRole === 'manager')
+      ? true
+      : (typeof explicitCanEditDelete === 'boolean' ? explicitCanEditDelete : defaultCanEditDeleteForRole(nextRole));
+    const actorName = String(req.user.name || req.user.email || 'System').trim();
+
     const user = await User.create({
 
       name: String(req.body.name).trim(),
@@ -2658,11 +2690,25 @@ app.post('/api/users', ensureAuthenticated, ensureRole('users'), async (req, res
 
       password_hash: bcrypt.hashSync(String(req.body.password), 10),
 
-      role: String(req.body.role).trim().toLowerCase(),
+      role: nextRole,
+      can_edit_delete: nextCanEditDelete,
+      rights_updated_by: (typeof explicitCanEditDelete === 'boolean') ? actorName : null,
+      rights_updated_at: (typeof explicitCanEditDelete === 'boolean') ? new Date().toISOString() : null,
 
       status: req.body.status || 'Active',
 
     });
+
+    if (typeof explicitCanEditDelete === 'boolean') {
+      await UserRightsAudit.create({
+        user_id: user._id,
+        changed_by: actorName,
+        changed_at: new Date().toISOString(),
+        old_can_edit_delete: null,
+        new_can_edit_delete: nextCanEditDelete,
+        note: 'Rights set during user creation',
+      });
+    }
 
     res.status(201).json({ id: user._id });
 
@@ -3080,7 +3126,14 @@ app.put('/api/users/:id', ensureAuthenticated, ensureRole('users'), async (req, 
 
   try {
 
+  const existingUser = await User.findById(req.params.id).lean();
+  if (!existingUser) throw createError(404, 'User not found');
+
     const update = {};
+    const actorName = String(req.user.name || req.user.email || 'System').trim();
+    const previousCanEditDelete = resolveCanEditDelete(existingUser);
+    let nextCanEditDeleteForAudit = previousCanEditDelete;
+    let rightsChangeNote = null;
 
     if (req.body.name) update.name = String(req.body.name).trim();
 
@@ -3088,17 +3141,77 @@ app.put('/api/users/:id', ensureAuthenticated, ensureRole('users'), async (req, 
 
     if (req.body.role) update.role = String(req.body.role).trim().toLowerCase();
 
+    if (typeof req.body.canEditDelete === 'boolean') {
+      const nextRole = String(update.role || existingUser.role || '').trim().toLowerCase();
+      update.can_edit_delete = (nextRole === 'ceo' || nextRole === 'manager') ? true : !!req.body.canEditDelete;
+      update.rights_updated_by = actorName;
+      update.rights_updated_at = new Date().toISOString();
+      nextCanEditDeleteForAudit = update.can_edit_delete;
+      rightsChangeNote = 'Manual rights update';
+    }
+
+    if (update.role && typeof req.body.canEditDelete !== 'boolean') {
+      const nextRole = String(update.role).trim().toLowerCase();
+      if (nextRole === 'ceo' || nextRole === 'manager') {
+        update.can_edit_delete = true;
+        update.rights_updated_by = actorName;
+        update.rights_updated_at = new Date().toISOString();
+        nextCanEditDeleteForAudit = true;
+        rightsChangeNote = 'Rights auto-enabled for role';
+      }
+    }
+
     if (req.body.status) update.status = req.body.status;
 
     if (req.body.password) update.password_hash = bcrypt.hashSync(String(req.body.password), 10);
 
     await User.updateOne({ _id: req.params.id }, update);
 
+    if (nextCanEditDeleteForAudit !== previousCanEditDelete) {
+      await UserRightsAudit.create({
+        user_id: existingUser._id,
+        changed_by: actorName,
+        changed_at: new Date().toISOString(),
+        old_can_edit_delete: previousCanEditDelete,
+        new_can_edit_delete: nextCanEditDeleteForAudit,
+        note: rightsChangeNote || 'Rights changed',
+      });
+    }
+
     res.json({ ok: true });
 
   } catch (error) {
 
     if (error.code === 11000) { next(createError(409, 'A user with this email already exists')); return; }
+
+    next(error);
+
+  }
+
+});
+
+app.get('/api/users/:id/rights-history', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
+
+  try {
+
+    const user = await User.findById(req.params.id).select('_id').lean();
+    if (!user) throw createError(404, 'User not found');
+
+    const history = await UserRightsAudit.find({ user_id: req.params.id })
+      .sort({ changed_at: -1 })
+      .limit(10)
+      .lean();
+
+    res.json(history.map(item => ({
+      id: item._id,
+      changedBy: item.changed_by,
+      changedAt: item.changed_at,
+      oldCanEditDelete: item.old_can_edit_delete,
+      newCanEditDelete: item.new_can_edit_delete,
+      note: item.note || null,
+    })));
+
+  } catch (error) {
 
     next(error);
 

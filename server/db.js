@@ -29,6 +29,9 @@ const userSchema = new mongoose.Schema({
   email:         { type: String, required: true, unique: true, lowercase: true, trim: true },
   password_hash: { type: String, required: true },
   role:          { type: String, required: true },
+  can_edit_delete: { type: Boolean, default: undefined },
+  rights_updated_by: { type: String, default: null },
+  rights_updated_at: { type: String, default: null },
   status:        { type: String, default: 'Active' },
   last_login:    { type: String, default: null },
 }, { timestamps: true, toJSON: toJSONOpts });
@@ -224,6 +227,17 @@ const trashBinSchema = new mongoose.Schema({
 
 trashBinSchema.index({ expires_at: 1 }, { expireAfterSeconds: 0 });
 
+const userRightsAuditSchema = new mongoose.Schema({
+  user_id:               { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  changed_by:            { type: String, required: true },
+  changed_at:            { type: String, required: true },
+  old_can_edit_delete:   { type: mongoose.Schema.Types.Mixed, default: null },
+  new_can_edit_delete:   { type: mongoose.Schema.Types.Mixed, default: null },
+  note:                  { type: String, default: null },
+}, { timestamps: true, toJSON: toJSONOpts });
+
+userRightsAuditSchema.index({ user_id: 1, changed_at: -1 });
+
 /* ── Register models ── */
 
 const User            = mongoose.model('User', userSchema);
@@ -245,6 +259,7 @@ const StoreSession    = mongoose.model('StoreSession', storeSessionSchema);
 const FactoryEquipment = mongoose.model('FactoryEquipment', factoryEquipmentSchema);
 const AppData          = mongoose.model('AppData', appDataSchema);
 const TrashBin         = mongoose.model('TrashBin', trashBinSchema);
+const UserRightsAudit  = mongoose.model('UserRightsAudit', userRightsAuditSchema);
 
 /* ═══════════════════════════════════════════════
    HELPER FUNCTIONS
@@ -496,4 +511,5 @@ module.exports = {
   FactoryEquipment,
   AppData,
   TrashBin,
+  UserRightsAudit,
 };
