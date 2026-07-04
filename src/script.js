@@ -3041,6 +3041,81 @@ function loadFinishedProductsFromStorage() {
 	}
 }
 
+function inferFinishedProductMonth(row) {
+	const raw = String((row && (row.month || row.date || row.addedDate)) || '').trim();
+	if (/^\d{4}-\d{2}/.test(raw)) return raw.slice(0, 7);
+	const dmy = raw.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+	if (dmy) {
+		const month = Number(dmy[2]);
+		let year = Number(dmy[3]);
+		if (year < 100) year += 2000;
+		if (month >= 1 && month <= 12 && year >= 2000) return `${year}-${String(month).padStart(2, '0')}`;
+	}
+	if (raw) {
+		const d = new Date(raw);
+		if (!isNaN(d)) return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+	}
+	const now = new Date();
+	return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function dedupeFinishedProductRows(rows) {
+	const seen = new Set();
+	const out = [];
+	for (const row of Array.isArray(rows) ? rows : []) {
+		if (!row || typeof row !== 'object') continue;
+		const key = [
+			String(row.id || '').trim(),
+			String(row.product || '').trim().toLowerCase(),
+			String(row.date || row.addedDate || '').trim(),
+			String(row.location || '').trim().toLowerCase(),
+			Number(row.qty || 0),
+			Number(row.unitCost || 0),
+		].join('|');
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(row);
+	}
+	return out;
+}
+
+function getCanonicalFinishedProductsAllMonths() {
+	const byMonth = {};
+	try {
+		const merged = JSON.parse(localStorage.getItem('ww_finished_products') || '[]');
+		if (Array.isArray(merged)) {
+			for (const row of merged) {
+				if (!row || typeof row !== 'object') continue;
+				const month = inferFinishedProductMonth(row);
+				if (!byMonth[month]) byMonth[month] = [];
+				byMonth[month].push({ ...row, month });
+			}
+		}
+	} catch (_e) { /* ignore */ }
+
+	for (let i = 0; i < localStorage.length; i += 1) {
+		const key = localStorage.key(i);
+		const monthMatch = /^ww_inventory_(\d{4}-\d{2})$/.exec(String(key || ''));
+		if (!monthMatch) continue;
+		const month = monthMatch[1];
+		try {
+			const payload = JSON.parse(localStorage.getItem(key) || 'null');
+			const finished = Array.isArray(payload?.finishedProducts) ? payload.finishedProducts : [];
+			byMonth[month] = dedupeFinishedProductRows(
+				finished
+					.filter((row) => row && typeof row === 'object')
+					.map((row) => ({ ...row, month: inferFinishedProductMonth(row) || month })),
+			);
+		} catch (_e) { /* ignore invalid payload */ }
+	}
+
+	const rows = [];
+	for (const month of Object.keys(byMonth).sort()) {
+		rows.push(...dedupeFinishedProductRows(byMonth[month]));
+	}
+	return rows;
+}
+
 function saveFinishedProductsToStorage(products) {
 	localStorage.setItem('ww_finished_products', JSON.stringify(products));
 	syncToServer('ww_finished_products', products);
@@ -3090,16 +3165,37 @@ function saveRawMaterialsToStorage(materials) {
 	} catch (_e) { /* BroadcastChannel not supported — storage event is the fallback */ }
 }
 
+function compareEquipmentRows(a, b) {
+	const codeA = String(a && a.code || '').trim();
+	const codeB = String(b && b.code || '').trim();
+	const numA = Number((codeA.match(/(\d+)/) || [])[1] || Number.NaN);
+	const numB = Number((codeB.match(/(\d+)/) || [])[1] || Number.NaN);
+	const hasNumA = Number.isFinite(numA);
+	const hasNumB = Number.isFinite(numB);
+	if (hasNumA && hasNumB && numA !== numB) return numA - numB;
+	if (hasNumA !== hasNumB) return hasNumA ? -1 : 1;
+	const codeCmp = codeA.localeCompare(codeB, 'en', { sensitivity: 'base' });
+	if (codeCmp !== 0) return codeCmp;
+	const nameA = String(a && a.equipment || '').trim();
+	const nameB = String(b && b.equipment || '').trim();
+	return nameA.localeCompare(nameB, 'en', { sensitivity: 'base' });
+}
+
+function normalizeEquipmentRows(rows) {
+	if (!Array.isArray(rows)) return [];
+	return [...rows].sort(compareEquipmentRows);
+}
+
 function loadEquipmentFromStorage() {
 	try {
 		const stored = JSON.parse(localStorage.getItem('ww_equipment') || '[]');
 		if (Array.isArray(stored) && stored.length) {
-			return stored;
+			return normalizeEquipmentRows(stored);
 		}
 	} catch (_e) {
 		// Fall through to defaults.
 	}
-	return getFactoryEquipment().map((eq) => ({ ...eq }));
+	return normalizeEquipmentRows(getFactoryEquipment().map((eq) => ({ ...eq })));
 }
 
 async function fetchEquipmentFromServer() {
@@ -3108,13 +3204,14 @@ async function fetchEquipmentFromServer() {
 		if (res.ok) {
 			const rows = await res.json();
 			if (Array.isArray(rows) && rows.length) {
+				const normalizedRows = normalizeEquipmentRows(rows);
 				// Server is always the source of truth — it holds the latest saved state
 				// for ALL fields (status, name, details, maintenance dates).
 				// We used to merge local status over server status here, but that was
 				// backwards: it meant dashboard status changes got silently rolled back
 				// to whatever was in the local cache.
-				localStorage.setItem('ww_equipment', JSON.stringify(rows));
-				return rows;
+				localStorage.setItem('ww_equipment', JSON.stringify(normalizedRows));
+				return normalizedRows;
 			}
 		}
 	} catch (_e) { /* fall back to localStorage */ }
@@ -3122,7 +3219,8 @@ async function fetchEquipmentFromServer() {
 }
 
 function saveEquipmentToStorage(equipmentRows) {
-	localStorage.setItem('ww_equipment', JSON.stringify(equipmentRows));
+	const normalizedRows = normalizeEquipmentRows(equipmentRows);
+	localStorage.setItem('ww_equipment', JSON.stringify(normalizedRows));
 	// Broadcast instantly to any open dashboard/inventory tab
 	try {
 		const bc = new BroadcastChannel('ww_equipment_sync');
@@ -3606,39 +3704,7 @@ async function initDashboardPage() {
 		return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 	};
 
-	const collectDashboardFinishedProductsAcrossMonths = () => {
-		const byMonth = {};
-		try {
-			const merged = JSON.parse(localStorage.getItem('ww_finished_products') || '[]');
-			if (Array.isArray(merged)) {
-				for (const row of merged) {
-					if (!row || typeof row !== 'object') continue;
-					const month = inferDashboardFinishedMonth(row);
-					if (!byMonth[month]) byMonth[month] = [];
-					byMonth[month].push({ ...row });
-				}
-			}
-		} catch (_e) { /* ignore */ }
-
-		for (let i = 0; i < localStorage.length; i += 1) {
-			const key = localStorage.key(i);
-			const monthMatch = /^ww_inventory_(\d{4}-\d{2})$/.exec(String(key || ''));
-			if (!monthMatch) continue;
-			const month = monthMatch[1];
-			try {
-				const payload = JSON.parse(localStorage.getItem(key) || 'null');
-				const finished = Array.isArray(payload?.finishedProducts) ? payload.finishedProducts : [];
-				byMonth[month] = finished
-					.filter((row) => row && typeof row === 'object')
-					.map((row) => ({ ...row }));
-			} catch (_e) { /* ignore invalid payload */ }
-		}
-
-		const months = Object.keys(byMonth).sort();
-		const rows = [];
-		for (const month of months) rows.push(...byMonth[month]);
-		return rows;
-	};
+	const collectDashboardFinishedProductsAcrossMonths = () => getCanonicalFinishedProductsAllMonths();
 
 	const renderDashboardLiveSummary = () => {
 		const dailyLog = getDailyProductionLog();
@@ -3662,10 +3728,7 @@ async function initDashboardPage() {
 			return acc;
 		}, {});
 		const finishedRows = collectDashboardFinishedProductsAcrossMonths();
-		const finishedProductsTotal = finishedRows.reduce((sum, item) => {
-			if (!isDateInSelectedDashboardYear(item.date || item.addedDate)) return sum;
-			return sum + (Number(item.qty) || 0);
-		}, 0);
+		const finishedProductsTotal = finishedRows.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
 		const finishedToday = finishedRows.reduce((sum, item) => {
 			const rawDate = String(item.date || item.addedDate || '').trim();
 			let dateKey = '';
@@ -4000,8 +4063,9 @@ async function initDashboardPage() {
 	};
 	renderDashboardEquipmentStatus();
 
-	const refreshDashboardView = () => {
+	const refreshDashboardView = async () => {
 		dashTrace('refresh:start', { reason: 'dashboard-refresh' });
+		await fetchEquipmentFromServer();
 		renderDashboardYearSelector();
 		const rd = buildRevenueData();
 		renderDashboardLiveSummary();
@@ -4034,9 +4098,10 @@ async function initDashboardPage() {
 		// Instant cross-tab via BroadcastChannel (fires the moment inventory saves)
 		try {
 			const eqChannel = new BroadcastChannel('ww_equipment_sync');
-			eqChannel.onmessage = (e) => {
+			eqChannel.onmessage = async (e) => {
 				dashTrace('sync:channel', { channel: 'ww_equipment_sync', type: e && e.data && e.data.type ? String(e.data.type) : '' });
 				if (e.data && e.data.type === 'equipment_updated') {
+					await fetchEquipmentFromServer();
 					renderDashboardEquipmentStatus();
 				}
 			};
@@ -4210,33 +4275,7 @@ async function initInventoryPage() {
 		return thisMonth;
 	};
 
-	const collectAllFinishedProductsAcrossMonths = () => {
-		const byMonth = {};
-		for (const product of loadSyncedFinishedProducts()) {
-			if (!product || typeof product !== 'object') continue;
-			const month = inferProductMonth(product);
-			if (!byMonth[month]) byMonth[month] = [];
-			byMonth[month].push({ ...product, month });
-		}
-		for (const month of getInventoryMonths()) {
-			let loaded = null;
-			try {
-				loaded = JSON.parse(localStorage.getItem(inventoryMonthStorageKey(month)) || 'null');
-			} catch (_e) {
-				loaded = null;
-			}
-			if (loaded && typeof loaded === 'object' && Array.isArray(loaded.finishedProducts)) {
-				byMonth[month] = loaded.finishedProducts
-					.filter((product) => product && typeof product === 'object')
-					.map((product) => ({ ...product, month: inferProductMonth(product) || month }));
-			}
-		}
-		const rows = [];
-		for (const month of Object.keys(byMonth).sort()) {
-			rows.push(...byMonth[month]);
-		}
-		return rows;
-	};
+	const collectAllFinishedProductsAcrossMonths = () => getCanonicalFinishedProductsAllMonths();
 
 	const migrateLegacyInventoryMonthlyIfNeeded = () => {
 		if (localStorage.getItem(INVENTORY_MONTHLY_MIGRATED_KEY) === '1') return;
@@ -4503,16 +4542,9 @@ async function initInventoryPage() {
 		const criticalCount = rawMaterials.filter((m) => m.quantity < m.minLevel * 0.5).length;
 		const rawMaterialUnits = rawMaterials.reduce((sum, m) => sum + Number(m.quantity || 0), 0);
 		const finishedQty = finishedProducts.reduce((sum, p) => sum + Number(p.qty || 0), 0);
-		const allFinishedRows = collectAllFinishedProductsAcrossMonths();
-		const allMonthsTotal = allFinishedRows.reduce((sum, p) => sum + (Number(p.qty) || 0), 0);
-		const selectedYear = Number(String(currentInventoryMonth || '').slice(0, 4));
-		const yearMonths = getInventoryMonths().filter((m) => Number(String(m).slice(0, 4)) === selectedYear);
-		const isYearComplete = yearMonths.length === 12;
-		const yearTotal = allFinishedRows
-			.filter((p) => Number(String(p.month || inferProductMonth(p) || '').slice(0, 4)) === selectedYear)
-			.reduce((sum, p) => sum + (Number(p.qty) || 0), 0);
-		const aggregateLabel = isYearComplete ? `Total for ${selectedYear}` : 'All months';
-		const aggregateTotal = isYearComplete ? yearTotal : allMonthsTotal;
+		const allFinishedRows = getCanonicalFinishedProductsAllMonths();
+		const aggregateLabel = 'All months';
+		const aggregateTotal = allFinishedRows.reduce((sum, p) => sum + (Number(p.qty) || 0), 0);
 		const statsContainer = document.getElementById('inv-stats-row');
 		if (statsContainer) {
 			statsContainer.innerHTML = `
@@ -5225,7 +5257,7 @@ async function initInventoryPage() {
 			rerenderInventory();
 		};
 	} catch (_e) { /* BroadcastChannel not supported */ }
-	document.addEventListener('ww-refresh-page', rerenderInventory);
+	document.addEventListener('ww-refresh-page', () => { reloadAndRerender().catch(() => {}); });
 }
 
 const salesModuleData = {
@@ -13414,6 +13446,7 @@ function bindPasswordAssistanceForms() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+	const isOpsPage = document.body.classList.contains('ops-page');
 	// Bind auth interactions first so login/register never degrade to full page refresh.
 	try { bindRolePersistenceOnAuthForms(); } catch (_e) { /* keep page usable */ }
 	try { bindPasswordToggles(); } catch (_e) { /* keep page usable */ }
@@ -13423,12 +13456,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 	try { normalizeChronologicalOrderAcrossAppDataStorage(); } catch (_e) { /* ignore */ }
 	try { initSidebarToggle(); } catch (_e) { /* ignore */ }
 	try { bindLogoutLinks(); } catch (_e) { /* ignore */ }
-	try { enforceRoleAccess(); } catch (_e) { /* ignore */ }
+	if (!isOpsPage) {
+		try { enforceRoleAccess(); } catch (_e) { /* ignore */ }
+	}
 	try { renderTopbarUserMenu(getCachedSessionUser()); } catch (_e) { /* ignore */ }
 
 	// Hydrate localStorage from server before page inits
 	let authenticated = false;
-	const isOpsPage = document.body.classList.contains('ops-page');
 	try {
 		const meRes = await fetch(API_BASE + '/api/auth/me', { credentials: 'include', cache: 'no-store' });
 		if (meRes.ok) {

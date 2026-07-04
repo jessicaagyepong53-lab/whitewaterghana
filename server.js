@@ -90,7 +90,7 @@ const io = new Server(server, {
 
 const rootDir = __dirname;
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT = 5000;
 
 const SESSION_COOKIE = 'ww_session';
 
@@ -5891,6 +5891,15 @@ if (!process.env.VERCEL) {
     }
 
 
+
+    server.once('error', (error) => {
+      if (error && error.code === 'EADDRINUSE') {
+        console.error('[Server] Port 5000 is already in use. Stop the existing process and restart.');
+      } else {
+        console.error('[Server] Failed to start HTTP server:', error && error.message ? error.message : error);
+      }
+      process.exit(1);
+    });
 
     server.listen(PORT, () => {
 
