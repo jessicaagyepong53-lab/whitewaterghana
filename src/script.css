@@ -3681,6 +3681,20 @@ body[data-page="reports"] #rep-export-btn {
 	white-space: nowrap;
 }
 
+body[data-page="reports"] #sales-summary-cards {
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	align-items: stretch;
+}
+
+body[data-page="users"] #users-stats-row {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+body[data-page="users"] #um-tab-staff-actions .info-box,
+body[data-page="users"] #um-tab-trash-bin .info-box {
+	line-height: 1.4;
+}
+
 body[data-page="inventory"] .table-tools {
 	flex-wrap: wrap;
 	gap: 8px;
@@ -3766,6 +3780,22 @@ body[data-page="sales"] .ops-topbar > .ops-nav a.is-active {
 	body[data-page="reports"] #rep-export-btn {
 		flex: 1 1 calc(50% - 8px);
 	}
+	body[data-page="reports"] #sales-summary-cards {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 10px;
+	}
+	body[data-page="reports"] .stat-card.rep-bags-card,
+	body[data-page="reports"] .stat-card.rep-weekly-ops-card {
+		min-height: 150px;
+		padding: 12px;
+	}
+	body[data-page="reports"] .stat-card.rep-bags-card .s-value,
+	body[data-page="reports"] .stat-card.rep-weekly-ops-card .s-value {
+		font-size: 1.35rem;
+	}
+	body[data-page="users"] #users-stats-row {
+		grid-template-columns: 1fr;
+	}
 	body[data-page="sales"] .ops-topbar {
 		padding: 10px;
 		flex-wrap: wrap;
@@ -3776,6 +3806,38 @@ body[data-page="sales"] .ops-topbar > .ops-nav a.is-active {
 	}
 	body[data-page="sales"] .ops-main {
 		margin-top: 8px;
+	}
+}
+
+@media (max-width: 640px) {
+	body[data-page="reports"] #sales-summary-cards {
+		grid-template-columns: 1fr;
+	}
+	body[data-page="reports"] .stat-card.rep-bags-card,
+	body[data-page="reports"] .stat-card.rep-weekly-ops-card {
+		min-height: 0;
+		padding: 11px;
+	}
+	body[data-page="reports"] .stat-card.rep-bags-card::after,
+	body[data-page="reports"] .stat-card.rep-weekly-ops-card::after {
+		width: 108px;
+		height: 108px;
+		inset: auto -20% -36% auto;
+	}
+	body[data-page="reports"] .stat-card.rep-bags-card .split-meta,
+	body[data-page="reports"] .stat-card.rep-weekly-ops-card .split-meta {
+		gap: 4px;
+	}
+	body[data-page="reports"] .stat-card.rep-bags-card .split-meta span,
+	body[data-page="reports"] .stat-card.rep-weekly-ops-card .split-meta span {
+		font-size: 0.78rem;
+		line-height: 1.3;
+		white-space: normal;
+		word-break: break-word;
+	}
+	body[data-page="users"] #um-tab-staff-actions .data-table,
+	body[data-page="users"] #um-tab-trash-bin .data-table {
+		min-width: 620px;
 	}
 }
 
@@ -4137,12 +4199,101 @@ body[data-page="sales"] .ops-topbar > .ops-nav a.is-active {
 }
 
 /* ── Reports page: bags summary card ── */
-.stat-card.rep-bags-card { border-color: #bfdbfe; background: linear-gradient(135deg,#eff6ff 0%,#fff 100%); }
-.stat-card.rep-bags-card .s-value { color: #1d4ed8; }
-.stat-card.rep-bags-card .s-icon  { background: rgba(29,78,216,.1); color: #1d4ed8; }
-.stat-card.rep-bags-card .split-meta { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
-.stat-card.rep-bags-card .split-meta span { font-size: 0.82rem; color: #475569; }
-.stat-card.rep-bags-card .split-meta strong { color: #0f172a; }
+.stat-card.rep-bags-card,
+.stat-card.rep-weekly-ops-card {
+	position: relative;
+	overflow: hidden;
+	min-height: 162px;
+	box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
+	transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.stat-card.rep-bags-card::after,
+.stat-card.rep-weekly-ops-card::after {
+	content: '';
+	position: absolute;
+	inset: auto -16% -38% auto;
+	width: 140px;
+	height: 140px;
+	border-radius: 50%;
+	pointer-events: none;
+}
+
+.stat-card.rep-bags-card:hover,
+.stat-card.rep-weekly-ops-card:hover {
+	transform: translateY(-2px);
+	box-shadow: 0 14px 28px rgba(15, 23, 42, 0.12);
+}
+
+.stat-card.rep-bags-card {
+	border-color: #bfdbfe;
+	background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
+}
+
+.stat-card.rep-bags-card::after {
+	background: radial-gradient(circle at center, rgba(29, 78, 216, 0.16) 0%, rgba(29, 78, 216, 0) 72%);
+}
+
+.stat-card.rep-bags-card .s-value {
+	color: #1d4ed8;
+	font-size: 1.55rem;
+	line-height: 1.15;
+}
+
+.stat-card.rep-bags-card .s-icon {
+	background: rgba(29, 78, 216, 0.12);
+	color: #1d4ed8;
+	box-shadow: inset 0 0 0 1px rgba(29, 78, 216, 0.12);
+}
+
+.stat-card.rep-bags-card .split-meta {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	margin-top: 4px;
+	padding-top: 6px;
+	border-top: 1px dashed rgba(59, 130, 246, 0.26);
+	position: relative;
+	z-index: 1;
+}
+
+.stat-card.rep-bags-card .split-meta span {
+	font-size: 0.82rem;
+	color: #475569;
+}
+
+.stat-card.rep-bags-card .split-meta strong {
+	color: #0f172a;
+}
+
+.stat-card.rep-weekly-ops-card {
+	border-color: #a7f3d0;
+	background: linear-gradient(135deg, #ecfdf5 0%, #ffffff 100%);
+}
+
+.stat-card.rep-weekly-ops-card::after {
+	background: radial-gradient(circle at center, rgba(4, 120, 87, 0.15) 0%, rgba(4, 120, 87, 0) 72%);
+}
+
+.stat-card.rep-weekly-ops-card .s-value {
+	color: #047857;
+	font-size: 1.5rem;
+	line-height: 1.15;
+}
+
+.stat-card.rep-weekly-ops-card .s-icon {
+	background: rgba(4, 120, 87, 0.14);
+	color: #047857;
+	box-shadow: inset 0 0 0 1px rgba(4, 120, 87, 0.16);
+}
+
+.stat-card.rep-weekly-ops-card .split-meta {
+	padding-top: 6px;
+	margin-top: 6px;
+	border-top: 1px dashed rgba(5, 150, 105, 0.28);
+	position: relative;
+	z-index: 1;
+}
 
 .stat-card.today-performance-card {
 	border-color: #dbeafe;

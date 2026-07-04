@@ -2166,6 +2166,44 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
       const serverData = existingDoc && existingDoc.data && typeof existingDoc.data === 'object' ? existingDoc.data : {};
 
+      // Strict safety mode: reject payloads where the same client transaction key
+      // points to different invoice IDs. This prevents silent duplicate creation
+      // outside the explicit Add Invoice flow.
+      const serverTxnToInvoiceId = new Map();
+      for (const inv of (Array.isArray(serverData.invoices) ? serverData.invoices : [])) {
+        if (!inv || !inv.id) continue;
+        const txn = getClientTxnKey(inv);
+        if (!txn) continue;
+        serverTxnToInvoiceId.set(txn, String(inv.id).trim());
+      }
+      const incomingTxnToInvoiceId = new Map();
+      for (const inv of (Array.isArray(incoming.invoices) ? incoming.invoices : [])) {
+        if (!inv || !inv.id) continue;
+        const id = String(inv.id).trim();
+        if (!id) continue;
+        const txn = getClientTxnKey(inv);
+        if (!txn) continue;
+        const incomingMappedId = incomingTxnToInvoiceId.get(txn);
+        if (incomingMappedId && incomingMappedId !== id) {
+          return res.status(409).json({
+            message: 'Rejected: same transaction key mapped to multiple invoice IDs.',
+            code: 'TXN_KEY_CONFLICT',
+            txnKey: txn,
+            invoiceIds: [incomingMappedId, id],
+          });
+        }
+        incomingTxnToInvoiceId.set(txn, id);
+        const serverMappedId = serverTxnToInvoiceId.get(txn);
+        if (serverMappedId && serverMappedId !== id) {
+          return res.status(409).json({
+            message: 'Rejected: transaction key already belongs to another invoice ID on server.',
+            code: 'TXN_KEY_CONFLICT',
+            txnKey: txn,
+            invoiceIds: [serverMappedId, id],
+          });
+        }
+      }
+
 
 
       // Merge deletedInvoiceIds from both sources — deletions are permanent.
@@ -2216,7 +2254,17 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
         const id = String(inv.id).trim();
 
+        const hasTxn = !!getClientTxnKey(inv);
+
+        const isExistingServerInvoice = serverInvoiceMap.has(id);
+
         if (deletedInvoiceIds.has(id) || seenIds.has(id)) continue;
+
+        // Hard guard: only Add-flow invoices (with transaction key) can create
+
+        // brand-new IDs during month sync. Existing server IDs may still update.
+
+        if (!isExistingServerInvoice && !hasTxn) continue;
 
         seenIds.add(id);
 
@@ -2284,7 +2332,15 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
         const src = String(ord.sourceInvoiceId || '').trim();
 
+        const hasTxn = !!getClientTxnKey(ord);
+
+        const isExistingServerOrder = serverOrderMap.has(id);
+
         if (deletedOrderIds.has(id) || deletedInvoiceIds.has(src) || !activeInvoiceIds.has(src) || seenOrdIds.has(id)) continue;
+
+        // Hard guard for new sales order IDs too: require transaction key.
+
+        if (!isExistingServerOrder && !hasTxn) continue;
 
         seenOrdIds.add(id);
 

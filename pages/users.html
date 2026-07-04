@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>User Management</title>
-<link rel="stylesheet" href="../src/script.css?v=20260504">
+<link rel="stylesheet" href="../src/script.css?v=20260704o">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
 </head>
 <body class="ops-page" data-page="users">
@@ -58,6 +58,7 @@
     <div class="tab-bar">
       <button class="tab-btn tab-active" data-tab="users-list" onclick="switchTab('um','users-list')">System Users</button>
       <button class="tab-btn" data-tab="permissions" onclick="switchTab('um','permissions')">Permissions Matrix</button>
+      <button class="tab-btn" data-tab="staff-actions" onclick="switchTab('um','staff-actions')"><i class="fa-solid fa-user-clock"></i> Staff Actions</button>
       <button class="tab-btn" data-tab="trash-bin" onclick="switchTab('um','trash-bin')"><i class="fa-solid fa-trash-can"></i> Trash Bin</button>
     </div>
     <div id="um-tab-users-list" class="tab-panel tab-active">
@@ -91,6 +92,20 @@
       <div class="info-box">
         <p>CEO and Manager can grant or revoke edit/delete rights per user from the user edit form at any time.</p>
       </div>
+    </div>
+    <div id="um-tab-staff-actions" class="tab-panel">
+      <div class="info-box" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <p style="margin:0"><i class="fa-solid fa-circle-info"></i> Shows edit/delete actions performed by staff or supervisor users who were granted edit/delete rights.</p>
+        <button type="button" class="btn-secondary" id="um-refresh-actions-btn"><i class="fa-solid fa-rotate"></i> Refresh</button>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr><th>When</th><th>User</th><th>Role</th><th>Action</th><th>Module</th><th>Record</th><th>Details</th></tr>
+        </thead>
+        <tbody id="um-actions-tbody">
+          <tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No action logs yet.</td></tr>
+        </tbody>
+      </table>
     </div>
     <div id="um-tab-trash-bin" class="tab-panel">
       <div class="info-box" style="margin-bottom:16px">
@@ -197,11 +212,12 @@
     </div>
   </div>
 </main>
-<script src="../src/script.js?v=20260704c"></script>
+<script src="../src/script.js?v=20260704o"></script>
 <script>
 (function() {
+  var PRIV_ACTION_AUDIT_KEY = 'ww_privileged_action_audit_v1';
   const ACCESS_LEVELS = {
-    ceo: 'Always enabled',
+    CEO: 'Always enabled',
     manager: 'Always enabled',
     supervisor: 'Enabled by default',
     staff: 'Grant required',
@@ -209,6 +225,9 @@
 
   const usersTbody = document.getElementById('users-tbody');
   const totalStat = document.getElementById('stat-total-users');
+  const actionsTbody = document.getElementById('um-actions-tbody');
+  const refreshActionsBtn = document.getElementById('um-refresh-actions-btn');
+  const staffActionsTabBtn = document.querySelector('.tab-btn[data-tab="staff-actions"]');
 
   let cachedUsers = [];
   let editingUserId = null;
@@ -238,6 +257,70 @@
     const d = new Date(dt);
     if (isNaN(d)) return dt;
     return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function formatActionLabel(action) {
+    var normalized = String(action || '').trim().toLowerCase();
+    if (!normalized) return 'Update';
+    if (normalized === 'delete') return 'Delete';
+    if (normalized === 'edit') return 'Edit';
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+
+  function formatModuleLabel(module) {
+    var text = String(module || '').trim();
+    if (!text) return 'General';
+    if (text === 'invoices') return 'Invoices';
+    if (text === 'sales') return 'Sales';
+    if (text === 'purchaseOrders') return 'Purchase Orders';
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  function renderStaffActions(rows) {
+    if (!actionsTbody) return;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      actionsTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No action logs yet.</td></tr>';
+      return;
+    }
+    actionsTbody.innerHTML = rows.map(function(row) {
+      var role = String(row.userRole || '').trim().toLowerCase();
+      var roleLabel = role === 'ceo' ? 'CEO' : formatRoleLabel(role);
+      var userName = String(row.userName || '').trim() || 'Unknown';
+      var userEmail = String(row.userEmail || '').trim();
+      var recordText = String(row.summary || row.recordId || '').trim() || '—';
+      var details = String(row.details || '').trim() || '—';
+      var action = formatActionLabel(row.action);
+      var actionClass = String(row.action || '').toLowerCase() === 'delete' ? 'status-red' : 'status-blue';
+      var userDisplay = userEmail ? (userName + '<br><small style="color:#64748b">' + userEmail + '</small>') : userName;
+      return '<tr>' +
+        '<td>' + formatLogin(row.timestamp) + '</td>' +
+        '<td>' + userDisplay + '</td>' +
+        '<td>' + roleLabel + '</td>' +
+        '<td><span class="status-pill ' + actionClass + '">' + action + '</span></td>' +
+        '<td>' + formatModuleLabel(row.module) + '</td>' +
+        '<td>' + recordText + '</td>' +
+        '<td>' + details + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  async function loadStaffActions() {
+    if (!actionsTbody) return;
+    actionsTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">Loading actions...</td></tr>';
+    try {
+      var res = await fetch('/api/app-data/' + encodeURIComponent(PRIV_ACTION_AUDIT_KEY), { credentials: 'include', cache: 'no-store' });
+      var json = await res.json().catch(function() { return {}; });
+      var rows = Array.isArray(json && json.data) ? json.data : [];
+      rows = rows.filter(function(row) {
+        var role = String((row && row.userRole) || '').trim().toLowerCase();
+        return role === 'staff' || role === 'supervisor';
+      }).sort(function(a, b) {
+        return new Date(String(b && b.timestamp || '')).getTime() - new Date(String(a && a.timestamp || '')).getTime();
+      });
+      renderStaffActions(rows.slice(0, 300));
+    } catch (_err) {
+      renderStaffActions([]);
+    }
   }
 
   function formatRightsAudit(user) {
@@ -291,6 +374,7 @@
   }
 
   loadUsers();
+  loadStaffActions();
 
   const addBtn = document.getElementById('um-add-user-btn');
   const modal = document.getElementById('um-add-modal');
@@ -525,6 +609,17 @@
       }
     });
     roleSelect.dispatchEvent(new Event('change'));
+  }
+
+  if (refreshActionsBtn) {
+    refreshActionsBtn.addEventListener('click', function() {
+      loadStaffActions();
+    });
+  }
+  if (staffActionsTabBtn) {
+    staffActionsTabBtn.addEventListener('click', function() {
+      loadStaffActions();
+    });
   }
 
   if (resetForm) resetForm.addEventListener('submit', async function(e) {

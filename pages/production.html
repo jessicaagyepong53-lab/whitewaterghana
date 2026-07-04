@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Production</title>
-  <link rel="stylesheet" href="../src/script.css?v=20260504">
+  <link rel="stylesheet" href="../src/script.css?v=20260704q">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
 </head>
 <body class="ops-page" data-page="production">
@@ -65,10 +65,18 @@
           </table>
           <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary" id="bom-add-component-btn">Add Component <i class="fa-solid fa-plus"></i></button></div>
           <div id="bom-cost-summary" style="margin-top:12px"></div>
+          <div class="info-box" style="margin-top:14px;">
+            <strong style="display:block;margin-bottom:6px">Detected Production Inputs (From Other Pages)</strong>
+            <p style="margin:0 0 10px;color:#475569;">Auto-read from Inventory and Purchase pages. Text like "15 ROLLS 242KG. 2 PACKAGING BAGS, TNT 150" is parsed into reusable BOM rows.</p>
+            <div id="prod-external-materials-list"></div>
+          </div>
         </div>
       </div>
     </div>
     <div id="prod-tab-batches" class="tab-panel">
+      <div class="info-box" style="margin-bottom:12px">
+        <p style="margin:0">Batch history combines direct Production entries with historical Finished Products from Inventory &amp; Stock (first recorded date to latest). Imported history rows are marked "From Inventory" and auto-appear whenever related data is entered/updated on Inventory or Purchase pages.</p>
+      </div>
       <table class="data-table">
         <thead><tr><th>Batch ID</th><th>Product</th><th>Quantity</th><th>Date</th><th>Shift</th><th>Start Time</th><th>Cost (GH)</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody id="batches-tbody"></tbody>
@@ -132,7 +140,7 @@
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="../src/script.js?v=20260704c"></script>
+<script src="../src/script.js?v=20260704w"></script>
 </body>
 </html>
 

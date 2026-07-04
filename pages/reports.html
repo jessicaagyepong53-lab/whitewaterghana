@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Reports &amp; Analytics</title>
-  <link rel="stylesheet" href="../src/script.css?v=20260702h">
+  <link rel="stylesheet" href="../src/script.css?v=20260704o">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
 </head>
 <body class="ops-page" data-page="reports">
@@ -70,6 +70,7 @@
         <button type="button" class="rep-view-btn" data-view="monthly">Monthly</button>
       </div>
       <div class="rep-performance-ranges" id="rep-performance-ranges">
+        <button type="button" class="rep-range-btn" data-range="7d">Last 7D</button>
         <button type="button" class="rep-range-btn is-active" data-range="30d">Last 30D</button>
         <button type="button" class="rep-range-btn" data-range="90d">90D</button>
         <button type="button" class="rep-range-btn" data-range="1y">1Y</button>
@@ -101,7 +102,20 @@
           <div id="chart-shift-sales" class="chart-wrap"></div>
         </div>
       </div>
-      <div class="stats-row" id="sales-summary-cards" style="margin-top:14px"></div>
+      <div class="stats-row" id="sales-summary-cards" style="margin-top:14px">
+        <div class="stat-card rep-bags-card">
+          <div class="s-icon"><i class="fa-solid fa-bag-shopping"></i></div>
+          <p class="s-label">Bags Sold</p>
+          <p class="s-value">--</p>
+          <p class="s-meta split-meta"><span>Loading summary...</span></p>
+        </div>
+        <div class="stat-card rep-weekly-ops-card">
+          <div class="s-icon"><i class="fa-solid fa-calendar-week"></i></div>
+          <p class="s-label">Weekly Avg</p>
+          <p class="s-value">--</p>
+          <p class="s-meta split-meta"><span>Loading summary...</span></p>
+        </div>
+      </div>
     </div>
 
     <div id="rep-tab-financial" class="tab-panel">
@@ -161,7 +175,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
-<script src="../src/script.js?v=20260704c"></script>
+<script src="../src/script.js?v=20260704o"></script>
 
 <script>
 // Reports KPI patch — uses AppData as source of truth for invoice counts
