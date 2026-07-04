@@ -1252,7 +1252,7 @@ function broadcastRemoteSyncRefresh() {
 		{ name: 'ww_accounting_sync', payload: { type: 'accounting_updated' } },
 		{ name: 'ww_raw_materials_sync', payload: { type: 'inventory_updated' } },
 		{ name: 'ww_finished_products_sync', payload: { type: 'inventory_updated' } },
-		{ name: 'ww_equipment_sync', payload: { type: 'inventory_updated' } },
+		{ name: 'ww_equipment_sync', payload: { type: 'equipment_updated' } },
 	];
 	channels.forEach((entry) => {
 		try {
@@ -4710,29 +4710,9 @@ function getSalesYearPayloads(year) {
 }
 
 function getAvailableInvoiceProducts(preferredProduct) {
-	const options = [];
-	const seen = new Set();
-	const addOption = (value) => {
-		const normalized = String(value || '').trim();
-		if (!normalized || seen.has(normalized)) return;
-		seen.add(normalized);
-		options.push(normalized);
-	};
-
-	addOption(preferredProduct);
-	addOption('Mobile water (500ML)');
-	addOption('500ml Sachet Water (500 pcs/bag)');
-
-	try {
-		const finishedProducts = JSON.parse(localStorage.getItem('ww_finished_products') || '[]');
-		if (Array.isArray(finishedProducts)) {
-			finishedProducts.forEach((row) => {
-				if (row && typeof row === 'object') addOption(row.product || row.name);
-			});
-		}
-	} catch (_e) { /* ignore */ }
-
-	return options.length ? options : ['Mobile water (500ML)'];
+	const allowedProduct = 'Mobile water (500ML)';
+	if (String(preferredProduct || '').trim() === allowedProduct) return [allowedProduct];
+	return [allowedProduct];
 }
 
 function recoverSalesMonthsFromStorage() {
@@ -9743,7 +9723,43 @@ function initAccountingPage() {
 		const getPreviewUrl = (fileId) => `${API_BASE}/api/record-vault/${currentSection}/${encodeURIComponent(fileId)}/download`;
 		const getDownloadUrl = (fileId) => `${API_BASE}/api/record-vault/${currentSection}/${encodeURIComponent(fileId)}/download?download=1`;
 
-		const isImageType = (contentType) => ['image/jpeg', 'image/jpg', 'image/png'].includes(String(contentType || '').toLowerCase());
+		const getFileExt = (name) => String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || '';
+		const isImageType = (contentType) => String(contentType || '').toLowerCase().startsWith('image/');
+		const isVideoType = (contentType) => String(contentType || '').toLowerCase().startsWith('video/');
+		const isPdfType = (contentType) => String(contentType || '').toLowerCase() === 'application/pdf';
+		const allowedFallbackExts = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt', 'rtf', 'ppt', 'pptx', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tif', 'tiff', 'mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v']);
+		const isAllowedVaultFileType = (file) => {
+			const mime = String(file && file.type || '').toLowerCase();
+			if (isImageType(mime) || isVideoType(mime) || isPdfType(mime)) return true;
+			const docMimes = new Set([
+				'application/msword',
+				'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+				'application/vnd.ms-excel',
+				'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+				'text/csv',
+				'application/csv',
+				'text/plain',
+				'application/rtf',
+				'application/vnd.ms-powerpoint',
+				'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+			]);
+			if (docMimes.has(mime)) return true;
+			if (!mime || mime === 'application/octet-stream') {
+				const ext = getFileExt(file && file.name || '');
+				return allowedFallbackExts.has(ext);
+			}
+			return false;
+		};
+		const getVaultFileIconClass = (contentType) => {
+			const mime = String(contentType || '').toLowerCase();
+			if (isPdfType(mime)) return 'fa-regular fa-file-pdf';
+			if (isVideoType(mime)) return 'fa-regular fa-file-video';
+			if (mime.includes('word') || mime.includes('officedocument.wordprocessingml')) return 'fa-regular fa-file-word';
+			if (mime.includes('excel') || mime.includes('spreadsheetml') || mime.includes('csv')) return 'fa-regular fa-file-excel';
+			if (mime.includes('powerpoint') || mime.includes('presentationml')) return 'fa-regular fa-file-powerpoint';
+			if (mime.includes('text/plain') || mime.includes('rtf')) return 'fa-regular fa-file-lines';
+			return 'fa-regular fa-file';
+		};
 
 		const revokeViewerObjectUrl = () => {
 			if (!viewerObjectUrl) return;
@@ -9793,6 +9809,10 @@ function initAccountingPage() {
 			viewerRenderToken += 1;
 			clearViewerPdfPreview();
 			revokeViewerObjectUrl();
+			if (viewerBody) {
+				const existingVideo = viewerBody.querySelector('.rv-viewer-video');
+				if (existingVideo) existingVideo.remove();
+			}
 			if (viewerModal) viewerModal.style.display = 'none';
 			if (viewerTitleEl) viewerTitleEl.textContent = 'Preview';
 			if (viewerLoading) {
@@ -9817,6 +9837,10 @@ function initAccountingPage() {
 				viewerImage.style.display = 'none';
 				viewerImage.removeAttribute('src');
 			}
+			if (viewerBody) {
+				const existingVideo = viewerBody.querySelector('.rv-viewer-video');
+				if (existingVideo) existingVideo.remove();
+			}
 			if (viewerLoading) {
 				viewerLoading.style.display = 'block';
 				viewerLoading.textContent = 'Loading document...';
@@ -9838,6 +9862,7 @@ function initAccountingPage() {
 
 			const resolvedType = String(file.contentType || blob.type || '').toLowerCase();
 			const isImage = isImageType(resolvedType);
+			const isVideo = isVideoType(resolvedType);
 
 			if (isImage) {
 				viewerObjectUrl = URL.createObjectURL(blob);
@@ -9846,6 +9871,31 @@ function initAccountingPage() {
 					viewerImage.style.display = 'block';
 					viewerImage.src = viewerObjectUrl;
 					viewerImage.alt = fileName;
+				}
+				return;
+			}
+
+			if (isVideo) {
+				viewerObjectUrl = URL.createObjectURL(blob);
+				if (viewerLoading) viewerLoading.style.display = 'none';
+				if (viewerBody) {
+					const video = document.createElement('video');
+					video.className = 'rv-viewer-video';
+					video.controls = true;
+					video.preload = 'metadata';
+					video.src = viewerObjectUrl;
+					video.style.width = '100%';
+					video.style.maxHeight = '70vh';
+					video.style.borderRadius = '10px';
+					viewerBody.appendChild(video);
+				}
+				return;
+			}
+
+			if (!isPdfType(resolvedType)) {
+				if (viewerLoading) {
+					viewerLoading.style.display = 'block';
+					viewerLoading.textContent = 'Preview is unavailable for this file type. Please download the file.';
 				}
 				return;
 			}
@@ -10001,6 +10051,7 @@ function initAccountingPage() {
 
 			const fileCards = files.map((file) => {
 				const isImage = isImageType(file.contentType);
+				const iconClass = getVaultFileIconClass(file.contentType);
 				const fileName = escapeHtml(file.fileName || 'File');
 				const uploadedBy = escapeHtml(file.uploadedBy || 'Unknown');
 				const category = escapeHtml(file.category || 'Other');
@@ -10012,7 +10063,7 @@ function initAccountingPage() {
 						<div class="rv-thumb">
 							${isImage
 								? `<img src="${getPreviewUrl(file.fileId)}" alt="${fileName}" loading="lazy">`
-								: '<i class="fa-regular fa-file-pdf rv-file-icon" aria-hidden="true"></i>'}
+								: `<i class="${iconClass} rv-file-icon" aria-hidden="true"></i>`}
 						</div>
 						<div class="rv-card-info">
 							<div class="rv-card-title">${fileName}</div>
@@ -10176,9 +10227,8 @@ function initAccountingPage() {
 
 		const stageFile = (file) => {
 			if (!file) return;
-			const allowed = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
-			if (!allowed.includes(String(file.type || '').toLowerCase())) {
-				alert('Only PDF, JPG, and PNG files are allowed.');
+			if (!isAllowedVaultFileType(file)) {
+				alert('Allowed file types: documents (PDF, Word, Excel), videos, and all image types.');
 				return;
 			}
 			if (Number(file.size || 0) > 15 * 1024 * 1024) {
@@ -12356,11 +12406,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 	if (authenticated && isOpsPage && !window.__wwLiveSyncConnected) {
 		window.__wwLiveSyncConnected = true;
 		const handleRealtimeUpdate = async (payload) => {
-			if (!shouldProcessRealtimePayload(payload)) return;
-			if (window.__wwRemoteSyncInFlight) return;
+				const force = !!(payload && payload.__force);
+				if (!force && !shouldProcessRealtimePayload(payload)) return;
+				const changedKey = String(payload && payload.key || '').trim();
+				if (window.__wwRemoteSyncInFlight) {
+					window.__wwRemoteSyncQueued = true;
+					if (changedKey) window.__wwRemoteSyncQueuedKey = changedKey;
+					return;
+				}
 			window.__wwRemoteSyncInFlight = true;
 			try {
-				const changedKey = String(payload && payload.key || '').trim();
+					if (changedKey === 'ww_equipment') {
+						await refreshEquipmentFromServerAuthoritative();
+						emitStorageKeyChange('ww_equipment');
+						broadcastRemoteSyncRefresh();
+						document.dispatchEvent(new Event('ww-refresh-page'));
+						return;
+					}
 				if (/^ww_inventory_\d{4}-\d{2}$/.test(changedKey)) {
 					await loadFromServerForceFresh(changedKey);
 					emitStorageKeyChange(changedKey);
@@ -12372,6 +12434,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 				/* noop */
 			} finally {
 				window.__wwRemoteSyncInFlight = false;
+				if (window.__wwRemoteSyncQueued) {
+					const queuedKey = String(window.__wwRemoteSyncQueuedKey || '').trim();
+					window.__wwRemoteSyncQueued = false;
+					window.__wwRemoteSyncQueuedKey = '';
+					setTimeout(() => {
+						handleRealtimeUpdate({ key: queuedKey, __force: true });
+					}, 0);
+				}
 			}
 		};
 

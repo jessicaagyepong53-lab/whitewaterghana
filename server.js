@@ -4893,13 +4893,20 @@ const recordVaultUpload = multer({
       'application/acrobat',
       'applications/vnd.pdf',
       'text/pdf',
-      'image/jpeg',
-      'image/jpg',
-      'image/png',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'text/csv',
+      'application/csv',
+      'text/plain',
+      'application/rtf',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     ];
-    const allowedExts = ['.pdf', '.jpg', '.jpeg', '.png'];
+    const allowedExts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.txt', '.rtf', '.ppt', '.pptx', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.tif', '.tiff', '.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'];
 
-    const mimeAllowed = allowedMimes.includes(mime);
+    const mimeAllowed = allowedMimes.includes(mime) || mime.startsWith('image/') || mime.startsWith('video/');
     const extAllowed = allowedExts.includes(ext);
     const genericMimeWithSafeExt = (mime === 'application/octet-stream' || !mime) && extAllowed;
 
@@ -4911,7 +4918,7 @@ const recordVaultUpload = multer({
 
     }
 
-    cb(createError(400, 'Only PDF, JPG, and PNG files are allowed'));
+    cb(createError(400, 'Only documents, videos, and image files are allowed'));
 
   },
 
@@ -5044,9 +5051,49 @@ function inferMimeFromName(fileName) {
 
   if (ext === '.pdf') return 'application/pdf';
 
+  if (ext === '.doc') return 'application/msword';
+
+  if (ext === '.docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+  if (ext === '.xls') return 'application/vnd.ms-excel';
+
+  if (ext === '.xlsx') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  if (ext === '.csv') return 'text/csv';
+
+  if (ext === '.txt') return 'text/plain';
+
+  if (ext === '.rtf') return 'application/rtf';
+
+  if (ext === '.ppt') return 'application/vnd.ms-powerpoint';
+
+  if (ext === '.pptx') return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+
   if (ext === '.png') return 'image/png';
 
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+
+  if (ext === '.gif') return 'image/gif';
+
+  if (ext === '.bmp') return 'image/bmp';
+
+  if (ext === '.webp') return 'image/webp';
+
+  if (ext === '.svg') return 'image/svg+xml';
+
+  if (ext === '.tif' || ext === '.tiff') return 'image/tiff';
+
+  if (ext === '.mp4') return 'video/mp4';
+
+  if (ext === '.webm') return 'video/webm';
+
+  if (ext === '.mov') return 'video/quicktime';
+
+  if (ext === '.avi') return 'video/x-msvideo';
+
+  if (ext === '.mkv') return 'video/x-matroska';
+
+  if (ext === '.m4v') return 'video/x-m4v';
 
   return '';
 
@@ -5110,15 +5157,58 @@ app.get('/api/record-vault/:section', ensureAuthenticated, ensureRole('vault'), 
 
     const category = String(req.query.category || '').trim();
 
-    const dateFromMs = Date.parse(String(req.query.dateFrom || ''));
+    const dateFromRaw = String(req.query.dateFrom || '').trim();
 
-    const dateToMs = Date.parse(String(req.query.dateTo || ''));
+    const dateToRaw = String(req.query.dateTo || '').trim();
+
+    const dateFromMs = (() => {
+
+      const parsed = Date.parse(dateFromRaw);
+
+      if (!Number.isFinite(parsed)) return Number.NaN;
+
+      const dt = new Date(parsed);
+
+      dt.setHours(0, 0, 0, 0);
+
+      return dt.getTime();
+
+    })();
+
+    const dateToMs = (() => {
+
+      const parsed = Date.parse(dateToRaw);
+
+      if (!Number.isFinite(parsed)) return Number.NaN;
+
+      const dt = new Date(parsed);
+
+      dt.setHours(23, 59, 59, 999);
+
+      return dt.getTime();
+
+    })();
 
     const folderId = String(req.query.folderId || '').trim();
 
     if (search) {
 
-      files = files.filter((entry) => String(entry.fileName || '').toLowerCase().includes(search));
+      files = files.filter((entry) => {
+
+        const fileName = String(entry.fileName || '').toLowerCase();
+
+        const uploadedBy = String(entry.uploadedBy || '').toLowerCase();
+
+        const categoryText = String(entry.category || '').toLowerCase();
+
+        const dateText = String(entry.date || entry.uploadDate || '').toLowerCase();
+
+        return fileName.includes(search)
+          || uploadedBy.includes(search)
+          || categoryText.includes(search)
+          || dateText.includes(search);
+
+      });
 
     }
 
@@ -5354,10 +5444,7 @@ app.post('/api/record-vault/:section/upload', ensureAuthenticated, ensureRole('v
     const normalizedContentType = (() => {
       const incoming = String(req.file.mimetype || '').toLowerCase();
       if (incoming && incoming !== 'application/octet-stream') return incoming;
-      if (ext === '.pdf') return 'application/pdf';
-      if (ext === '.png') return 'image/png';
-      if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
-      return incoming || 'application/octet-stream';
+      return inferMimeFromName(req.file.originalname || '') || incoming || 'application/octet-stream';
     })();
 
     const resolvedDisplayName = resolveVaultDisplayName(req.file.originalname, req.body.fileName || req.body.saveAsName);

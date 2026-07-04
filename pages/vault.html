@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Record Vault</title>
-  <link rel="stylesheet" href="../src/script.css?v=20260702c">
+  <link rel="stylesheet" href="../src/script.css?v=20260704a">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
@@ -63,7 +63,7 @@
     </div>
 
     <div class="rv-toolbar">
-      <input type="text" id="rv-search" class="rv-input" placeholder="Search by file name...">
+      <input type="text" id="rv-search" class="rv-input" placeholder="Search by file, uploader, category, or date...">
       <select id="rv-category-filter" class="rv-input"></select>
       <input type="date" id="rv-date-from" class="rv-input">
       <input type="date" id="rv-date-to" class="rv-input">
@@ -92,8 +92,8 @@
     <div class="inv-modal-body">
       <div id="rv-dropzone" class="rv-dropzone">
         <p><i class="fa-solid fa-file-arrow-up"></i> Drag and drop a file here, or click to browse</p>
-        <p class="rv-dropzone-hint">Allowed: PDF, JPG, PNG • Max size: 15MB</p>
-        <input type="file" id="rv-file-input" accept=".pdf,.jpg,.jpeg,.png" style="display:none;">
+        <p class="rv-dropzone-hint">Allowed: Documents (PDF, Word, Excel), videos, and all image types • Max size: 15MB</p>
+        <input type="file" id="rv-file-input" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.rtf,.ppt,.pptx" style="display:none;">
       </div>
       <div id="rv-selected-file" class="rv-selected-file" style="display:none;"></div>
 
@@ -170,6 +170,6 @@
   </div>
 </div>
 
-<script src="../src/script.js?v=20260702c"></script>
+<script src="../src/script.js?v=20260704c"></script>
 </body>
 </html>
