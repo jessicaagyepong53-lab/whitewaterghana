@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>User Management</title>
-<link rel="stylesheet" href="../src/script.css?v=20260704o">
+<link rel="stylesheet" href="../src/script.css?v=20260707d">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
 </head>
 <body class="ops-page" data-page="users">
@@ -216,6 +216,8 @@
 <script>
 (function() {
   var PRIV_ACTION_AUDIT_KEY = 'ww_privileged_action_audit_v1';
+  var PRIV_ACTION_RETENTION_DAYS = 30;
+  var PRIV_ACTION_RETENTION_MS = PRIV_ACTION_RETENTION_DAYS * 24 * 60 * 60 * 1000;
   const ACCESS_LEVELS = {
     CEO: 'Always enabled',
     manager: 'Always enabled',
@@ -311,6 +313,22 @@
       var res = await fetch('/api/app-data/' + encodeURIComponent(PRIV_ACTION_AUDIT_KEY), { credentials: 'include', cache: 'no-store' });
       var json = await res.json().catch(function() { return {}; });
       var rows = Array.isArray(json && json.data) ? json.data : [];
+      var cutoff = Date.now() - PRIV_ACTION_RETENTION_MS;
+      var retainedRows = rows.filter(function(row) {
+        var ts = Date.parse(String(row && row.timestamp || ''));
+        return Number.isFinite(ts) && ts >= cutoff;
+      });
+      if (retainedRows.length !== rows.length) {
+        try {
+          await fetch('/api/app-data/' + encodeURIComponent(PRIV_ACTION_AUDIT_KEY), {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: retainedRows }),
+          });
+        } catch (_e) { /* keep rendering retained rows locally */ }
+      }
+      rows = retainedRows;
       rows = rows.filter(function(row) {
         var role = String((row && row.userRole) || '').trim().toLowerCase();
         return role === 'staff' || role === 'supervisor';

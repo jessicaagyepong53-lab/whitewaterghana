@@ -13,6 +13,8 @@ const SALES_ADD_AUDIT_KEY = 'ww_sales_add_audit_log_v1';
 const SALES_ADD_AUDIT_LIMIT = 600;
 const PRIVILEGED_ACTION_AUDIT_KEY = 'ww_privileged_action_audit_v1';
 const PRIVILEGED_ACTION_AUDIT_LIMIT = 1200;
+const PRIVILEGED_ACTION_RETENTION_DAYS = 30;
+const PRIVILEGED_ACTION_RETENTION_MS = PRIVILEGED_ACTION_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const SALES_SYNC_WARNING_KEY = 'ww_sales_sync_warning';
 const SALES_SERVER_AUTHORITATIVE_MODE = true;
 const CLIENT_INSTANCE_ID = (() => {
@@ -339,10 +341,24 @@ function getPrivilegedActionAuditEntries() {
 	try {
 		const raw = localStorage.getItem(PRIVILEGED_ACTION_AUDIT_KEY);
 		const parsed = raw ? JSON.parse(raw) : [];
-		return Array.isArray(parsed) ? parsed : [];
+		const entries = Array.isArray(parsed) ? parsed : [];
+		const pruned = prunePrivilegedActionAuditEntries(entries);
+		if (pruned.length !== entries.length) {
+			try { localStorage.setItem(PRIVILEGED_ACTION_AUDIT_KEY, JSON.stringify(pruned)); } catch (_err) { /* ignore */ }
+		}
+		return pruned;
 	} catch (_e) {
 		return [];
 	}
+}
+
+function prunePrivilegedActionAuditEntries(entries, nowMs = Date.now()) {
+	if (!Array.isArray(entries) || !entries.length) return [];
+	const cutoff = nowMs - PRIVILEGED_ACTION_RETENTION_MS;
+	return entries.filter((row) => {
+		const ts = Date.parse(String(row && row.timestamp || ''));
+		return Number.isFinite(ts) && ts >= cutoff;
+	});
 }
 
 function shouldTrackPrivilegedAudit(actorInput) {
@@ -371,8 +387,8 @@ function mergePrivilegedActionAuditEntries(localEntries, serverEntries) {
 		if (!id) return;
 		map.set(id, row);
 	};
-	(localEntries || []).forEach(upsert);
-	(serverEntries || []).forEach(upsert);
+	prunePrivilegedActionAuditEntries(localEntries || []).forEach(upsert);
+	prunePrivilegedActionAuditEntries(serverEntries || []).forEach(upsert);
 	return Array.from(map.values())
 		.sort((a, b) => Date.parse(String(b?.timestamp || '')) - Date.parse(String(a?.timestamp || '')))
 		.slice(0, PRIVILEGED_ACTION_AUDIT_LIMIT);
@@ -418,7 +434,7 @@ function appendPrivilegedActionAudit(actionInput) {
 		deviceId: CLIENT_INSTANCE_ID,
 	};
 	const existing = getPrivilegedActionAuditEntries();
-	const next = [marker, ...existing].slice(0, PRIVILEGED_ACTION_AUDIT_LIMIT);
+	const next = prunePrivilegedActionAuditEntries([marker, ...existing]).slice(0, PRIVILEGED_ACTION_AUDIT_LIMIT);
 	try {
 		localStorage.setItem(PRIVILEGED_ACTION_AUDIT_KEY, JSON.stringify(next));
 	} catch (_e) { /* ignore */ }
@@ -3253,6 +3269,8 @@ async function saveOneEquipmentToServer(eq) {
 			showDeleteToast('Equipment save failed — please refresh and try again.');
 			return false;
 		}
+		const refreshedRows = await fetchEquipmentFromServer();
+		saveEquipmentToStorage(refreshedRows);
 		return true;
 	} catch (_err) {
 		showDeleteToast('Could not reach server to save equipment changes.');
@@ -4673,13 +4691,21 @@ async function initInventoryPage() {
 		}).join('');
 
 		// Delegated change handler — update status, save, re-render
-		equipmentBody.onchange = (e) => {
+		equipmentBody.onchange = async (e) => {
 			const sel = e.target.closest('select[data-eq-idx]');
 			if (!sel) return;
 			const idx = Number(sel.dataset.eqIdx);
 			if (!equipment[idx]) return;
+			const previousStatus = String(equipment[idx].status || '');
 			equipment[idx].status = sel.value;
-			saveOneEquipmentToServer(equipment[idx]);
+			const saved = await saveOneEquipmentToServer(equipment[idx]);
+			if (!saved) {
+				equipment[idx].status = previousStatus;
+				equipment = await fetchEquipmentFromServer();
+				rerenderInventory();
+				return;
+			}
+			equipment = loadEquipmentFromStorage();
 			persistInventoryMonthState();
 			rerenderInventory();
 		};
@@ -5099,6 +5125,8 @@ async function initInventoryPage() {
 						if (r.ok) {
 							const result = await r.json();
 							if (result && result.id) newEq.id = result.id;
+							equipment = await fetchEquipmentFromServer();
+							saveEquipmentToStorage(equipment);
 							invTrace('equipment:submit:add:server-create', { success: true, id: result && result.id ? String(result.id) : '' });
 						} else {
 							showDeleteToast('Equipment save failed — please refresh and try again.');
@@ -6291,6 +6319,9 @@ function renderInvoiceDetail(invoice) {
 	const subTotal = items.reduce((sum, it) => sum + (it.qty * it.unitPrice), 0);
 	const deliveryFee = Number(invoice.deliveryFee || 0);
 	const total = subTotal + deliveryFee;
+	const preparedSignature = String(invoice.preparedBy || '').trim() || 'Unassigned';
+	const receivedSignature = String(invoice.receivedBy || '').trim() || 'CEO/Manager required';
+	const checkedSignature = String(invoice.checkedBy || '').trim() || 'Will appear when marked paid';
 	const invNo = getInvoiceDisplayId(invoice).replace(/^INV-\d{4}(?:-\d{2})?-/, 'WWW');
 	const invIsApprover = canEditDelete(window.__wwUserRole || 'staff');
 	const pendingBanner = invoice.status === 'pending_approval'
@@ -6360,9 +6391,9 @@ function renderInvoiceDetail(invoice) {
 			</div>
 
 			<div class="inv-doc-signatures">
-				<div class="inv-doc-sig"><span>Prepared by:</span><div class="inv-doc-sig-line"></div></div>
-				<div class="inv-doc-sig"><span>Checked by:</span><div class="inv-doc-sig-line"></div></div>
-				<div class="inv-doc-sig"><span>Received by:</span><div class="inv-doc-sig-line"></div></div>
+				<div class="inv-doc-sig"><span>Prepared by:</span><div class="inv-doc-sig-line"><strong>${escapeHtml(preparedSignature)}</strong></div></div>
+				<div class="inv-doc-sig"><span>Received by:</span><div class="inv-doc-sig-line"><strong>${escapeHtml(receivedSignature)}</strong></div></div>
+				<div class="inv-doc-sig"><span>Checked by:</span><div class="inv-doc-sig-line"><strong>${escapeHtml(checkedSignature)}</strong></div></div>
 			</div>
 
 			<p class="inv-doc-tagline">Thank you for patronizing our Business!</p>
@@ -6480,8 +6511,84 @@ async function initSalesInvoicesPage() {
 
 	const userRole = await resolveCurrentUserRole();
 	const isApprover = canEditDelete(userRole);
+	const isInvoiceReceiverChecker = ['ceo', 'manager'].includes(normalizeRole(userRole));
+
+	const getInvoiceActorSignature = () => {
+		const user = window.__wwCurrentUser || getCachedSessionUser() || {};
+		const name = String(user.name || localStorage.getItem('ww_user_name') || '').trim() || 'User';
+		const role = normalizeRole(user.role || userRole || localStorage.getItem('ww_user_role') || 'staff');
+		const roleLabel = toRoleLabel(role);
+		return {
+			name,
+			role,
+			roleLabel,
+			signature: `${name} (${roleLabel})`,
+			canReceiveAndCheck: ['ceo', 'manager'].includes(role),
+		};
+	};
+
+	const applyInvoiceSignatures = (invoice, previousInvoice) => {
+		if (!invoice || typeof invoice !== 'object') return invoice;
+		const actor = getInvoiceActorSignature();
+		const nowIso = new Date().toISOString();
+		const prev = previousInvoice || {};
+		const status = String(invoice.status || '').trim().toLowerCase();
+
+		invoice.preparedBy = String(prev.preparedBy || invoice.preparedBy || actor.signature).trim() || actor.signature;
+		invoice.preparedAt = prev.preparedAt || invoice.preparedAt || nowIso;
+
+		if (!actor.canReceiveAndCheck) {
+			invoice.receivedBy = prev.receivedBy || invoice.receivedBy || '';
+			invoice.receivedAt = prev.receivedAt || invoice.receivedAt || '';
+			invoice.checkedBy = prev.checkedBy || invoice.checkedBy || '';
+			invoice.checkedAt = prev.checkedAt || invoice.checkedAt || '';
+			return invoice;
+		}
+
+		invoice.receivedBy = String(prev.receivedBy || invoice.receivedBy || actor.signature).trim() || actor.signature;
+		invoice.receivedAt = prev.receivedAt || invoice.receivedAt || nowIso;
+
+		if (status === 'paid') {
+			invoice.checkedBy = actor.signature;
+			invoice.checkedAt = nowIso;
+		} else {
+			invoice.checkedBy = prev.checkedBy || invoice.checkedBy || '';
+			invoice.checkedAt = prev.checkedAt || invoice.checkedAt || '';
+		}
+
+		return invoice;
+	};
+
+	const backfillLegacyInvoiceSignatures = () => {
+		const actor = getInvoiceActorSignature();
+		let changed = false;
+		for (const invoice of (Array.isArray(salesModuleData.invoices) ? salesModuleData.invoices : [])) {
+			if (!invoice || typeof invoice !== 'object') continue;
+			const status = String(invoice.status || '').trim().toLowerCase();
+
+			if (!String(invoice.preparedBy || '').trim()) {
+				invoice.preparedBy = actor.signature;
+				invoice.preparedAt = invoice.preparedAt || invoice.createdAt || new Date().toISOString();
+				changed = true;
+			}
+
+			if (actor.canReceiveAndCheck && !String(invoice.receivedBy || '').trim()) {
+				invoice.receivedBy = actor.signature;
+				invoice.receivedAt = invoice.receivedAt || invoice.updatedAt || new Date().toISOString();
+				changed = true;
+			}
+
+			if (actor.canReceiveAndCheck && status === 'paid' && !String(invoice.checkedBy || '').trim()) {
+				invoice.checkedBy = actor.signature;
+				invoice.checkedAt = invoice.checkedAt || invoice.updatedAt || new Date().toISOString();
+				changed = true;
+			}
+		}
+		if (changed) saveSalesDataToStorage();
+	};
 
 	loadSalesDataFromStorage();
+	backfillLegacyInvoiceSignatures();
 	console.log('[Sales] Loaded month:', currentSalesMonth, '| Invoices:', salesModuleData.invoices.length, '| Orders:', salesModuleData.salesOrders.length);
 
 	const ensureSalesSyncWarningBanner = () => {
@@ -6853,6 +6960,7 @@ async function initSalesInvoicesPage() {
 	const openModal = (entity, editId, resumeDraft = false) => {
 		const config = SI_MODAL_CONFIGS[entity];
 		if (!config || !addModal) return;
+		const roleAwareStatusOptions = isInvoiceReceiverChecker ? ['overdue', 'paid', 'pending'] : ['overdue', 'pending'];
 		currentEntity = entity;
 		// Resolve editing index from ID so we always get the right record regardless of array order
 		if (editId != null) {
@@ -6876,12 +6984,15 @@ async function initSalesInvoicesPage() {
 		if (modalTitle) modalTitle.textContent = editingSiIdx >= 0 ? config.title.replace('Add', 'Edit') : config.title;
 		if (modalFieldsEl) {
 			modalFieldsEl.innerHTML = `<p class="inv-modal-summary-error" id="si-modal-error-summary" aria-live="polite"></p>` + config.fields.map((f) => {
+				const selectOptions = (entity === 'invoice' && f.id === 'status' && Array.isArray(f.options))
+					? roleAwareStatusOptions
+					: f.options;
 				if (f.type === 'select') {
 					return `
 						<div class="inv-modal-field">
 							<label for="si-field-${f.id}">${f.label}${f.required ? ' <span class="req">*</span>' : ''}</label>
 							<select id="si-field-${f.id}" name="${f.id}" ${f.required ? 'required' : ''}>
-								${f.options.map((o) => `<option value="${o}"${f.defaultValue !== undefined && String(f.defaultValue) === String(o) ? ' selected' : ''}>${o ? (o.charAt(0).toUpperCase() + o.slice(1)) : ''}</option>`).join('')}
+								${selectOptions.map((o) => `<option value="${o}"${f.defaultValue !== undefined && String(f.defaultValue) === String(o) ? ' selected' : ''}>${o ? (o.charAt(0).toUpperCase() + o.slice(1)) : ''}</option>`).join('')}
 							</select>
 							<p class="inv-modal-error" id="si-err-${f.id}" aria-live="polite"></p>
 						</div>
@@ -7013,7 +7124,15 @@ async function initSalesInvoicesPage() {
 				const invDate = getValue('date') || todayStr;
 				if (!validateEntryMonth('date', invDate)) return;
 				const existingInvoice = editingSiIdx >= 0 ? salesModuleData.invoices[editingSiIdx] : null;
-				const chosenStatus = getValue('status') || existingInvoice?.requestedStatus || existingInvoice?.status || 'paid';
+				const chosenStatus = getValue('status') || existingInvoice?.requestedStatus || existingInvoice?.status || 'pending';
+				if (!isInvoiceReceiverChecker && String(chosenStatus).toLowerCase() === 'paid') {
+					setFieldValidationError('status', 'Only CEO or Manager can mark an invoice as paid.');
+					const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
+					if (summary) summary.textContent = 'Only CEO or Manager can receive/check an invoice and mark it paid.';
+					const statusInput = document.getElementById('si-field-status');
+					if (statusInput) statusInput.focus();
+					return;
+				}
 				const invData = {
 					customer,
 					address: getValue('address'),
@@ -7033,8 +7152,15 @@ async function initSalesInvoicesPage() {
 					deliveryFee: 0,
 					createdAt: new Date().toISOString(),
 					updatedAt: new Date().toISOString(),
+					preparedBy: existingInvoice?.preparedBy || '',
+					preparedAt: existingInvoice?.preparedAt || '',
+					receivedBy: existingInvoice?.receivedBy || '',
+					receivedAt: existingInvoice?.receivedAt || '',
+					checkedBy: existingInvoice?.checkedBy || '',
+					checkedAt: existingInvoice?.checkedAt || '',
 					...(submitTxnId ? { clientTxnId: submitTxnId, idempotencyKey: submitTxnId } : {}),
 				};
+				applyInvoiceSignatures(invData, existingInvoice);
 				invData.rate = invData.items[0].unitPrice;
 				invData.amount = invData.items[0].qty * invData.items[0].unitPrice;
 				if (String(invData.status || '').toLowerCase() === 'paid' && Number(invData.amount || 0) <= 0) {
@@ -13378,6 +13504,7 @@ async function postJson(url, payload) {
 
 function bindPasswordAssistanceForms() {
 	const forgotForm = document.getElementById('forgot-password-form');
+	const forgotResetForm = document.getElementById('forgot-reset-password-form');
 	const resetForm = document.getElementById('reset-password-form');
 
 	if (forgotForm) {
@@ -13388,17 +13515,54 @@ function bindPasswordAssistanceForms() {
 			try {
 				const data = await postJson('/api/auth/forgot-password', { email });
 				setAuthMessage(data.message || 'Password assistance sent.', false);
-				forgotForm.reset();
-				// Auto-open the reset password panel so user can proceed
+				// Auto-open forgot-reset panel so user can proceed without current password
 				const forgotPanel = document.getElementById('forgot-password-panel');
-				const resetPanel = document.getElementById('reset-password-panel');
+				const forgotResetPanel = document.getElementById('forgot-reset-password-panel');
 				if (forgotPanel) forgotPanel.hidden = true;
-				if (resetPanel) {
-					resetPanel.hidden = false;
-					resetPanel.scrollIntoView({ behavior: 'smooth' });
+				if (forgotResetForm) {
+					const forgotResetEmailInput = forgotResetForm.querySelector('input[name="email"]');
+					if (forgotResetEmailInput) forgotResetEmailInput.value = email;
 				}
+				if (forgotResetPanel) {
+					forgotResetPanel.hidden = false;
+					forgotResetPanel.scrollIntoView({ behavior: 'smooth' });
+				}
+				forgotForm.reset();
 			} catch (error) {
 				setAuthMessage(error.message || 'Could not process request.', true);
+			}
+		});
+	}
+
+	if (forgotResetForm) {
+		forgotResetForm.addEventListener('submit', async (event) => {
+			event.preventDefault();
+			const formData = new FormData(forgotResetForm);
+			const email = String(formData.get('email') || '').trim();
+			const newPassword = String(formData.get('newPassword') || '');
+			const confirmPassword = String(formData.get('confirmPassword') || '');
+
+			if (newPassword !== confirmPassword) {
+				setAuthMessage('New password and confirm password must match.', true);
+				return;
+			}
+
+			try {
+				const data = await postJson('/api/auth/forgot-reset-password', { email, newPassword });
+				setAuthMessage(data.message || 'Password reset successful. Redirecting to login…', false);
+				forgotResetForm.reset();
+				const forgotResetPanel = document.getElementById('forgot-reset-password-panel');
+				if (forgotResetPanel) forgotResetPanel.hidden = true;
+				setTimeout(() => {
+					const loginHref = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
+					if (window.location.pathname.includes('login')) {
+						window.scrollTo({ top: 0, behavior: 'smooth' });
+					} else {
+						window.location.href = loginHref;
+					}
+				}, 1500);
+			} catch (error) {
+				setAuthMessage(error.message || 'Could not reset password.', true);
 			}
 		});
 	}
