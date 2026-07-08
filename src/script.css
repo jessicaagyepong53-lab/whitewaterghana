@@ -2895,25 +2895,9 @@ canvas {
 	color: #334155;
 }
 .wb-sig-line {
-	flex: 1;
 	border-bottom: 1px solid #94a3b8;
-	min-height: 22px;
-}
-.wb-tagline {
-	text-align: center;
-	font-style: italic;
-	color: #2563eb;
-	margin-top: 24px;
-	font-size: 0.95rem;
-	font-weight: 600;
-}
-.wb-form-actions {
-	display: flex;
-	gap: 10px;
-	justify-content: flex-end;
-	margin-top: 16px;
-	max-width: 800px;
-	margin-left: auto;
+	min-height: 30px;
+	margin-top: 4px;
 	margin-right: auto;
 }
 

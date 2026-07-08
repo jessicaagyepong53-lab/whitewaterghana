@@ -1523,6 +1523,47 @@ app.post('/api/auth/forgot-password', async (req, res, next) => {
 });
 
 
+app.get('/api/auth/forgot-reset-password', (_req, res) => { res.json({ message: 'Use POST.' }); });
+
+app.post('/api/auth/forgot-reset-password', async (req, res, next) => {
+
+  try {
+
+    requireFields(req.body, ['email', 'newPassword']);
+
+    const email = String(req.body.email).trim().toLowerCase();
+
+    const newPassword = String(req.body.newPassword);
+
+    if (newPassword.length < 6) throw createError(400, 'New password must be at least 6 characters');
+
+
+
+    const user = await User.findOne({ email });
+
+    if (!user) throw createError(404, 'No user found with this email');
+
+
+
+    await User.updateOne({ _id: user._id }, { password_hash: bcrypt.hashSync(newPassword, 10) });
+
+    await Session.deleteMany({ user_id: user._id });
+
+    clearCachedSessionsForUser(user._id);
+
+
+
+    res.json({ message: 'Password reset successfully. Please sign in with your new password.' });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+
 
 // Change password (requires current password)
 
@@ -1818,7 +1859,7 @@ const ALLOWED_DATA_KEYS = [
 
   'ww_sales_months', 'ww_equipment', 'ww_seed_flags', 'ww_last_data_update', 'ww_recent_restores',
 
-  'ww_record_vault',
+  'ww_record_vault', 'ww_privileged_action_audit_v1',
 
   'ww_tax_records',
 
@@ -1846,6 +1887,20 @@ function toIsoMs(value) {
 
   return Number.isFinite(ms) ? ms : 0;
 
+}
+
+const PRIVILEGED_ACTION_AUDIT_TTL_DAYS = 30;
+
+function prunePrivilegedActionAuditEntries(entries) {
+  if (!Array.isArray(entries) || !entries.length) return [];
+  const cutoffMs = Date.now() - (PRIVILEGED_ACTION_AUDIT_TTL_DAYS * 24 * 60 * 60 * 1000);
+  return entries
+    .filter((row) => row && typeof row === 'object')
+    .filter((row) => {
+      const stampMs = Date.parse(String(row.timestamp || row.changedAt || row.createdAt || ''));
+      return Number.isFinite(stampMs) && stampMs >= cutoffMs;
+    })
+    .sort((a, b) => toIsoMs(b.timestamp || b.changedAt || b.createdAt) - toIsoMs(a.timestamp || a.changedAt || a.createdAt));
 }
 
 
@@ -2078,6 +2133,15 @@ app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
 
       } else {
 
+        if (d.key === 'ww_privileged_action_audit_v1') {
+          const pruned = prunePrivilegedActionAuditEntries(Array.isArray(d.data) ? d.data : []);
+          map[d.key] = pruned;
+          if (pruned.length !== (Array.isArray(d.data) ? d.data.length : 0)) {
+            savePromises.push(AppData.updateOne({ key: d.key }, { key: d.key, data: pruned }, { upsert: true }));
+          }
+          continue;
+        }
+
         map[d.key] = d.data;
 
       }
@@ -2105,6 +2169,14 @@ app.get('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
     const doc = await AppData.findOne({ key }).lean();
 
     if (!doc) return res.json({ key, data: null });
+
+    if (key === 'ww_privileged_action_audit_v1') {
+      const pruned = prunePrivilegedActionAuditEntries(Array.isArray(doc.data) ? doc.data : []);
+      if (pruned.length !== (Array.isArray(doc.data) ? doc.data.length : 0)) {
+        await AppData.updateOne({ key }, { key, data: pruned }, { upsert: true });
+      }
+      return res.json({ key, data: pruned });
+    }
 
     if (/^ww_sales_\d{4}-\d{2}$/.test(key)) {
 
@@ -2151,6 +2223,13 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
       : null;
 
     if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
+
+    if (key === 'ww_privileged_action_audit_v1') {
+      const incoming = Array.isArray(req.body.data) ? req.body.data : [];
+      const pruned = prunePrivilegedActionAuditEntries(incoming);
+      await AppData.updateOne({ key }, { key, data: pruned }, { upsert: true });
+      return res.json({ ok: true, key, data: pruned });
+    }
 
 
 

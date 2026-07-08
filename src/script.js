@@ -13,6 +13,7 @@ const SALES_ADD_AUDIT_KEY = 'ww_sales_add_audit_log_v1';
 const SALES_ADD_AUDIT_LIMIT = 600;
 const PRIVILEGED_ACTION_AUDIT_KEY = 'ww_privileged_action_audit_v1';
 const PRIVILEGED_ACTION_AUDIT_LIMIT = 1200;
+const PRIVILEGED_ACTION_AUDIT_TTL_DAYS = 30;
 const SALES_SYNC_WARNING_KEY = 'ww_sales_sync_warning';
 const SALES_SERVER_AUTHORITATIVE_MODE = true;
 const CLIENT_INSTANCE_ID = (() => {
@@ -339,10 +340,30 @@ function getPrivilegedActionAuditEntries() {
 	try {
 		const raw = localStorage.getItem(PRIVILEGED_ACTION_AUDIT_KEY);
 		const parsed = raw ? JSON.parse(raw) : [];
-		return Array.isArray(parsed) ? parsed : [];
+		if (!Array.isArray(parsed)) return [];
+		const pruned = prunePrivilegedActionAuditEntries(parsed);
+		if (pruned.length !== parsed.length) {
+			try {
+				localStorage.setItem(PRIVILEGED_ACTION_AUDIT_KEY, JSON.stringify(pruned));
+			} catch (_e) { /* ignore */ }
+		}
+		return pruned;
 	} catch (_e) {
 		return [];
 	}
+}
+
+function prunePrivilegedActionAuditEntries(entries) {
+	if (!Array.isArray(entries) || !entries.length) return [];
+	const cutoffMs = Date.now() - (PRIVILEGED_ACTION_AUDIT_TTL_DAYS * 24 * 60 * 60 * 1000);
+	return entries
+		.filter((row) => row && typeof row === 'object')
+		.filter((row) => {
+			const stampMs = Date.parse(String(row.timestamp || row.changedAt || row.createdAt || ''));
+			return Number.isFinite(stampMs) && stampMs >= cutoffMs;
+		})
+		.sort((a, b) => Date.parse(String(b.timestamp || b.changedAt || b.createdAt || '')) - Date.parse(String(a.timestamp || a.changedAt || a.createdAt || '')))
+		.slice(0, PRIVILEGED_ACTION_AUDIT_LIMIT);
 }
 
 function shouldTrackPrivilegedAudit(actorInput) {
@@ -371,8 +392,8 @@ function mergePrivilegedActionAuditEntries(localEntries, serverEntries) {
 		if (!id) return;
 		map.set(id, row);
 	};
-	(localEntries || []).forEach(upsert);
-	(serverEntries || []).forEach(upsert);
+	(prunePrivilegedActionAuditEntries(localEntries) || []).forEach(upsert);
+	(prunePrivilegedActionAuditEntries(serverEntries) || []).forEach(upsert);
 	return Array.from(map.values())
 		.sort((a, b) => Date.parse(String(b?.timestamp || '')) - Date.parse(String(a?.timestamp || '')))
 		.slice(0, PRIVILEGED_ACTION_AUDIT_LIMIT);
@@ -418,7 +439,7 @@ function appendPrivilegedActionAudit(actionInput) {
 		deviceId: CLIENT_INSTANCE_ID,
 	};
 	const existing = getPrivilegedActionAuditEntries();
-	const next = [marker, ...existing].slice(0, PRIVILEGED_ACTION_AUDIT_LIMIT);
+	const next = prunePrivilegedActionAuditEntries([marker, ...existing]);
 	try {
 		localStorage.setItem(PRIVILEGED_ACTION_AUDIT_KEY, JSON.stringify(next));
 	} catch (_e) { /* ignore */ }
@@ -1537,6 +1558,15 @@ async function refreshEquipmentFromServerAuthoritative() {
 	return null;
 }
 
+async function syncEquipmentAcrossDevices() {
+	const rows = await refreshEquipmentFromServerAuthoritative();
+	try {
+		emitStorageKeyChange('ww_equipment');
+		broadcastRemoteSyncRefresh();
+	} catch (_e) { /* ignore */ }
+	return Array.isArray(rows) ? rows : null;
+}
+
 async function pullRemoteDataAndRefreshUi() {
 	await loadFromServer('ww_seed_flags');
 	await loadFromServer('ww_sales_months');
@@ -2258,8 +2288,7 @@ function readStoredCanEditDelete() {
 function canEditDelete(role, explicitPermission = window.__wwCanEditDelete) {
 	const normalizedRole = String(role || '').trim().toLowerCase();
 	if (normalizedRole === 'ceo' || normalizedRole === 'manager') return true;
-	if (typeof explicitPermission === 'boolean') return explicitPermission;
-	return normalizedRole === 'supervisor';
+	return false;
 }
 
 function enforceRoleAccess() {
@@ -2296,7 +2325,7 @@ function enforceRoleAccess() {
 		});
 	}
 
-	// Hide edit/delete buttons for supervisor & staff
+	// Hide edit/delete buttons for roles without edit rights
 	if (!canEditDelete(role, window.__wwCanEditDelete)) {
 		document.querySelectorAll('.btn-edit, .btn-delete, [data-action="edit"], [data-action="delete"]').forEach((btn) => {
 			btn.style.display = 'none';
@@ -4051,6 +4080,15 @@ async function initDashboardPage() {
 				equipmentStatus[idx].status = sel.value;
 				const saved = await saveOneEquipmentToServer(equipmentStatus[idx]);
 				dashTrace('equipment:edit:save-result', { idx, success: !!saved });
+						if (!saved) {
+							await syncEquipmentAcrossDevices();
+							renderDashboardEquipmentStatus();
+							return;
+						}
+						const syncedRows = await syncEquipmentAcrossDevices();
+						if (Array.isArray(syncedRows)) {
+							equipmentStatus = normalizeEquipmentRows(syncedRows);
+						}
 				saveEquipmentToStorage(equipmentStatus);
 				renderDashboardEquipmentStatus();
 			};
@@ -4573,7 +4611,7 @@ async function initInventoryPage() {
 			return;
 		}
 		const matDraft = getInvDraft('material');
-		const draftRow = matDraft ? `<tr class="draft-row"><td>${escapeHtml(matDraft.material || 'Unsaved material')}</td><td>${escapeHtml(matDraft.quantity || '')}</td><td>${escapeHtml(matDraft.minLevel || '')}</td><td>${escapeHtml(matDraft.supplier || '')}</td><td>${escapeHtml(matDraft.restocked || '')}</td><td><span class="badge badge-orange">Draft</span></td><td><div class="row-actions"><button class="btn-edit inv-resume-draft-btn" data-draft-entity="material" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete inv-clear-draft-btn" data-draft-entity="material" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
+		const draftRow = matDraft ? `<tr class="draft-row"><td>${escapeHtml(matDraft.material || 'Unsaved material')}</td><td>${escapeHtml(matDraft.location || '')}</td><td>${escapeHtml(matDraft.quantity || '')}</td><td>${escapeHtml(matDraft.minLevel || '')}</td><td>${escapeHtml(matDraft.supplier || '')}</td><td>${escapeHtml(matDraft.restocked || '')}</td><td><span class="badge badge-orange">Draft</span></td><td><div class="row-actions"><button class="btn-edit inv-resume-draft-btn" data-draft-entity="material" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete inv-clear-draft-btn" data-draft-entity="material" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td></tr>` : '';
 		materialsBody.innerHTML = draftRow + rawMaterials.map((m, idx) => {
 			const isCritical = m.quantity < m.minLevel * 0.5;
 			const isLow = m.quantity < m.minLevel;
@@ -4586,6 +4624,7 @@ async function initInventoryPage() {
 			return `
 				<tr>
 					<td>${m.material}</td>
+					<td>${m.location || '—'}</td>
 					<td><input type="number" min="0" step="1" class="inv-num-input" data-mat-idx="${idx}" data-field="quantity" value="${Number(m.quantity || 0)}"></td>
 					<td><input type="number" min="0" step="1" class="inv-num-input" data-mat-idx="${idx}" data-field="minLevel" value="${Number(m.minLevel || 0)}"></td>
 					<td>${m.supplier}</td>
@@ -4834,6 +4873,7 @@ async function initInventoryPage() {
 			title: 'Add Raw Material',
 			fields: [
 				{ id: 'material', label: 'Material Name', type: 'text', required: true },
+				{ id: 'location', label: 'Location', type: 'text', placeholder: 'Tema community 25' },
 				{ id: 'quantity', label: 'In Stock', type: 'number', min: '0', required: true },
 				{ id: 'minLevel', label: 'Minimum Level', type: 'number', min: '0', required: true },
 				{ id: 'supplier', label: 'Supplier', type: 'text', placeholder: 'N/A' },
@@ -5013,6 +5053,7 @@ async function initInventoryPage() {
 				if (!validateInventoryEntryMonth('restocked', restockedDate, 'Last Restocked date')) return;
 				if (editingIdx >= 0 && rawMaterials[editingIdx]) {
 					rawMaterials[editingIdx].material = material;
+					rawMaterials[editingIdx].location = getValue('location') || '';
 					rawMaterials[editingIdx].quantity = getNum('quantity');
 					rawMaterials[editingIdx].minLevel = getNum('minLevel');
 					rawMaterials[editingIdx].supplier = getValue('supplier') || 'N/A';
@@ -5021,6 +5062,7 @@ async function initInventoryPage() {
 					rawMaterials.push({
 						id: nextNumericId(rawMaterials),
 						material,
+						location: getValue('location') || '',
 						quantity: getNum('quantity'),
 						minLevel: getNum('minLevel'),
 						supplier: getValue('supplier') || 'N/A',
@@ -5084,10 +5126,6 @@ async function initInventoryPage() {
 						lastMaintenance: lastMaintenanceDate,
 						nextMaintenance: nextMaintenanceDate,
 					};
-					// Push optimistically so it renders immediately, but hold off on
-					// persisting to localStorage until the server returns the real ID.
-					// Without the ID, saveOneEquipmentToServer can't PUT updates, and
-					// a sync triggered before the .then() resolves would save an ID-less record.
 					equipment.push(newEq);
 					rerenderInventory();
 					try {
@@ -5099,16 +5137,12 @@ async function initInventoryPage() {
 						if (r.ok) {
 							const result = await r.json();
 							if (result && result.id) newEq.id = result.id;
-							invTrace('equipment:submit:add:server-create', { success: true, id: result && result.id ? String(result.id) : '' });
 						} else {
 							showDeleteToast('Equipment save failed — please refresh and try again.');
-							invTrace('equipment:submit:add:server-create', { success: false, httpStatus: r.status });
 						}
 					} catch (_err) {
 						showDeleteToast('Could not reach server to save new equipment.');
-						invTrace('equipment:submit:add:server-create', { success: false, networkError: true });
 					}
-					persistInventoryMonthState();
 				}
 				persistInventoryMonthState();
 				invTrace('equipment:submit:done', { afterCount: equipment.length, month: currentInventoryMonth });
@@ -5138,7 +5172,7 @@ async function initInventoryPage() {
 			persistInventoryMonthState();
 			const submittedEntity = currentEntity;
 			clearInvDraft(submittedEntity);
-			closeModal(true); // skipDraft=true — data already saved, don't re-save draft
+			closeModal(true);
 			rerenderInventory();
 			invTrace('modal:submit:done', { entity: submittedEntity, month: currentInventoryMonth });
 		});
@@ -6285,6 +6319,12 @@ function renderInvoiceDetail(invoice) {
 	if (!target || !invoice) {
 		return;
 	}
+	const preparedByName = String(invoice?.createdByName || invoice?.preparedByName || invoice?.receivedByName || '').trim() || '________________';
+	const preparedByRole = String(invoice?.createdByRole || invoice?.preparedByRole || 'CEO / Manager').trim() || 'CEO / Manager';
+	const checkedByName = String(invoice?.checkedByName || invoice?.paidByName || invoice?.checkedBy || invoice?.paidBy || '').trim() || '________________';
+	const checkedByRole = String(invoice?.checkedByRole || invoice?.paidByRole || 'CEO / Manager').trim() || 'CEO / Manager';
+	const receivedByName = String(invoice?.customer || invoice?.receivedByName || '').trim() || '________________';
+	const receivedByRole = String(invoice?.receivedByRole || 'Customer').trim() || 'Customer';
 
 	const hideMoney = window.__wwUserRole === 'supervisor' || window.__wwUserRole === 'staff';
 	const items = invoice.items && invoice.items.length ? invoice.items : [{ name: invoice.product || 'Sale', qty: 1, unitPrice: Number(invoice.amount || 0) }];
@@ -6360,9 +6400,27 @@ function renderInvoiceDetail(invoice) {
 			</div>
 
 			<div class="inv-doc-signatures">
-				<div class="inv-doc-sig"><span>Prepared by:</span><div class="inv-doc-sig-line"></div></div>
-				<div class="inv-doc-sig"><span>Checked by:</span><div class="inv-doc-sig-line"></div></div>
-				<div class="inv-doc-sig"><span>Received by:</span><div class="inv-doc-sig-line"></div></div>
+				<div class="inv-doc-sig">
+					<span>Prepared by:</span>
+					<div class="inv-doc-sig-line">
+						<div class="inv-doc-sig-name">${escapeHtml(preparedByName)}</div>
+						<div class="inv-doc-sig-role">${escapeHtml(preparedByRole)}</div>
+					</div>
+				</div>
+				<div class="inv-doc-sig">
+					<span>Checked by:</span>
+					<div class="inv-doc-sig-line">
+						<div class="inv-doc-sig-name">${escapeHtml(checkedByName || '________________')}</div>
+						<div class="inv-doc-sig-role">${escapeHtml(checkedByRole)}</div>
+					</div>
+				</div>
+				<div class="inv-doc-sig">
+					<span>Received by:</span>
+					<div class="inv-doc-sig-line">
+						<div class="inv-doc-sig-name">${escapeHtml(receivedByName || '________________')}</div>
+						<div class="inv-doc-sig-role">${escapeHtml(receivedByRole)}</div>
+					</div>
+				</div>
 			</div>
 
 			<p class="inv-doc-tagline">Thank you for patronizing our Business!</p>
@@ -6404,7 +6462,9 @@ function renderInvoiceDetail(invoice) {
 			.inv-doc-terms p { font-size: 0.82rem; color: #475569; }
 			.inv-doc-signatures { display: flex; gap: 24px; margin-top: 28px; }
 			.inv-doc-sig { flex: 1; font-size: 0.85rem; font-weight: 600; }
-			.inv-doc-sig-line { border-bottom: 1px solid #94a3b8; min-height: 30px; margin-top: 4px; }
+			.inv-doc-sig-line { border: 1px solid #94a3b8; border-radius: 8px; min-height: 58px; margin-top: 4px; padding: 8px 10px; background: #f8fafc; display: grid; gap: 4px; align-content: center; }
+			.inv-doc-sig-name { font-size: 0.82rem; color: #0f172a; }
+			.inv-doc-sig-role { font-size: 0.74rem; color: #475569; }
 			.inv-doc-tagline { text-align: center; font-style: italic; color: #2563eb; margin-top: 28px; font-size: 0.95rem; font-weight: 600; }
 			.inv-doc-actions { display: none; }
 			@media print { body { padding: 10px; } }
@@ -6977,6 +7037,7 @@ async function initSalesInvoicesPage() {
 		const v = Number(getValue(id));
 		return Number.isFinite(v) && v >= 0 ? v : 0;
 	};
+	const currentSigner = window.__wwCurrentUser || getCachedSessionUser();
 
 	const validateEntryMonth = (fieldId, isoDate) => {
 		return validateIsoDateForLockedMonth(isoDate, currentSalesMonth, {
@@ -7031,12 +7092,21 @@ async function initSalesInvoicesPage() {
 					product,
 					items: [{ name: product, qty: getNum('qty') || 1, unitPrice: getNum('unitPrice') }],
 					deliveryFee: 0,
+					createdByName: existingInvoice?.createdByName || currentSigner?.name || '',
+					createdByRole: existingInvoice?.createdByRole || currentSigner?.roleLabel || currentSigner?.role || '',
+					preparedByName: existingInvoice?.preparedByName || currentSigner?.name || '',
+					receivedByName: existingInvoice?.receivedByName || currentSigner?.name || '',
 					createdAt: new Date().toISOString(),
 					updatedAt: new Date().toISOString(),
 					...(submitTxnId ? { clientTxnId: submitTxnId, idempotencyKey: submitTxnId } : {}),
 				};
 				invData.rate = invData.items[0].unitPrice;
 				invData.amount = invData.items[0].qty * invData.items[0].unitPrice;
+					if (String(invData.status || '').toLowerCase() === 'paid') {
+						invData.checkedByName = existingInvoice?.checkedByName || currentSigner?.name || '';
+						invData.checkedByRole = existingInvoice?.checkedByRole || currentSigner?.roleLabel || currentSigner?.role || '';
+						invData.paidByName = existingInvoice?.paidByName || currentSigner?.name || '';
+					}
 				if (String(invData.status || '').toLowerCase() === 'paid' && Number(invData.amount || 0) <= 0) {
 					setFieldValidationError('unitPrice', 'Paid invoices must have an amount greater than 0.');
 					const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
@@ -7135,6 +7205,11 @@ async function initSalesInvoicesPage() {
 						linkedInvoice.customer = ordData.customer;
 						linkedInvoice.date = ordData.orderDate;
 						linkedInvoice.paidDate = String(ordData.status || '').toLowerCase() === 'paid' ? ordData.orderDate : (linkedInvoice.paidDate || '');
+						if (String(ordData.status || '').toLowerCase() === 'paid') {
+							linkedInvoice.checkedByName = linkedInvoice.checkedByName || currentSigner?.name || '';
+							linkedInvoice.checkedByRole = linkedInvoice.checkedByRole || currentSigner?.roleLabel || currentSigner?.role || '';
+							linkedInvoice.paidByName = linkedInvoice.paidByName || currentSigner?.name || '';
+						}
 						linkedInvoice.paymentMode = ordData.paymentMode;
 						linkedInvoice.carType = ordData.carType;
 						linkedInvoice.carNumber = ordData.carNumber;
@@ -13378,6 +13453,7 @@ async function postJson(url, payload) {
 
 function bindPasswordAssistanceForms() {
 	const forgotForm = document.getElementById('forgot-password-form');
+	const forgotResetForm = document.getElementById('forgot-reset-password-form');
 	const resetForm = document.getElementById('reset-password-form');
 
 	if (forgotForm) {
@@ -13389,9 +13465,9 @@ function bindPasswordAssistanceForms() {
 				const data = await postJson('/api/auth/forgot-password', { email });
 				setAuthMessage(data.message || 'Password assistance sent.', false);
 				forgotForm.reset();
-				// Auto-open the reset password panel so user can proceed
+				// Auto-open the forgot reset panel so user can proceed without a current password.
 				const forgotPanel = document.getElementById('forgot-password-panel');
-				const resetPanel = document.getElementById('reset-password-panel');
+				const resetPanel = document.getElementById('forgot-reset-password-panel');
 				if (forgotPanel) forgotPanel.hidden = true;
 				if (resetPanel) {
 					resetPanel.hidden = false;
@@ -13399,6 +13475,39 @@ function bindPasswordAssistanceForms() {
 				}
 			} catch (error) {
 				setAuthMessage(error.message || 'Could not process request.', true);
+			}
+		});
+	}
+
+	if (forgotResetForm) {
+		forgotResetForm.addEventListener('submit', async (event) => {
+			event.preventDefault();
+			const formData = new FormData(forgotResetForm);
+			const email = String(formData.get('email') || '').trim();
+			const newPassword = String(formData.get('newPassword') || '');
+			const confirmPassword = String(formData.get('confirmPassword') || '');
+
+			if (newPassword !== confirmPassword) {
+				setAuthMessage('New password and confirm password must match.', true);
+				return;
+			}
+
+			try {
+				const data = await postJson('/api/auth/forgot-reset-password', { email, newPassword });
+				setAuthMessage(data.message || 'Password reset successful. Redirecting to login…', false);
+				forgotResetForm.reset();
+				const resetPanel = document.getElementById('forgot-reset-password-panel');
+				if (resetPanel) resetPanel.hidden = true;
+				setTimeout(() => {
+					const loginHref = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
+					if (window.location.pathname.includes('login')) {
+						window.scrollTo({ top: 0, behavior: 'smooth' });
+					} else {
+						window.location.href = loginHref;
+					}
+				}, 1500);
+			} catch (error) {
+				setAuthMessage(error.message || 'Could not reset password.', true);
 			}
 		});
 	}
