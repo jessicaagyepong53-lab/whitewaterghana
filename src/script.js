@@ -1007,6 +1007,74 @@ function setLastDataUpdateStamp(value) {
 	localStorage.setItem(LAST_DATA_UPDATE_KEY, JSON.stringify(value));
 }
 
+function formatRelativeTime(isoStamp) {
+	const ts = Date.parse(String(isoStamp || ''));
+	if (!Number.isFinite(ts)) return '';
+	const diffMs = Math.max(0, Date.now() - ts);
+	const diffMin = Math.floor(diffMs / 60000);
+	if (diffMin < 1) return 'just now';
+	if (diffMin < 60) return `${diffMin} min ago`;
+	const diffHr = Math.floor(diffMin / 60);
+	if (diffHr < 24) return `${diffHr} hr${diffHr === 1 ? '' : 's'} ago`;
+	const diffDay = Math.floor(diffHr / 24);
+	return `${diffDay} day${diffDay === 1 ? '' : 's'} ago`;
+}
+
+function formatStampWithRelative(isoStamp) {
+	const ts = Date.parse(String(isoStamp || ''));
+	if (!Number.isFinite(ts)) return '--';
+	const rel = formatRelativeTime(isoStamp);
+	const exact = new Date(ts).toLocaleString('en-GB', {
+		day: '2-digit',
+		month: 'short',
+		year: 'numeric',
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: true,
+	});
+	return `${rel} (${exact})`;
+}
+
+function getLatestBusinessActivity() {
+	const rows = [];
+	try {
+		const privRaw = localStorage.getItem(PRIVILEGED_ACTION_AUDIT_KEY);
+		const privRows = privRaw ? JSON.parse(privRaw) : [];
+		if (Array.isArray(privRows)) rows.push(...privRows);
+	} catch (_e) { /* ignore */ }
+	try {
+		const addRaw = localStorage.getItem(SALES_ADD_AUDIT_KEY);
+		const addRows = addRaw ? JSON.parse(addRaw) : [];
+		if (Array.isArray(addRows)) rows.push(...addRows);
+	} catch (_e) { /* ignore */ }
+	if (!rows.length) return null;
+	const sorted = rows
+		.filter((row) => row && typeof row === 'object')
+		.filter((row) => Number.isFinite(Date.parse(String(row.timestamp || ''))))
+		.sort((a, b) => Date.parse(String(b.timestamp || '')) - Date.parse(String(a.timestamp || '')));
+	if (!sorted.length) return null;
+	const latest = sorted[0];
+	const isSalesAdd = String(latest.type || '').trim() === 'invoice_add';
+	const actor = String(latest.userName || latest.userEmail || 'User').trim();
+	if (isSalesAdd) {
+		const invoiceId = String(latest.invoiceId || '').trim();
+		const customer = String(latest.customer || '').trim();
+		const target = invoiceId ? `Invoice ${invoiceId}` : (customer ? `Invoice for ${customer}` : 'Invoice');
+		return {
+			timestamp: String(latest.timestamp || ''),
+			message: `${target} added by ${actor}`,
+		};
+	}
+	const action = String(latest.action || 'updated').trim();
+	const moduleName = String(latest.module || latest.entity || 'record').trim();
+	const summary = String(latest.summary || latest.recordId || '').trim();
+	const target = summary ? `${moduleName}: ${summary}` : moduleName;
+	return {
+		timestamp: String(latest.timestamp || ''),
+		message: `${target} ${action} by ${actor}`,
+	};
+}
+
 function setSalesSyncWarning(message) {
 	const text = String(message || '').trim();
 	try {
@@ -2288,7 +2356,36 @@ function readStoredCanEditDelete() {
 function canEditDelete(role, explicitPermission = window.__wwCanEditDelete) {
 	const normalizedRole = String(role || '').trim().toLowerCase();
 	if (normalizedRole === 'ceo' || normalizedRole === 'manager') return true;
-	return false;
+	return explicitPermission === true;
+}
+
+function canApproveInvoiceStatus(role) {
+	const normalizedRole = String(role || '').trim().toLowerCase();
+	return normalizedRole === 'ceo' || normalizedRole === 'manager';
+}
+
+function normalizeInvoiceStatus(status) {
+	return String(status || '').trim().toLowerCase();
+}
+
+function isInvoicePendingApproval(invoice) {
+	return normalizeInvoiceStatus(invoice && invoice.status) === 'pending_approval';
+}
+
+function isInvoiceApprovalLocked(invoice) {
+	if (!invoice) return false;
+	const status = normalizeInvoiceStatus(invoice.status);
+	if (status === 'pending_approval') return false;
+	if (invoice.approvedAt || invoice.approvedByName || invoice.approvedByRole) return true;
+	if (invoice.checkedByName || invoice.checkedByRole || invoice.paidByName || invoice.paidByRole) return true;
+	return ['paid', 'pending', 'overdue'].includes(status);
+}
+
+function getInvoiceStatusLabel(invoice) {
+	if (!invoice) return '';
+	return isInvoicePendingApproval(invoice)
+		? 'Pending Approval'
+		: String(invoice.status || '').replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
 function enforceRoleAccess() {
@@ -2340,6 +2437,8 @@ function enforceRoleAccess() {
 			if (btn.style.display === 'none') btn.style.display = '';
 		});
 	}
+
+	document.body.classList.add('role-access-ready');
 
 	renderTopbarUserMenu();
 }
@@ -3108,6 +3207,20 @@ function dedupeFinishedProductRows(rows) {
 	return out;
 }
 
+function dedupeRawMaterialRows(rows) {
+	const byKey = new Map();
+	for (const row of Array.isArray(rows) ? rows : []) {
+		if (!row || typeof row !== 'object') continue;
+		const key = String(row.id || '').trim() || [
+			String(row.material || '').trim().toLowerCase(),
+			String(row.location || '').trim().toLowerCase(),
+			String(row.supplier || '').trim().toLowerCase(),
+		].join('|');
+		byKey.set(key, pickNewerRecord(byKey.get(key), row));
+	}
+	return [...byKey.values()];
+}
+
 function getCanonicalFinishedProductsAllMonths() {
 	const byMonth = {};
 	try {
@@ -3130,11 +3243,12 @@ function getCanonicalFinishedProductsAllMonths() {
 		try {
 			const payload = JSON.parse(localStorage.getItem(key) || 'null');
 			const finished = Array.isArray(payload?.finishedProducts) ? payload.finishedProducts : [];
-			byMonth[month] = dedupeFinishedProductRows(
-				finished
+			byMonth[month] = dedupeFinishedProductRows([
+				...(Array.isArray(byMonth[month]) ? byMonth[month] : []),
+				...finished
 					.filter((row) => row && typeof row === 'object')
 					.map((row) => ({ ...row, month: inferFinishedProductMonth(row) || month })),
-			);
+			]);
 		} catch (_e) { /* ignore invalid payload */ }
 	}
 
@@ -3143,6 +3257,31 @@ function getCanonicalFinishedProductsAllMonths() {
 		rows.push(...dedupeFinishedProductRows(byMonth[month]));
 	}
 	return rows;
+}
+
+function getLatestRawMaterialsSnapshot() {
+	const legacyRawMaterials = loadRawMaterialsFromStorage();
+	const monthSnapshots = [];
+	for (let i = 0; i < localStorage.length; i += 1) {
+		const key = localStorage.key(i);
+		const monthMatch = /^ww_inventory_(\d{4}-\d{2})$/.exec(String(key || ''));
+		if (!monthMatch) continue;
+		try {
+			const payload = JSON.parse(localStorage.getItem(key) || 'null');
+			const rawMaterials = Array.isArray(payload?.rawMaterials) ? payload.rawMaterials : [];
+			monthSnapshots.push({ month: monthMatch[1], rawMaterials });
+		} catch (_e) { /* ignore invalid payload */ }
+	}
+	monthSnapshots.sort((a, b) => String(a.month).localeCompare(String(b.month)));
+	for (let i = monthSnapshots.length - 1; i >= 0; i -= 1) {
+		if (monthSnapshots[i].rawMaterials.length) {
+			return dedupeRawMaterialRows([
+				...legacyRawMaterials,
+				...monthSnapshots[i].rawMaterials,
+			]);
+		}
+	}
+	return dedupeRawMaterialRows(legacyRawMaterials);
 }
 
 function saveFinishedProductsToStorage(products) {
@@ -3713,7 +3852,7 @@ async function initDashboardPage() {
 	});
 
 	const buildStockAlerts = () => {
-		const liveRawMaterials = loadRawMaterialsFromStorage();
+		const liveRawMaterials = getLatestRawMaterialsSnapshot();
 		if (liveRawMaterials.length) {
 			return liveRawMaterials.map((m) => ({
 				item: m.material || 'Raw Material',
@@ -3978,7 +4117,14 @@ async function initDashboardPage() {
 		const stamp = document.getElementById('dash-timestamp');
 		if (stamp) {
 			const lastUpdate = getLastDataUpdateStamp();
-			stamp.textContent = lastUpdate ? new Date(lastUpdate).toLocaleString() : '--';
+			stamp.textContent = formatStampWithRelative(lastUpdate);
+		}
+		const activityEl = document.getElementById('dash-business-activity');
+		if (activityEl) {
+			const latest = getLatestBusinessActivity();
+			activityEl.textContent = latest
+				? `${latest.message}, ${formatStampWithRelative(latest.timestamp)}`
+				: 'No recent activity';
 		}
 	};
 
@@ -6323,6 +6469,10 @@ function renderInvoiceDetail(invoice) {
 	const preparedByRole = String(invoice?.createdByRole || invoice?.preparedByRole || 'CEO / Manager').trim() || 'CEO / Manager';
 	const checkedByName = String(invoice?.checkedByName || invoice?.paidByName || invoice?.checkedBy || invoice?.paidBy || '').trim() || '________________';
 	const checkedByRole = String(invoice?.checkedByRole || invoice?.paidByRole || 'CEO / Manager').trim() || 'CEO / Manager';
+	const approvedAtValue = String(invoice?.checkedAt || invoice?.approvedAt || invoice?.paidAt || '').trim();
+	const approvedAtLabel = approvedAtValue ? new Date(approvedAtValue).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+	const requestedStatusValue = String(invoice?.requestedStatus || (isInvoicePendingApproval(invoice) ? invoice.status : '') || '').trim();
+	const requestedStatusLabel = requestedStatusValue ? requestedStatusValue.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase()) : '';
 	const receivedByName = String(invoice?.customer || invoice?.receivedByName || '').trim() || '________________';
 	const receivedByRole = String(invoice?.receivedByRole || 'Customer').trim() || 'Customer';
 
@@ -6332,7 +6482,8 @@ function renderInvoiceDetail(invoice) {
 	const deliveryFee = Number(invoice.deliveryFee || 0);
 	const total = subTotal + deliveryFee;
 	const invNo = getInvoiceDisplayId(invoice).replace(/^INV-\d{4}(?:-\d{2})?-/, 'WWW');
-	const invIsApprover = canEditDelete(window.__wwUserRole || 'staff');
+	const invIsApprover = canApproveInvoiceStatus(window.__wwUserRole || 'staff');
+	const invoiceLocked = isInvoiceApprovalLocked(invoice);
 	const pendingBanner = invoice.status === 'pending_approval'
 		? `<div class="approval-banner"><i class="fa-solid fa-hourglass-half"></i> Pending Approval${invIsApprover ? ' — <button class="btn-approve-inline inv-detail-approve-btn">Approve</button>' : ''}</div>`
 		: '';
@@ -6430,12 +6581,12 @@ function renderInvoiceDetail(invoice) {
 		</div>
 	`;
 
-	document.getElementById('inv-print-btn')?.addEventListener('click', () => {
+	const openInvoicePrint = () => {
 		const doc = document.getElementById('inv-document');
 		if (!doc) return;
 		const invoiceCss = `
 			* { margin:0; padding:0; box-sizing:border-box; }
-			body { font-family: "Segoe UI", Arial, sans-serif; padding: 30px; color: #1e293b; font-size: 13px; }
+			body { font-family: "Segoe UI", Arial, sans-serif; padding: 30px; color: #1e293b; font-size: 13px; background: #ffffff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 			.inv-doc { max-width: 760px; margin: 0 auto; }
 			.inv-doc-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
 			.inv-doc-logo { width: 72px; height: 72px; border-radius: 8px; object-fit: cover; }
@@ -6467,6 +6618,11 @@ function renderInvoiceDetail(invoice) {
 			.inv-doc-sig-role { font-size: 0.74rem; color: #475569; }
 			.inv-doc-tagline { text-align: center; font-style: italic; color: #2563eb; margin-top: 28px; font-size: 0.95rem; font-weight: 600; }
 			.inv-doc-actions { display: none; }
+			.inv-doc-company-name, .inv-doc-title, .inv-doc-table th, .inv-doc-grand, .inv-doc-sig-line, .inv-doc-tagline {
+				-webkit-print-color-adjust: exact;
+				print-color-adjust: exact;
+			}
+			@page { size: auto; margin: 12mm; }
 			@media print { body { padding: 10px; } }
 		`;
 		const fullHtml = '<!DOCTYPE html><html><head><title>Invoice ' + invNo + '</title><style>' + invoiceCss + '</style></head><body>' + doc.outerHTML + '</body></html>';
@@ -6490,7 +6646,9 @@ function renderInvoiceDetail(invoice) {
 		a.click();
 		document.body.removeChild(a);
 		setTimeout(() => URL.revokeObjectURL(url), 1000);
-	});
+	};
+
+	document.getElementById('inv-print-btn')?.addEventListener('click', () => openInvoicePrint());
 	// Dummy reference to satisfy old code path — actual styles now inlined above
 	const _unusedPrintRef = '<!DOCTYPE html><html><head><title>Invoice ' + invNo + '</title><style>' +
 			'* { margin:0; padding:0; box-sizing:border-box; }' +
@@ -6516,11 +6674,22 @@ function renderInvoiceDetail(invoice) {
 			'.inv-doc-table td { border: 1px solid #cbd5e1; padding: 6px 10px; font-size: 0.85rem; }' +
 			'.inv-doc-totals { margin-left: auto; width: 280px; margin-top: 4px; }' +
 	target.querySelector('.inv-detail-approve-btn')?.addEventListener('click', () => {
+		if (!canApproveInvoiceStatus(window.__wwUserRole || 'staff')) return;
 		const idx = salesModuleData.invoices.findIndex((inv) => inv.id === invoice.id);
 		if (idx >= 0) {
-			salesModuleData.invoices[idx].status = salesModuleData.invoices[idx].requestedStatus || 'pending';
+			const nowIso = new Date().toISOString();
+			const approvedStatus = String(salesModuleData.invoices[idx].requestedStatus || 'pending').toLowerCase() === 'paid' ? 'paid' : 'pending';
+			salesModuleData.invoices[idx].status = approvedStatus;
+			salesModuleData.invoices[idx].paidDate = approvedStatus === 'paid'
+				? (salesModuleData.invoices[idx].paidDate || getTodayDateStr())
+				: '';
+			if (approvedStatus === 'paid') {
+				salesModuleData.invoices[idx].checkedByName = salesModuleData.invoices[idx].checkedByName || (window.__wwCurrentUser?.name || '');
+				salesModuleData.invoices[idx].checkedByRole = salesModuleData.invoices[idx].checkedByRole || (window.__wwCurrentUser?.roleLabel || window.__wwCurrentUser?.role || '');
+				salesModuleData.invoices[idx].paidByName = salesModuleData.invoices[idx].paidByName || (window.__wwCurrentUser?.name || '');
+			}
+			salesModuleData.invoices[idx].checkedAt = salesModuleData.invoices[idx].checkedAt || nowIso;
 			salesModuleData.invoices[idx].updatedAt = new Date().toISOString();
-			delete salesModuleData.invoices[idx].requestedStatus;
 			saveSalesDataToStorage();
 			renderInvoiceDetail(salesModuleData.invoices[idx]);
 			/* refresh table if renderSalesPage exists in scope — trigger via custom event */
@@ -6539,7 +6708,7 @@ async function initSalesInvoicesPage() {
 	await reloadSalesMonthsFromServerHard();
 
 	const userRole = await resolveCurrentUserRole();
-	const isApprover = canEditDelete(userRole);
+	const isApprover = canApproveInvoiceStatus(userRole);
 
 	loadSalesDataFromStorage();
 	console.log('[Sales] Loaded month:', currentSalesMonth, '| Invoices:', salesModuleData.invoices.length, '| Orders:', salesModuleData.salesOrders.length);
@@ -6747,7 +6916,7 @@ async function initSalesInvoicesPage() {
 				{ id: 'promo', label: 'Promo', type: 'number', min: '0', defaultValue: '0' },
 				{ id: 'unitPrice', label: 'Unit Price (GH)', type: 'number', min: '0', step: '0.01', required: true },
 				{ id: 'date', label: 'Invoice Date', type: 'date', defaultValue: todayStr, required: true },
-				{ id: 'status', label: 'Status', type: 'select', options: ['overdue', 'paid', 'pending'], defaultValue: 'paid' },
+				{ id: 'status', label: 'Status', type: 'select', options: ['paid', 'pending'], defaultValue: 'pending' },
 				{ id: 'paymentMode', label: 'Payment Mode', type: 'select', options: ['', 'Cash', 'Momo', 'Cash + Momo'] },
 			],
 		},
@@ -6970,6 +7139,11 @@ async function initSalesInvoicesPage() {
 			let row;
 			if (entity === 'invoice') {
 				row = salesModuleData.invoices[editingSiIdx];
+				if (row && isInvoiceApprovalLocked(row) && !canApproveInvoiceStatus(window.__wwUserRole || userRole || 'staff')) {
+					alert('Approved invoices are locked from editing.');
+					closeModal(true);
+					return;
+				}
 				if (row) {
 					const setVal = (id, v) => { const el = document.getElementById('si-field-' + id); if (el && v !== undefined) el.value = v; };
 					setVal('customer', row.customer);
@@ -6980,7 +7154,7 @@ async function initSalesInvoicesPage() {
 					setVal('unitPrice', row.items && row.items[0] ? row.items[0].unitPrice : row.amount);
 					setVal('promo', row.promo || 0);
 					setVal('date', row.date);
-					setVal('status', row.status || 'paid');
+					setVal('status', (row.status === 'pending_approval' ? row.requestedStatus : row.status) || 'pending');
 					setVal('paymentMode', row.paymentMode);
 					setVal('carType', row.carType || '');
 					setVal('carNumber', row.carNumber || '');
@@ -7002,6 +7176,13 @@ async function initSalesInvoicesPage() {
 			}
 		}
 		if (resumeDraft) restoreModalDraft(entity);
+		if (entity === 'invoice') {
+			const statusLabel = document.querySelector('label[for="si-field-status"]');
+			const actorRole = normalizeRole(window.__wwUserRole || userRole || currentSigner?.role || 'staff');
+			if (statusLabel && !canApproveInvoiceStatus(actorRole)) {
+				statusLabel.textContent = 'Requested Status (Manager/CEO Approval Required)';
+			}
+		}
 		if (editingSiIdx < 0 && entity === 'invoice') {
 			const productField = document.getElementById('si-field-product');
 			if (productField && !String(productField.value || '').trim() && productField.options && productField.options.length) {
@@ -7074,15 +7255,18 @@ async function initSalesInvoicesPage() {
 				const invDate = getValue('date') || todayStr;
 				if (!validateEntryMonth('date', invDate)) return;
 				const existingInvoice = editingSiIdx >= 0 ? salesModuleData.invoices[editingSiIdx] : null;
-				const chosenStatus = getValue('status') || existingInvoice?.requestedStatus || existingInvoice?.status || 'paid';
+				const actorRole = normalizeRole(window.__wwUserRole || userRole || currentSigner?.role || 'staff');
+				const actorCanApprove = canApproveInvoiceStatus(actorRole);
+				const chosenStatusRaw = String(getValue('status') || existingInvoice?.requestedStatus || existingInvoice?.status || 'pending').toLowerCase();
+				const chosenStatus = chosenStatusRaw === 'paid' ? 'paid' : 'pending';
 				const invData = {
 					customer,
 					address: getValue('address'),
 					phone: getValue('phone'),
 					date: invDate,
-					paidDate: chosenStatus === 'paid' ? invDate : '',
-					status: chosenStatus,
-					requestedStatus: undefined,
+					paidDate: actorCanApprove && chosenStatus === 'paid' ? invDate : '',
+					status: actorCanApprove ? chosenStatus : 'pending_approval',
+					requestedStatus: actorCanApprove ? undefined : chosenStatus,
 					paymentMode: getValue('paymentMode'),
 					carType: getValue('carType'),
 					carNumber: getValue('carNumber'),
@@ -7102,12 +7286,12 @@ async function initSalesInvoicesPage() {
 				};
 				invData.rate = invData.items[0].unitPrice;
 				invData.amount = invData.items[0].qty * invData.items[0].unitPrice;
-					if (String(invData.status || '').toLowerCase() === 'paid') {
+					if (actorCanApprove && String(invData.status || '').toLowerCase() === 'paid') {
 						invData.checkedByName = existingInvoice?.checkedByName || currentSigner?.name || '';
 						invData.checkedByRole = existingInvoice?.checkedByRole || currentSigner?.roleLabel || currentSigner?.role || '';
 						invData.paidByName = existingInvoice?.paidByName || currentSigner?.name || '';
 					}
-				if (String(invData.status || '').toLowerCase() === 'paid' && Number(invData.amount || 0) <= 0) {
+				if (actorCanApprove && String(invData.status || '').toLowerCase() === 'paid' && Number(invData.amount || 0) <= 0) {
 					setFieldValidationError('unitPrice', 'Paid invoices must have an amount greater than 0.');
 					const summary = modalFieldsEl ? modalFieldsEl.querySelector('#si-modal-error-summary') : null;
 					if (summary) summary.textContent = 'Paid invoices cannot be saved with a zero amount.';
@@ -7117,6 +7301,10 @@ async function initSalesInvoicesPage() {
 				}
 				let savedInvoice;
 				if (editingSiIdx >= 0 && salesModuleData.invoices[editingSiIdx]) {
+					if (isInvoiceApprovalLocked(salesModuleData.invoices[editingSiIdx]) && !canApproveInvoiceStatus(window.__wwUserRole || userRole || 'staff')) {
+						alert('Approved invoices are locked from editing.');
+						return;
+					}
 					Object.assign(salesModuleData.invoices[editingSiIdx], invData);
 					savedInvoice = salesModuleData.invoices[editingSiIdx];
 					appendPrivilegedActionAudit({
@@ -7307,13 +7495,21 @@ async function initSalesInvoicesPage() {
 		const approveBtn = event.target.closest('.si-approve-btn');
 		if (approveBtn) {
 			event.stopPropagation();
+			if (!canApproveInvoiceStatus(window.__wwUserRole || userRole || 'staff')) return;
 			const entity = approveBtn.getAttribute('data-approve-entity');
 			const approveId = approveBtn.getAttribute('data-approve-id');
 			const nowIso = new Date().toISOString();
 			if (entity === 'invoice') {
 				const inv = salesModuleData.invoices.find((i) => String(i.id) === String(approveId));
 				if (inv) {
-					inv.status = inv.requestedStatus || 'pending';
+					const approvedStatus = String(inv.requestedStatus || 'pending').toLowerCase() === 'paid' ? 'paid' : 'pending';
+					inv.status = approvedStatus;
+					inv.paidDate = approvedStatus === 'paid' ? (inv.paidDate || getTodayDateStr()) : '';
+					if (approvedStatus === 'paid') {
+						inv.checkedByName = inv.checkedByName || currentSigner?.name || '';
+						inv.checkedByRole = inv.checkedByRole || currentSigner?.roleLabel || currentSigner?.role || '';
+						inv.paidByName = inv.paidByName || currentSigner?.name || '';
+					}
 					inv.updatedAt = nowIso;
 					delete inv.requestedStatus;
 					upsertSalesOrderFromInvoice(inv);
@@ -7380,18 +7576,20 @@ async function initSalesInvoicesPage() {
 			const dateDiff = compareDateLikeValues(a.date, b.date);
 			return dateDiff !== 0 ? dateDiff : getIdNum(a.id) - getIdNum(b.id);
 		});
+		const approvalQueue = invoiceRows.filter((invoice) => isInvoicePendingApproval(invoice));
+		const registerInvoices = invoiceRows.filter((invoice) => !isInvoicePendingApproval(invoice));
 		const orders = salesModuleData.salesOrders.map((order, origIdx) => ({ ...order, _origIdx: origIdx })).sort((a, b) => {
 			const dateDiff = compareDateLikeValues(a.orderDate || a.date, b.orderDate || b.date);
 			return dateDiff !== 0 ? dateDiff : getIdNum(a.id) - getIdNum(b.id);
 		});
 
-		const totalInvoices = invoiceRows.length;
+		const totalInvoices = registerInvoices.length;
 		const overallSales = getAllSalesData();
 		const overallInvoiceCount = Array.isArray(overallSales.invoices) ? overallSales.invoices.length : 0;
-		const invoiceRevenue = invoiceRows.filter((inv) => inv.status === 'paid').reduce((sum, inv) => sum + inv.amount, 0);
-		const pendingInvoices = invoiceRows.filter((inv) => inv.status === 'pending').reduce((sum, inv) => sum + inv.amount, 0);
+		const invoiceRevenue = registerInvoices.filter((inv) => inv.status === 'paid').reduce((sum, inv) => sum + inv.amount, 0);
+		const pendingInvoices = approvalQueue.reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
 		const pendingSales = orders.filter((o) => ['confirmed', 'processing', 'shipped'].includes(o.status)).reduce((sum, o) => sum + Number(o.amount || 0), 0);
-		const overdueInvAmt = invoiceRows.filter((inv) => inv.status === 'overdue').reduce((sum, inv) => sum + inv.amount, 0);
+		const overdueInvAmt = registerInvoices.filter((inv) => inv.status === 'overdue').reduce((sum, inv) => sum + inv.amount, 0);
 		const overdueTotal = overdueInvAmt;
 
 		const stats = document.getElementById('si-stats-row');
@@ -7418,6 +7616,12 @@ async function initSalesInvoicesPage() {
 		const invoiceDraft = getModalDraft('invoice');
 		const orderDraft = getModalDraft('order');
 		const selectedInvoiceId = String(window.__wwSelectedInvoiceId || '');
+		const canManageInvoices = canApproveInvoiceStatus(window.__wwUserRole || 'staff');
+		const approvalsBadge = document.getElementById('approvals-queue-badge');
+		if (approvalsBadge) {
+			approvalsBadge.style.display = approvalQueue.length ? 'inline-grid' : 'none';
+			approvalsBadge.textContent = String(approvalQueue.length);
+		}
 		if (invoiceBody) {
 			const draftRow = invoiceDraft ? `
 				<tr class="draft-row">
@@ -7434,11 +7638,13 @@ async function initSalesInvoicesPage() {
 					<td><div class="row-actions"><button class="btn-edit si-resume-draft-btn" data-draft-entity="invoice" title="Continue Draft"><i class="fa-solid fa-pen"></i></button><button class="btn-delete si-clear-draft-btn" data-draft-entity="invoice" title="Discard Draft"><i class="fa-solid fa-trash"></i></button></div></td>
 				</tr>
 			` : '';
-			invoiceBody.innerHTML = draftRow + invoiceRows.map((invoice) => {
-				const statusLabel = invoice.status === 'pending_approval' ? 'Pending Approval' : invoice.status;
-				const approveBtn = isApprover && invoice.status === 'pending_approval'
-					? `<button class="btn-approve si-approve-btn" data-approve-entity="invoice" data-approve-id="${invoice.id}" title="Approve"><i class="fa-solid fa-check"></i></button>`
+			invoiceBody.innerHTML = draftRow + registerInvoices.map((invoice) => {
+				const locked = isInvoiceApprovalLocked(invoice);
+				const statusLabel = getInvoiceStatusLabel(invoice);
+				const editDeleteBtns = canManageInvoices
+					? `<button class="btn-edit si-edit-btn" data-edit-entity="invoice" data-edit-id="${invoice.id}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="invoice" data-delete-id="${invoice.id}"><i class="fa-solid fa-trash"></i></button>`
 					: '';
+				const rowActions = editDeleteBtns;
 				return `
 					<tr class="selectable" data-invoice-id="${invoice.id}">
 						<td>${getInvoiceDisplayId(invoice)}</td>
@@ -7451,7 +7657,7 @@ async function initSalesInvoicesPage() {
 						<td>${invoice.paymentMode || ''}</td>
 						<td>${formatVehicleLabel(invoice.carType, invoice.carNumber)}</td>
 						<td><span class="status-pill ${statusPillClass(invoice.status)}">${statusLabel}</span></td>
-						<td><div class="row-actions">${approveBtn}<button class="btn-edit si-edit-btn" data-edit-entity="invoice" data-edit-id="${invoice.id}"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-delete si-delete-btn" data-delete-entity="invoice" data-delete-id="${invoice.id}"><i class="fa-solid fa-trash"></i></button></div></td>
+						<td>${rowActions ? `<div class="row-actions">${rowActions}</div>` : ''}</td>
 					</tr>
 				`;
 			}).join('');
@@ -7472,12 +7678,12 @@ async function initSalesInvoicesPage() {
 		/* Right-panel: show clickable invoice list instead of empty placeholder */
 		const detailContent = document.getElementById('invoice-detail-content');
 		if (detailContent) {
-			if (invoiceRows.length === 0) {
+			if (registerInvoices.length === 0) {
 				window.__wwSelectedInvoiceId = '';
-				detailContent.innerHTML = '<p class="detail-placeholder">No invoices yet. Add one to get started.</p>';
+				detailContent.innerHTML = '<p class="detail-placeholder">No approved invoices yet. Add one to get started.</p>';
 			} else if (!detailContent.querySelector('.detail-section')) {
-				detailContent.innerHTML = '<ul class="invoice-quick-list">' + invoiceRows.map((inv) => {
-					const statusLabel = inv.status === 'pending_approval' ? 'Pending Approval' : inv.status;
+				detailContent.innerHTML = '<ul class="invoice-quick-list">' + registerInvoices.map((inv) => {
+					const statusLabel = getInvoiceStatusLabel(inv);
 					return `<li class="invoice-quick-item" data-qid="${inv.id}">
 						<span class="iq-id">${getInvoiceDisplayId(inv)}</span>
 						<span class="iq-customer">${inv.customer}</span>
@@ -7559,6 +7765,41 @@ async function initSalesInvoicesPage() {
 			ordersBody.querySelectorAll('.btn-follow-up').forEach((btn) => {
 				btn.addEventListener('click', () => handleFollowUp(btn.getAttribute('data-order-id')));
 			});
+		}
+
+		const queueBody = document.getElementById('approvals-queue-tbody');
+		if (queueBody) {
+			if (!approvalQueue.length) {
+				queueBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#587289;padding:24px">No invoices are waiting for approval.</td></tr>';
+			} else {
+				queueBody.innerHTML = approvalQueue.map((invoice) => {
+					const requestedStatus = String(invoice.requestedStatus || 'pending').replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+					const preparedBy = String(invoice.createdByName || invoice.preparedByName || '').trim() || '________________';
+					const submittedAt = String(invoice.createdAt || invoice.updatedAt || '').trim();
+					const submittedLabel = submittedAt ? new Date(submittedAt).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '________________';
+					const approveBtn = isApprover ? `<button class="btn-approve si-approve-btn" data-approve-entity="invoice" data-approve-id="${invoice.id}" title="Approve"><i class="fa-solid fa-check"></i> Approve</button>` : '';
+					return `
+						<tr data-queue-invoice-id="${invoice.id}">
+							<td>${getInvoiceDisplayId(invoice)}</td>
+							<td>${escapeHtml(invoice.customer || '')}</td>
+							<td><span class="status-pill status-orange">${escapeHtml(requestedStatus)}</span></td>
+							<td>${escapeHtml(preparedBy)}</td>
+							<td>${escapeHtml(submittedLabel)}</td>
+							<td><div class="row-actions">${approveBtn}<button class="btn-secondary si-queue-view-btn" type="button" data-queue-invoice-id="${invoice.id}">View</button></div></td>
+						</tr>
+					`;
+				}).join('');
+				queueBody.querySelectorAll('.si-queue-view-btn').forEach((btn) => {
+					btn.addEventListener('click', () => {
+						const inv = salesModuleData.invoices.find((item) => String(item.id) === String(btn.getAttribute('data-queue-invoice-id')));
+						if (inv) {
+							window.__wwSelectedInvoiceId = String(inv.id);
+							renderInvoiceDetail(inv);
+							switchTab('si', 'invoices');
+						}
+					});
+				});
+			}
 		}
 	}
 
@@ -9156,7 +9397,6 @@ function initAccountingPage() {
 			let row;
 			if (entity === 'ledger') row = accountingData.ledger[editingAccIdx];
 			else if (entity === 'cashbook') row = accountingData.cashbook[editingAccIdx];
-			else if (entity === 'account') row = accountingData.summary[editingAccIdx];
 			else if (entity === 'currency') row = accountingData.currencies[editingAccIdx];
 			else if (entity === 'salary') row = accountingData.salaries[editingAccIdx];
 			else if (entity === 'asset-item') row = accountingData.assets[editingAccIdx];
@@ -13565,9 +13805,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 	try { normalizeChronologicalOrderAcrossAppDataStorage(); } catch (_e) { /* ignore */ }
 	try { initSidebarToggle(); } catch (_e) { /* ignore */ }
 	try { bindLogoutLinks(); } catch (_e) { /* ignore */ }
-	if (!isOpsPage) {
-		try { enforceRoleAccess(); } catch (_e) { /* ignore */ }
-	}
+	try { enforceRoleAccess(); } catch (_e) { /* ignore */ }
 	try { renderTopbarUserMenu(getCachedSessionUser()); } catch (_e) { /* ignore */ }
 
 	// Hydrate localStorage from server before page inits

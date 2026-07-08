@@ -244,7 +244,7 @@
     var role = String(user.role || '').toLowerCase();
     if (isRoleAlwaysEnabled(role)) return true;
     if (typeof user.canEditDelete === 'boolean') return user.canEditDelete;
-    return role === 'supervisor';
+    return false;
   }
 
   function formatRoleLabel(role) {

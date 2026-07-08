@@ -110,7 +110,7 @@ const SPECIAL_ACCESS_OVERRIDES = {
 
 function defaultCanEditDeleteForRole(role) {
   const normalized = String(role || '').trim().toLowerCase();
-  return ['ceo', 'manager', 'supervisor'].includes(normalized);
+  return ['ceo', 'manager'].includes(normalized);
 }
 
 function resolveCanEditDelete(userLike) {
@@ -939,6 +939,14 @@ function requireApprovalForRole(user) {
   const normalizedRole = String(user && user.role || '').trim().toLowerCase();
   if (!['supervisor', 'staff'].includes(normalizedRole)) return false;
   return !resolveCanEditDelete(user);
+
+}
+
+function resolveInvoiceCreateStatus(user, requestedStatus, fallbackStatus = 'Pending') {
+
+  if (requireApprovalForRole(user)) return 'pending_approval';
+  const normalized = String(requestedStatus || '').trim();
+  return normalized || fallbackStatus;
 
 }
 
@@ -3093,6 +3101,8 @@ app.post('/api/sales', ensureAuthenticated, ensureRole('sales'), async (req, res
 
     if (req.body.status !== 'Cancelled') {
 
+      const invoiceStatus = resolveInvoiceCreateStatus(req.user, req.body.invoiceStatus, 'Pending');
+
       invoiceCode = await nextCode(Invoice, 'invoice_code', 'INV');
 
       const inv = await Invoice.create({
@@ -3105,7 +3115,7 @@ app.post('/api/sales', ensureAuthenticated, ensureRole('sales'), async (req, res
 
         due_date: req.body.dueDate || req.body.orderDate,
 
-        status: req.body.invoiceStatus || 'Pending',
+  status: invoiceStatus,
 
         idempotency_key: incomingIdemKey || undefined,
 
@@ -3190,6 +3200,8 @@ app.post('/api/invoices', ensureAuthenticated, ensureRole('invoices'), async (re
 
     const invoiceCode = await nextCode(Invoice, 'invoice_code', 'INV');
 
+    const invoiceStatus = resolveInvoiceCreateStatus(req.user, req.body.status, 'Pending');
+
     const doc = await Invoice.create({
 
       invoice_code: invoiceCode, customer_id: req.body.customerId,
@@ -3198,7 +3210,7 @@ app.post('/api/invoices', ensureAuthenticated, ensureRole('invoices'), async (re
 
       amount: Number(req.body.amount),
 
-      issue_date: req.body.issueDate, due_date: req.body.dueDate, status: req.body.status,
+  issue_date: req.body.issueDate, due_date: req.body.dueDate, status: invoiceStatus,
 
       idempotency_key: incomingIdemKey || undefined,
 
@@ -3395,6 +3407,10 @@ app.put('/api/invoices/:id/status', ensureAuthenticated, ensureRole('invoices'),
   try {
 
     requireFields(req.body, ['status']);
+
+    if (requireApprovalForRole(req.user)) {
+      throw createError(403, 'Invoice status changes require CEO or Manager approval');
+    }
 
     await Invoice.updateOne({ _id: req.params.id }, { status: req.body.status });
 

@@ -643,6 +643,20 @@ canvas {
 	padding: 18px 14px 22px;
 	flex: 1;
 }
+
+/* Prevent brief exposure of restricted links before role gate finishes. */
+.ops-page .ops-nav {
+	visibility: hidden;
+}
+
+.ops-page.role-access-ready .ops-nav {
+	visibility: visible;
+}
+
+.ops-page:not(.role-access-ready) .ops-nav a {
+	pointer-events: none;
+}
+
 .ops-nav a {
 	color: rgba(255,255,255,0.78);
 	text-decoration: none;
@@ -1031,9 +1045,13 @@ canvas {
 .btn-approve { background: none; border: 1px solid #22c55e; color: #15803d; padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 0.78rem; transition: background 0.15s, color 0.15s, border-color 0.15s; }
 .btn-approve:hover { background: #22c55e; color: #fff; border-color: #22c55e; }
 .approval-banner { background: #fff7ed; color: #c2410c; border: 1px solid #fdba74; border-radius: 8px; padding: 10px 16px; margin-bottom: 12px; font-size: 0.9rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.inv-approval-badges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.inv-approval-badge { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid #d6e3ee; border-radius: 10px; background: #f8fbfd; color: #1f2937; font-size: 0.82rem; }
+.inv-approval-badge strong { font-size: 0.74rem; color: #536475; text-transform: uppercase; letter-spacing: 0.04em; }
 .btn-approve-inline { background: #22c55e; color: #fff; border: none; padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 0.82rem; font-weight: 600; margin-left: 8px; transition: background 0.15s; }
 .btn-approve-inline:hover { background: #16a34a; }
 .row-actions { display: flex; gap: 4px; align-items: center; }
+.invoice-locked-pill { display: inline-flex; align-items: center; justify-content: center; padding: 6px 10px; border-radius: 999px; background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; font-size: 0.75rem; font-weight: 700; }
 
 /* ---- Two Column Grid ---- */
 .grid-two {
@@ -3608,6 +3626,7 @@ canvas {
 	.tab-btn { padding: 7px 12px; font-size: 0.8rem; }
 	.row-actions { flex-wrap: wrap; }
 	.approval-banner { flex-wrap: wrap; }
+	.inv-approval-badges { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 480px) {
