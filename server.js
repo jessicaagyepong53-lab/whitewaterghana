@@ -1576,40 +1576,6 @@ app.post('/api/auth/reset-password', async (req, res, next) => {
 
 });
 
-// Forgot-password reset (does not require current password)
-
-app.get('/api/auth/forgot-reset-password', (_req, res) => { res.json({ message: 'Use POST.' }); });
-
-app.post('/api/auth/forgot-reset-password', async (req, res, next) => {
-
-  try {
-
-    requireFields(req.body, ['email', 'newPassword']);
-
-    const email = String(req.body.email).trim().toLowerCase();
-
-    const newPassword = String(req.body.newPassword);
-
-    if (newPassword.length < 6) throw createError(400, 'New password must be at least 6 characters');
-
-    const user = await User.findOne({ email });
-
-    if (!user) throw createError(404, 'No user found with this email');
-
-    await User.updateOne({ _id: user._id }, { password_hash: bcrypt.hashSync(newPassword, 10) });
-    await Session.deleteMany({ user_id: user._id });
-    clearCachedSessionsForUser(user._id);
-
-    res.json({ message: 'Password reset successful. Please sign in with your new password.' });
-
-  } catch (error) {
-
-    next(error);
-
-  }
-
-});
-
 
 
 // Admin password reset (managers/CEOs can reset any user's password)
