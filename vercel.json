@@ -6,6 +6,8 @@
     { "src": "images/**", "use": "@vercel/static" },
     { "src": "pages/**", "use": "@vercel/static" },
     { "src": "login.html", "use": "@vercel/static" },
+    { "src": "forgot-password.html", "use": "@vercel/static" },
+    { "src": "change-password.html", "use": "@vercel/static" },
     { "src": "index.html", "use": "@vercel/static" },
     { "src": "store.html", "use": "@vercel/static" }
   ],
@@ -23,7 +25,7 @@
       ]
     },
     {
-      "source": "/(login|index|store)\\.html",
+      "source": "/(login|forgot-password|change-password|index|store)\\.html",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
       ]
@@ -36,9 +38,13 @@
     { "src": "/api/(.*)", "dest": "/api/index.js" },
     { "src": "/index\\.html", "dest": "/index.html" },
     { "src": "/login\\.html", "dest": "/login.html" },
+    { "src": "/forgot-password\\.html", "dest": "/forgot-password.html" },
+    { "src": "/change-password\\.html", "dest": "/change-password.html" },
     { "src": "/store\\.html", "dest": "/store.html" },
     { "src": "/store", "dest": "/store.html" },
     { "src": "/login", "dest": "/login.html" },
+    { "src": "/forgot-password", "dest": "/forgot-password.html" },
+    { "src": "/change-password", "dest": "/change-password.html" },
     { "src": "^/$", "dest": "/login.html" },
     { "src": "/(.*)", "dest": "/login.html" }
   ]
