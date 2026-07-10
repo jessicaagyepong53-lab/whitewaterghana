@@ -13651,6 +13651,10 @@ function bindAuthPanels() {
 	}
 }
 
+function getLoginHref() {
+	return window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
+}
+
 function setAuthMessage(message, isError) {
 	const messageNode = document.getElementById('auth-message');
 	if (!messageNode) {
@@ -13739,7 +13743,7 @@ function bindPasswordAssistanceForms() {
 				const resetPanel = document.getElementById('forgot-reset-password-panel');
 				if (resetPanel) resetPanel.hidden = true;
 				setTimeout(() => {
-					const loginHref = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
+					const loginHref = getLoginHref();
 					if (window.location.pathname.includes('login')) {
 						window.scrollTo({ top: 0, behavior: 'smooth' });
 					} else {
@@ -13779,7 +13783,7 @@ function bindPasswordAssistanceForms() {
 				const resetPanel = document.getElementById('reset-password-panel');
 				if (resetPanel) resetPanel.hidden = true;
 				setTimeout(() => {
-					const loginHref = window.location.pathname.includes('/pages/') ? '../login.html' : 'login.html';
+					const loginHref = getLoginHref();
 					if (window.location.pathname.includes('login')) {
 						// Already on login page — just scroll to login form
 						window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -13796,6 +13800,7 @@ function bindPasswordAssistanceForms() {
 
 document.addEventListener('DOMContentLoaded', async () => {
 	const isOpsPage = document.body.classList.contains('ops-page');
+	const isAuthPage = document.body.classList.contains('auth-page');
 	// Bind auth interactions first so login/register never degrade to full page refresh.
 	try { bindRolePersistenceOnAuthForms(); } catch (_e) { /* keep page usable */ }
 	try { bindPasswordToggles(); } catch (_e) { /* keep page usable */ }
@@ -13810,23 +13815,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 	// Hydrate localStorage from server before page inits
 	let authenticated = false;
-	try {
-		const meRes = await fetch(API_BASE + '/api/auth/me', { credentials: 'include', cache: 'no-store' });
-		if (meRes.ok) {
-			authenticated = true;
-			const me = await meRes.json();
-			cacheSessionUser(me?.user || {});
-			renderTopbarUserMenu(window.__wwCurrentUser);
-			const meEmail = String(me?.user?.email || '').trim().toLowerCase();
-			if (meEmail) localStorage.setItem('ww_user_email', meEmail);
-			const meRole = resolveEffectiveClientRole(normalizeRole(me?.user?.effectiveRole || me?.user?.role), meEmail);
-			if (meRole) {
-				localStorage.setItem('ww_user_role', meRole);
-				window.__wwUserRole = meRole;
-				enforceRoleAccess();
+	if (!isAuthPage) {
+		try {
+			const meRes = await fetch(API_BASE + '/api/auth/me', { credentials: 'include', cache: 'no-store' });
+			if (meRes.ok) {
+				authenticated = true;
+				const me = await meRes.json();
+				cacheSessionUser(me?.user || {});
+				renderTopbarUserMenu(window.__wwCurrentUser);
+				const meEmail = String(me?.user?.email || '').trim().toLowerCase();
+				if (meEmail) localStorage.setItem('ww_user_email', meEmail);
+				const meRole = resolveEffectiveClientRole(normalizeRole(me?.user?.effectiveRole || me?.user?.role), meEmail);
+				if (meRole) {
+					localStorage.setItem('ww_user_role', meRole);
+					window.__wwUserRole = meRole;
+					enforceRoleAccess();
+				}
 			}
-		}
-	} catch (_e) { /* offline */ }
+		} catch (_e) { /* offline */ }
+	}
 
 	// Redirect to login if not authenticated on ops pages
 	if (!authenticated && isOpsPage) {
