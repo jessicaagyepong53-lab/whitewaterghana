@@ -368,10 +368,79 @@ function prunePrivilegedActionAuditEntries(entries) {
 
 function shouldTrackPrivilegedAudit(actorInput) {
 	const actor = actorInput && typeof actorInput === 'object' ? actorInput : resolveSalesAuditActor();
-	const role = String(actor.role || '').trim().toLowerCase();
-	if (role !== 'staff' && role !== 'supervisor') return false;
-	const explicit = typeof actor.canEditDelete === 'boolean' ? actor.canEditDelete : readStoredCanEditDelete();
-	return canEditDelete(role, explicit);
+	return !!String(actor.email || actor.name || '').trim();
+}
+
+function getBusinessModuleFromSyncKey(key) {
+	const text = String(key || '').trim();
+	if (!text) return '';
+	if (/^ww_sales_\d{4}-\d{2}$/.test(text) || text === 'ww_sales_months') return 'sales';
+	if (text === 'ww_purchase_data_v2') return 'purchase';
+	if (text === 'ww_accounting_data_v2' || text === 'ww_tax_records') return 'accounting';
+	if (text === 'ww_raw_materials' || text === 'ww_finished_products' || /^ww_inventory_\d{4}-\d{2}$/.test(text)) return 'inventory';
+	if (text === 'ww_production_batches' || text === 'ww_daily_production' || text === 'ww_bom_data') return 'production';
+	if (text === 'ww_cost_centre_budgets') return 'reports';
+	if (text === 'ww_record_vault') return 'vault';
+	return '';
+}
+
+function getBusinessCountFromSyncPayload(key, data) {
+	if (!data) return 0;
+	const text = String(key || '').trim();
+	if (Array.isArray(data)) return data.length;
+	if (/^ww_sales_\d{4}-\d{2}$/.test(text)) {
+		const inv = Array.isArray(data?.invoices) ? data.invoices.length : 0;
+		const ord = Array.isArray(data?.salesOrders) ? data.salesOrders.length : 0;
+		return inv + ord;
+	}
+	if (text === 'ww_purchase_data_v2') {
+		return Array.isArray(data?.purchaseOrders) ? data.purchaseOrders.length : 0;
+	}
+	if (text === 'ww_accounting_data_v2') {
+		const ledger = Array.isArray(data?.ledger) ? data.ledger.length : 0;
+		const cashbook = Array.isArray(data?.cashbook) ? data.cashbook.length : 0;
+		return ledger + cashbook;
+	}
+	if (text === 'ww_daily_production') {
+		return Array.isArray(data?.dailyLog) ? data.dailyLog.length : 0;
+	}
+	if (text === 'ww_production_batches') return Array.isArray(data) ? data.length : (Array.isArray(data?.batches) ? data.batches.length : 0);
+	if (text === 'ww_tax_records') return Array.isArray(data?.entries) ? data.entries.length : (Array.isArray(data) ? data.length : 0);
+	if (text === 'ww_cost_centre_budgets') return Object.keys(data || {}).length;
+	if (text === 'ww_record_vault') return Array.isArray(data?.records) ? data.records.length : (Array.isArray(data) ? data.length : 0);
+	return 0;
+}
+
+function appendBusinessActivityFromSync(key, data) {
+	const text = String(key || '').trim();
+	if (!text || text === LAST_DATA_UPDATE_KEY || text === SALES_ADD_AUDIT_KEY || text === PRIVILEGED_ACTION_AUDIT_KEY || text === 'ww_seed_flags') return;
+	const moduleName = getBusinessModuleFromSyncKey(text);
+	if (!moduleName) return;
+	const total = getBusinessCountFromSyncPayload(text, data);
+	let state = {};
+	try { state = JSON.parse(localStorage.getItem('ww_business_activity_state_v1') || '{}') || {}; } catch (_e) { state = {}; }
+	const prev = Number(state[text]);
+	const hasPrev = Number.isFinite(prev) && prev >= 0;
+	const action = hasPrev && total > prev ? 'entry added' : 'updated';
+
+	const dedupeMap = window.__wwBusinessActivityDedup || (window.__wwBusinessActivityDedup = new Map());
+	const dedupeKey = `${text}|${total}|${action}`;
+	const now = Date.now();
+	const last = Number(dedupeMap.get(dedupeKey) || 0);
+	if (now - last < 2500) return;
+	dedupeMap.set(dedupeKey, now);
+
+	appendPrivilegedActionAudit({
+		action,
+		module: moduleName,
+		entity: text,
+		summary: `${text} (${formatNumber(total)} entries)`,
+		details: `Synced by ${resolveSalesAuditActor().name || 'user'}`,
+		page: String(document.body?.getAttribute('data-page') || '').trim(),
+	});
+
+	state[text] = total;
+	try { localStorage.setItem('ww_business_activity_state_v1', JSON.stringify(state)); } catch (_e) { /* ignore */ }
 }
 
 function summarizeAuditRecord(recordData) {
@@ -1047,7 +1116,16 @@ function getLatestBusinessActivity() {
 		const addRows = addRaw ? JSON.parse(addRaw) : [];
 		if (Array.isArray(addRows)) rows.push(...addRows);
 	} catch (_e) { /* ignore */ }
-	if (!rows.length) return null;
+	if (!rows.length) {
+		const stamp = getLastDataUpdateStamp();
+		if (stamp) {
+			return {
+				timestamp: stamp,
+				message: 'System data updated',
+			};
+		}
+		return null;
+	}
 	const sorted = rows
 		.filter((row) => row && typeof row === 'object')
 		.filter((row) => Number.isFinite(Date.parse(String(row.timestamp || ''))))
@@ -1127,7 +1205,10 @@ function syncToServer(key, data) {
 		setLastDataUpdateStamp(stamp);
 		putAppDataKeyToServer(LAST_DATA_UPDATE_KEY, stamp, false);
 	}
-	return putAppDataKeyToServer(key, data, true);
+	return putAppDataKeyToServer(key, data, true).then((ok) => {
+		if (ok) appendBusinessActivityFromSync(key, data);
+		return ok;
+	});
 }
 
 async function clearSalesBrowserCacheIfServerEmpty() {
@@ -1644,6 +1725,7 @@ async function pullRemoteDataAndRefreshUi() {
 		'ww_raw_materials', 'ww_finished_products', 'ww_production_batches',
 		'ww_daily_production', 'ww_purchase_data_v2', 'ww_accounting_data_v2',
 		'ww_cost_centre_budgets', 'ww_bom_data', 'ww_equipment', 'ww_market_yearly_values',
+		LAST_DATA_UPDATE_KEY, SALES_ADD_AUDIT_KEY, PRIVILEGED_ACTION_AUDIT_KEY,
 	];
 	const keysToRefresh = [...baseKeys, ...salesKeys];
 	await loadBulkFromServer(keysToRefresh);
@@ -4130,6 +4212,9 @@ async function initDashboardPage() {
 
 	renderDashboardYearSelector();
 	renderDashboardLiveSummary();
+	loadBulkFromServer([LAST_DATA_UPDATE_KEY, SALES_ADD_AUDIT_KEY, PRIVILEGED_ACTION_AUDIT_KEY])
+		.then(() => { renderDashboardLiveSummary(); })
+		.catch(() => {});
 
 	const revData = buildRevenueData();
 	renderDashboardCharts(revData, buildDailySales());
@@ -4249,6 +4334,7 @@ async function initDashboardPage() {
 
 	const refreshDashboardView = async () => {
 		dashTrace('refresh:start', { reason: 'dashboard-refresh' });
+		await loadBulkFromServer([LAST_DATA_UPDATE_KEY, SALES_ADD_AUDIT_KEY, PRIVILEGED_ACTION_AUDIT_KEY]);
 		await fetchEquipmentFromServer();
 		renderDashboardYearSelector();
 		const rd = buildRevenueData();
@@ -4265,7 +4351,7 @@ async function initDashboardPage() {
 		// Cross-tab: localStorage storage event
 		window.addEventListener('storage', (event) => {
 			dashTrace('sync:storage-event', { key: event && event.key ? String(event.key) : '' });
-			const dashKeys = ['ww_raw_materials', 'ww_daily_production', 'ww_equipment', 'ww_production_batches', 'ww_accounting_data_v2', 'ww_purchase_data_v2', 'ww_market_yearly_values'];
+			const dashKeys = ['ww_raw_materials', 'ww_daily_production', 'ww_equipment', 'ww_production_batches', 'ww_accounting_data_v2', 'ww_purchase_data_v2', 'ww_market_yearly_values', LAST_DATA_UPDATE_KEY, SALES_ADD_AUDIT_KEY, PRIVILEGED_ACTION_AUDIT_KEY];
 			if (dashKeys.includes(event.key) || (event.key && event.key.startsWith('ww_sales_'))) {
 				refreshDashboardView();
 			}
@@ -12650,6 +12736,25 @@ window.applyReportsFilter = function () {
 };
 
 function renderReportsData() {
+	const inventoryDistributionView = window.__repInventoryDistributionView === 'share' ? 'share' : 'count';
+	const inventoryToggle = document.getElementById('rep-inv-distribution-toggle');
+	if (inventoryToggle && !inventoryToggle.__bound) {
+		inventoryToggle.__bound = true;
+		inventoryToggle.addEventListener('click', (event) => {
+			const btn = event.target.closest('.rep-view-btn');
+			if (!btn) return;
+			const nextView = String(btn.getAttribute('data-view') || '').trim();
+			if (nextView !== 'count' && nextView !== 'share') return;
+			window.__repInventoryDistributionView = nextView;
+			renderReportsData();
+		});
+	}
+	if (inventoryToggle) {
+		inventoryToggle.querySelectorAll('.rep-view-btn').forEach((btn) => {
+			btn.classList.toggle('is-active', String(btn.getAttribute('data-view') || '').trim() === inventoryDistributionView);
+		});
+	}
+
 	// ── Determine date range from filter ──
 	const filterType = (document.getElementById('rep-filter-type') || {}).value || 'all';
 	let filterStart = null;
@@ -12799,10 +12904,16 @@ function renderReportsData() {
 	const finCount = finishedProducts.length;
 	const invTotal = rawCount + equipCount + finCount;
 	const inventoryReport = invTotal > 0 ? [
-		{ label: 'Raw Materials', value: Math.round((rawCount / invTotal) * 100), color: '#3b82f6' },
-		{ label: 'Equipment', value: Math.round((equipCount / invTotal) * 100), color: '#f59e0b' },
-		{ label: 'Finished Goods', value: Math.round((finCount / invTotal) * 100), color: '#22c55e' },
-	].filter((seg) => seg.value > 0) : [];
+		{ label: 'Raw Materials', count: rawCount, share: (rawCount / invTotal) * 100, color: '#3b82f6' },
+		{ label: 'Equipment', count: equipCount, share: (equipCount / invTotal) * 100, color: '#f59e0b' },
+		{ label: 'Finished Goods', count: finCount, share: (finCount / invTotal) * 100, color: '#22c55e' },
+	].filter((seg) => seg.count > 0) : [];
+	const sortedInventoryReport = [...inventoryReport].sort((a, b) => {
+		const aMetric = inventoryDistributionView === 'share' ? Number(a.share || 0) : Number(a.count || 0);
+		const bMetric = inventoryDistributionView === 'share' ? Number(b.share || 0) : Number(b.count || 0);
+		if (bMetric !== aMetric) return bMetric - aMetric;
+		return String(a.label || '').localeCompare(String(b.label || ''));
+	});
 
 	// ── Daily Shift Sales from filtered batches ──
 	const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -13496,45 +13607,132 @@ function renderReportsData() {
 		}
 	}
 
-	// ── Inventory pie chart (Chart.js doughnut) ──
-	const totalInventory = inventoryReport.reduce((sum, segment) => sum + segment.value, 0);
+	// ── Inventory distribution graph (Chart.js horizontal bar) ──
+	const totalInventory = sortedInventoryReport.reduce((sum, segment) => sum + segment.count, 0);
 	const pieContainer = document.getElementById('inventory-pie');
 	if (pieContainer) {
-		if (inventoryReport.length > 0 && totalInventory > 0 && typeof Chart !== 'undefined') {
-			pieContainer.innerHTML = '<canvas id="rep-inventory-canvas" style="max-width:220px;max-height:220px;margin:0 auto;"></canvas>';
+		if (sortedInventoryReport.length > 0 && totalInventory > 0 && typeof Chart !== 'undefined') {
+			try {
+				if (!window.__wwInventoryBarLabelsPluginRegistered) {
+					Chart.register({
+						id: 'wwInventoryBarLabels',
+						afterDatasetsDraw(chart, _args, pluginOptions) {
+							const opts = pluginOptions || {};
+							if (!opts.enabled) return;
+							const datasetIndex = Number.isInteger(opts.datasetIndex) ? opts.datasetIndex : 0;
+							const meta = chart.getDatasetMeta(datasetIndex);
+							if (!meta || !Array.isArray(meta.data)) return;
+							const dataset = chart.data && Array.isArray(chart.data.datasets) ? chart.data.datasets[datasetIndex] : null;
+							const values = dataset && Array.isArray(dataset.data) ? dataset.data : [];
+							const formatter = typeof opts.formatter === 'function' ? opts.formatter : ((value) => String(value));
+							const ctx = chart.ctx;
+							ctx.save();
+							ctx.fillStyle = opts.color || '#0f172a';
+							ctx.font = opts.font || '600 11px Segoe UI';
+							ctx.textBaseline = 'middle';
+							const right = chart.chartArea ? chart.chartArea.right : null;
+							for (let i = 0; i < meta.data.length; i += 1) {
+								const bar = meta.data[i];
+								if (!bar) continue;
+								const label = String(formatter(values[i], i) || '');
+								if (!label) continue;
+								const width = ctx.measureText(label).width;
+								let x = Number(bar.x || 0) + 8;
+								const y = Number(bar.y || 0);
+								if (Number.isFinite(right) && x + width > right - 2) {
+									x = Math.max(Number(bar.base || 0) + 8, right - width - 2);
+								}
+								ctx.fillText(label, x, y);
+							}
+							ctx.restore();
+						},
+					});
+					window.__wwInventoryBarLabelsPluginRegistered = true;
+				}
+			} catch (_e) { /* keep chart rendering even if plugin registration fails */ }
+			pieContainer.innerHTML = '<canvas id="rep-inventory-canvas" style="width:100%;height:220px;"></canvas>';
 			const pieCtx = document.getElementById('rep-inventory-canvas');
 			if (window.__repInvPieChart) window.__repInvPieChart.destroy();
+			const useShareView = inventoryDistributionView === 'share';
+			const graphValues = sortedInventoryReport.map((s) => useShareView ? Number(s.share || 0) : Number(s.count || 0));
 			window.__repInvPieChart = new Chart(pieCtx, {
-				type: 'doughnut',
+				type: 'bar',
 				data: {
-					labels: inventoryReport.map((s) => s.label),
+					labels: sortedInventoryReport.map((s) => s.label),
 					datasets: [{
-						data: inventoryReport.map((s) => s.value),
-						backgroundColor: inventoryReport.map((s) => s.color),
-						borderWidth: 2,
-						borderColor: '#fff',
+						label: useShareView ? 'Share (%)' : 'Items',
+						data: graphValues,
+						backgroundColor: sortedInventoryReport.map((s) => s.color),
+						borderWidth: 1,
+						borderColor: 'rgba(255,255,255,0.9)',
+						borderRadius: 8,
 					}],
 				},
 				options: {
 					responsive: true,
-					maintainAspectRatio: true,
+					maintainAspectRatio: false,
+					indexAxis: 'y',
 					plugins: {
 						legend: { display: false },
-						tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${ctx.parsed}%` } },
+						wwInventoryBarLabels: {
+							enabled: true,
+							datasetIndex: 0,
+							formatter: (_value, idx) => {
+								const row = sortedInventoryReport[idx] || {};
+								if (useShareView) return `${Number(row.share || 0).toFixed(1)}%`;
+								return formatNumber(Number(row.count || 0));
+							},
+						},
+						tooltip: {
+							callbacks: {
+								label: (ctx) => {
+									const row = sortedInventoryReport[ctx.dataIndex] || {};
+									const count = Number(row.count || 0);
+									const share = Number(row.share || 0);
+									return `${formatNumber(count)} items (${share.toFixed(1)}%)`;
+								},
+							},
+						},
+					},
+					scales: {
+						x: {
+							beginAtZero: true,
+							suggestedMax: useShareView ? 100 : undefined,
+							ticks: {
+								precision: useShareView ? 1 : 0,
+								callback: (v) => useShareView ? `${Number(v).toFixed(0)}%` : formatNumber(v),
+							},
+							grid: { color: 'rgba(148,163,184,0.2)' },
+							title: { display: true, text: useShareView ? 'Share of Inventory (%)' : 'Item Count', font: { size: 11 } },
+						},
+						y: {
+							grid: { display: false },
+						},
 					},
 				},
 			});
-		} else if (inventoryReport.length > 0 && totalInventory > 0) {
+		} else if (sortedInventoryReport.length > 0 && totalInventory > 0) {
+			const useShareView = inventoryDistributionView === 'share';
 			pieContainer.innerHTML = `
-				<div style="width:170px;height:170px;border-radius:50%;background:conic-gradient(
-					${inventoryReport.map((segment, index) => {
-						const before = inventoryReport.slice(0, index).reduce((sum, s) => sum + s.value, 0);
-						const start = (before / totalInventory) * 360;
-						const end = ((before + segment.value) / totalInventory) * 360;
-						return `${segment.color} ${start}deg ${end}deg`;
-					}).join(',')}
-				);
-				border:8px solid #fff;box-shadow:0 4px 14px rgba(2,6,23,0.12);"></div>
+				<div style="display:grid;gap:10px;min-width:240px;width:100%;">
+					${sortedInventoryReport.map((segment) => {
+						const metricText = useShareView
+							? `${segment.share.toFixed(1)}%`
+							: `${formatNumber(segment.count)} items`;
+						const widthPct = useShareView ? segment.share : (invTotal > 0 ? (segment.count / invTotal) * 100 : 0);
+						return `
+						<div style="display:grid;gap:4px;">
+							<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#334155;">
+								<span>${segment.label}</span>
+								<span>${metricText}</span>
+							</div>
+							<div style="height:10px;background:#e2e8f0;border-radius:999px;overflow:hidden;">
+								<div style="height:100%;width:${Math.max(2, Math.round(widthPct))}%;background:${segment.color};"></div>
+							</div>
+						</div>
+					`;
+					}).join('')}
+				</div>
 			`;
 		} else {
 			pieContainer.innerHTML = '<p style="color:#64748b;text-align:center;padding:40px 0">No inventory items tracked yet.</p>';
@@ -13542,11 +13740,11 @@ function renderReportsData() {
 	}
 	const pieLegend = document.getElementById('inventory-pie-legend');
 	if (pieLegend) {
-		pieLegend.innerHTML = inventoryReport.map((segment) => {
+		pieLegend.innerHTML = sortedInventoryReport.map((segment) => {
 			return `
 				<div class="pie-legend-item">
 					<span class="pie-swatch" style="background:${segment.color};"></span>
-					<span>${segment.label} (${segment.value}%)</span>
+					<span>${segment.label}: ${formatNumber(segment.count)} items (${segment.share.toFixed(1)}%)</span>
 				</div>
 			`;
 		}).join('');
@@ -13863,7 +14061,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 				const pageKeyMap = {
 					invoices:   ['ww_seed_flags', 'ww_sales_months'],
 					sales:      ['ww_seed_flags', 'ww_sales_months'],
-					dashboard:  ['ww_seed_flags', 'ww_sales_months', 'ww_raw_materials', 'ww_finished_products', 'ww_accounting_data_v2'],
+					dashboard:  ['ww_seed_flags', 'ww_sales_months', 'ww_raw_materials', 'ww_finished_products', 'ww_accounting_data_v2', LAST_DATA_UPDATE_KEY, SALES_ADD_AUDIT_KEY, PRIVILEGED_ACTION_AUDIT_KEY],
 					inventory:  ['ww_raw_materials', 'ww_finished_products', 'ww_equipment', 'ww_bom_data'],
 					accounting: ['ww_accounting_data_v2', 'ww_cost_centre_budgets', 'ww_tax_records'],
 					vault:      ['ww_record_vault'],
@@ -13893,6 +14091,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 				const remainingKeys = ['ww_raw_materials','ww_finished_products','ww_production_batches',
 					'ww_daily_production','ww_purchase_data_v2','ww_accounting_data_v2','ww_record_vault','ww_tax_records',
 					'ww_cost_centre_budgets','ww_bom_data','ww_equipment','ww_market_yearly_values',
+					LAST_DATA_UPDATE_KEY, SALES_ADD_AUDIT_KEY, PRIVILEGED_ACTION_AUDIT_KEY,
 				].filter((k) => !priorityKeys.includes(k));
 				if (remainingKeys.length) loadBulkFromServer(remainingKeys).catch(() => {});
 			} catch (_e) { console.warn('[Init] Background sync failed:', _e); }

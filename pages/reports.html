@@ -128,9 +128,13 @@
           </table>
         </div>
         <div>
-          <h3>Inventory Distribution</h3>
+          <h3>Inventory Distribution Graph</h3>
+          <div class="rep-performance-views" id="rep-inv-distribution-toggle" style="margin:0 0 10px;">
+            <button type="button" class="rep-view-btn is-active" data-view="count">Count</button>
+            <button type="button" class="rep-view-btn" data-view="share">% Share</button>
+          </div>
           <div class="pie-layout">
-            <div id="inventory-pie" class="chart-wrap" style="min-width:180px"></div>
+            <div id="inventory-pie" class="chart-wrap" style="min-width:260px;width:100%"></div>
             <div id="inventory-pie-legend" class="pie-legend"></div>
           </div>
         </div>
