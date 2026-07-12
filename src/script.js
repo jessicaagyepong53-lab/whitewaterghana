@@ -355,12 +355,11 @@ function getPrivilegedActionAuditEntries() {
 
 function prunePrivilegedActionAuditEntries(entries) {
 	if (!Array.isArray(entries) || !entries.length) return [];
-	const cutoffMs = Date.now() - (PRIVILEGED_ACTION_AUDIT_TTL_DAYS * 24 * 60 * 60 * 1000);
 	return entries
 		.filter((row) => row && typeof row === 'object')
 		.filter((row) => {
 			const stampMs = Date.parse(String(row.timestamp || row.changedAt || row.createdAt || ''));
-			return Number.isFinite(stampMs) && stampMs >= cutoffMs;
+			return Number.isFinite(stampMs);
 		})
 		.sort((a, b) => Date.parse(String(b.timestamp || b.changedAt || b.createdAt || '')) - Date.parse(String(a.timestamp || a.changedAt || a.createdAt || '')))
 		.slice(0, PRIVILEGED_ACTION_AUDIT_LIMIT);
@@ -382,6 +381,63 @@ function getBusinessModuleFromSyncKey(key) {
 	if (text === 'ww_cost_centre_budgets') return 'reports';
 	if (text === 'ww_record_vault') return 'vault';
 	return '';
+}
+
+function getBusinessModuleLabel(moduleName) {
+	const key = String(moduleName || '').trim().toLowerCase();
+	const map = {
+		sales: 'Sales',
+		purchase: 'Purchase',
+		accounting: 'Accounting',
+		inventory: 'Inventory',
+		production: 'Production',
+		reports: 'Reports',
+		vault: 'Record Vault',
+		general: 'General',
+	};
+	return map[key] || (key ? `${key.charAt(0).toUpperCase()}${key.slice(1)}` : 'General');
+}
+
+function toTitleCaseText(value) {
+	const text = String(value || '').trim();
+	if (!text) return '';
+	return text
+		.split(/\s+/)
+		.map((word) => {
+			if (!word) return word;
+			return `${word.charAt(0).toUpperCase()}${word.slice(1).toLowerCase()}`;
+		})
+		.join(' ');
+}
+
+function formatRoleLabelForActivity(roleValue) {
+	const role = String(roleValue || '').trim().toLowerCase();
+	if (!role) return '';
+	const map = {
+		ceo: 'CEO',
+		manager: 'Manager',
+		supervisor: 'Supervisor',
+		staff: 'Staff',
+	};
+	return map[role] || toTitleCaseText(role);
+}
+
+function getBusinessEntityDescriptorFromSyncKey(key) {
+	const text = String(key || '').trim();
+	if (!text) return { singular: 'Entry', plural: 'entries' };
+	if (/^ww_sales_\d{4}-\d{2}$/.test(text)) return { singular: 'Sales record', plural: 'sales records' };
+	if (text === 'ww_purchase_data_v2') return { singular: 'Purchase order', plural: 'purchase orders' };
+	if (text === 'ww_accounting_data_v2') return { singular: 'Accounting entry', plural: 'accounting entries' };
+	if (text === 'ww_tax_records') return { singular: 'Tax record', plural: 'tax records' };
+	if (text === 'ww_raw_materials') return { singular: 'Raw material item', plural: 'raw material items' };
+	if (text === 'ww_finished_products') return { singular: 'Finished product item', plural: 'finished product items' };
+	if (/^ww_inventory_\d{4}-\d{2}$/.test(text)) return { singular: 'Inventory record', plural: 'inventory records' };
+	if (text === 'ww_daily_production') return { singular: 'Production log', plural: 'production logs' };
+	if (text === 'ww_production_batches') return { singular: 'Production batch', plural: 'production batches' };
+	if (text === 'ww_bom_data') return { singular: 'BOM entry', plural: 'BOM entries' };
+	if (text === 'ww_cost_centre_budgets') return { singular: 'Budget line', plural: 'budget lines' };
+	if (text === 'ww_record_vault') return { singular: 'Vault record', plural: 'vault records' };
+	return { singular: 'Entry', plural: 'entries' };
 }
 
 function getBusinessCountFromSyncPayload(key, data) {
@@ -416,15 +472,20 @@ function appendBusinessActivityFromSync(key, data) {
 	if (!text || text === LAST_DATA_UPDATE_KEY || text === SALES_ADD_AUDIT_KEY || text === PRIVILEGED_ACTION_AUDIT_KEY || text === 'ww_seed_flags') return;
 	const moduleName = getBusinessModuleFromSyncKey(text);
 	if (!moduleName) return;
+	const descriptor = getBusinessEntityDescriptorFromSyncKey(text);
 	const total = getBusinessCountFromSyncPayload(text, data);
 	let state = {};
 	try { state = JSON.parse(localStorage.getItem('ww_business_activity_state_v1') || '{}') || {}; } catch (_e) { state = {}; }
 	const prev = Number(state[text]);
 	const hasPrev = Number.isFinite(prev) && prev >= 0;
-	const action = hasPrev && total > prev ? 'entry added' : 'updated';
+	const delta = hasPrev ? Math.max(0, total - prev) : 0;
+	const action = delta > 0 ? 'added' : 'updated';
+	const summary = delta > 0
+		? (delta === 1 ? descriptor.singular : `${formatNumber(delta)} ${descriptor.plural}`)
+		: descriptor.plural;
 
 	const dedupeMap = window.__wwBusinessActivityDedup || (window.__wwBusinessActivityDedup = new Map());
-	const dedupeKey = `${text}|${total}|${action}`;
+	const dedupeKey = `${text}|${total}|${action}|${summary}`;
 	const now = Date.now();
 	const last = Number(dedupeMap.get(dedupeKey) || 0);
 	if (now - last < 2500) return;
@@ -433,9 +494,9 @@ function appendBusinessActivityFromSync(key, data) {
 	appendPrivilegedActionAudit({
 		action,
 		module: moduleName,
-		entity: text,
-		summary: `${text} (${formatNumber(total)} entries)`,
-		details: `Synced by ${resolveSalesAuditActor().name || 'user'}`,
+		entity: descriptor.singular,
+		summary,
+		details: `Total ${descriptor.plural}: ${formatNumber(total)}`,
 		page: String(document.body?.getAttribute('data-page') || '').trim(),
 	});
 
@@ -1134,22 +1195,25 @@ function getLatestBusinessActivity() {
 	const latest = sorted[0];
 	const isSalesAdd = String(latest.type || '').trim() === 'invoice_add';
 	const actor = String(latest.userName || latest.userEmail || 'User').trim();
+	const roleLabel = formatRoleLabelForActivity(latest.userRole);
+	const actorWithRole = roleLabel ? `${actor} (${roleLabel})` : actor;
 	if (isSalesAdd) {
 		const invoiceId = String(latest.invoiceId || '').trim();
 		const customer = String(latest.customer || '').trim();
 		const target = invoiceId ? `Invoice ${invoiceId}` : (customer ? `Invoice for ${customer}` : 'Invoice');
 		return {
 			timestamp: String(latest.timestamp || ''),
-			message: `${target} added by ${actor}`,
+			message: `${toTitleCaseText(target)} Added by ${actorWithRole}`,
 		};
 	}
 	const action = String(latest.action || 'updated').trim();
-	const moduleName = String(latest.module || latest.entity || 'record').trim();
+	const moduleName = getBusinessModuleLabel(String(latest.module || '').trim());
 	const summary = String(latest.summary || latest.recordId || '').trim();
-	const target = summary ? `${moduleName}: ${summary}` : moduleName;
+	const normalizedAction = action === 'entry added' ? 'added' : action;
+	const target = toTitleCaseText(summary || moduleName);
 	return {
 		timestamp: String(latest.timestamp || ''),
-		message: `${target} ${action} by ${actor}`,
+		message: `${target} ${toTitleCaseText(normalizedAction)} by ${actorWithRole}`,
 	};
 }
 
