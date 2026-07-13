@@ -478,14 +478,25 @@ function appendBusinessActivityFromSync(key, data) {
 	try { state = JSON.parse(localStorage.getItem('ww_business_activity_state_v1') || '{}') || {}; } catch (_e) { state = {}; }
 	const prev = Number(state[text]);
 	const hasPrev = Number.isFinite(prev) && prev >= 0;
-	const delta = hasPrev ? Math.max(0, total - prev) : 0;
-	const action = delta > 0 ? 'added' : 'updated';
-	const summary = delta > 0
-		? (delta === 1 ? descriptor.singular : `${formatNumber(delta)} ${descriptor.plural}`)
-		: descriptor.plural;
+	if (!hasPrev) {
+		state[text] = total;
+		try { localStorage.setItem('ww_business_activity_state_v1', JSON.stringify(state)); } catch (_e) { /* ignore */ }
+		return;
+	}
+	const diff = total - prev;
+	let action = 'edited';
+	let summary = descriptor.plural;
+	if (diff > 0) {
+		action = 'added';
+		summary = diff === 1 ? descriptor.singular : `${formatNumber(diff)} ${descriptor.plural}`;
+	} else if (diff < 0) {
+		action = 'deleted';
+		const removed = Math.abs(diff);
+		summary = removed === 1 ? descriptor.singular : `${formatNumber(removed)} ${descriptor.plural}`;
+	}
 
 	const dedupeMap = window.__wwBusinessActivityDedup || (window.__wwBusinessActivityDedup = new Map());
-	const dedupeKey = `${text}|${total}|${action}|${summary}`;
+	const dedupeKey = `${text}|${prev}|${total}|${action}|${summary}`;
 	const now = Date.now();
 	const last = Number(dedupeMap.get(dedupeKey) || 0);
 	if (now - last < 2500) return;
