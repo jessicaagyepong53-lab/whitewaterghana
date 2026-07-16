@@ -484,12 +484,10 @@ function appendBusinessActivityFromSync(key, data) {
 		return;
 	}
 	const diff = total - prev;
-	let action = 'edited';
-	let summary = descriptor.plural;
-	if (diff > 0) {
-		action = 'added';
-		summary = diff === 1 ? descriptor.singular : `${formatNumber(diff)} ${descriptor.plural}`;
-	} else if (diff < 0) {
+	if (diff === 0) return;
+	let action = 'added';
+	let summary = diff === 1 ? descriptor.singular : `${formatNumber(diff)} ${descriptor.plural}`;
+	if (diff < 0) {
 		action = 'deleted';
 		const removed = Math.abs(diff);
 		summary = removed === 1 ? descriptor.singular : `${formatNumber(removed)} ${descriptor.plural}`;
@@ -1200,6 +1198,12 @@ function getLatestBusinessActivity() {
 	}
 	const sorted = rows
 		.filter((row) => row && typeof row === 'object')
+		.filter((row) => {
+			const action = String(row?.action || '').trim().toLowerCase();
+			const details = String(row?.details || '').trim();
+			// Ignore legacy synthetic entries created from sync total snapshots.
+			return !(action === 'edited' && /^Total\s+/i.test(details));
+		})
 		.filter((row) => Number.isFinite(Date.parse(String(row.timestamp || ''))))
 		.sort((a, b) => Date.parse(String(b.timestamp || '')) - Date.parse(String(a.timestamp || '')));
 	if (!sorted.length) return null;
