@@ -1,5 +1,7 @@
 ﻿const API_BASE = '';
 const LAST_DATA_UPDATE_KEY = 'ww_last_data_update';
+const DASHBOARD_REFRESH_STAMP_KEY = 'ww_dashboard_data_refreshed_at';
+const DASHBOARD_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const SALES_PENDING_SYNC_PREFIX = 'ww_pending_sales_sync_';
 const SALES_PENDING_SYNC_TS_PREFIX = 'ww_pending_sales_sync_ts_';
 const LOCKED_SALES_MONTHS = {};
@@ -1144,6 +1146,23 @@ function getLastDataUpdateStamp() {
 function setLastDataUpdateStamp(value) {
 	if (!value) return;
 	localStorage.setItem(LAST_DATA_UPDATE_KEY, JSON.stringify(value));
+}
+
+function getDashboardDataRefreshStamp() {
+	try {
+		const raw = localStorage.getItem(DASHBOARD_REFRESH_STAMP_KEY);
+		if (!raw) return '';
+		const parsed = JSON.parse(raw);
+		return typeof parsed === 'string' ? parsed : '';
+	} catch (_e) {
+		const fallback = localStorage.getItem(DASHBOARD_REFRESH_STAMP_KEY);
+		return typeof fallback === 'string' ? fallback : '';
+	}
+}
+
+function setDashboardDataRefreshStamp(value) {
+	if (!value) return;
+	localStorage.setItem(DASHBOARD_REFRESH_STAMP_KEY, JSON.stringify(value));
 }
 
 function formatRelativeTime(isoStamp) {
@@ -3890,6 +3909,44 @@ async function initDashboardPage() {
 		}
 	};
 
+	const renderDashboardActivityFeed = (items) => {
+		const feed = document.getElementById('dash-business-activity-feed');
+		if (!feed) return;
+		const rows = Array.isArray(items) ? items.filter((row) => row && typeof row === 'object') : [];
+		if (rows.length > 0) {
+			feed.innerHTML = rows.slice(0, 12).map((row) => {
+				const text = String(row.summary || '').trim();
+				return `<li class="dash-activity-item">${escapeHtml(text || 'Activity recorded')}</li>`;
+			}).join('');
+			return;
+		}
+		const latest = getLatestBusinessActivity();
+		feed.innerHTML = `<li class="dash-activity-empty">${escapeHtml(latest ? `${latest.message}, ${formatStampWithRelative(latest.timestamp)}` : 'No recent activity')}</li>`;
+	};
+
+	const loadDashboardActivityFeed = async (force = false) => {
+		const nowMs = Date.now();
+		const fetchedAt = Number(window.__wwDashboardActivityFetchedAt || 0);
+		if (!force && Array.isArray(window.__wwDashboardActivityItems) && nowMs - fetchedAt < 8000) {
+			renderDashboardActivityFeed(window.__wwDashboardActivityItems);
+			return;
+		}
+		try {
+			const res = await fetch(API_BASE + '/api/activity-log?limit=12&logLimit=300', {
+				credentials: 'include',
+				cache: 'no-store',
+			});
+			if (!res.ok) throw new Error('activity-feed-fetch-failed');
+			const json = await res.json();
+			const items = Array.isArray(json?.items) ? json.items : [];
+			window.__wwDashboardActivityItems = items;
+			window.__wwDashboardActivityFetchedAt = Date.now();
+			renderDashboardActivityFeed(items);
+		} catch (_e) {
+			renderDashboardActivityFeed(window.__wwDashboardActivityItems || []);
+		}
+	};
+
 	const buildInvoiceRevenueByMonth = () => {
 		const salesData = getAllSalesData();
 		const byMonth = {};
@@ -4009,6 +4066,7 @@ async function initDashboardPage() {
 	fetchEquipmentFromServer().then((serverEquipment) => {
 		equipmentStatus = serverEquipment;
 		dashTrace('equipment:fetch:done', { count: Array.isArray(serverEquipment) ? serverEquipment.length : -1 });
+		setDashboardDataRefreshStamp(new Date().toISOString());
 		renderDashboardEquipmentStatus();
 	});
 
@@ -4277,22 +4335,21 @@ async function initDashboardPage() {
 
 		const stamp = document.getElementById('dash-timestamp');
 		if (stamp) {
-			const lastUpdate = getLastDataUpdateStamp();
-			stamp.textContent = formatStampWithRelative(lastUpdate);
+			const refreshStamp = getDashboardDataRefreshStamp();
+			stamp.textContent = formatStampWithRelative(refreshStamp);
 		}
-		const activityEl = document.getElementById('dash-business-activity');
-		if (activityEl) {
-			const latest = getLatestBusinessActivity();
-			activityEl.textContent = latest
-				? `${latest.message}, ${formatStampWithRelative(latest.timestamp)}`
-				: 'No recent activity';
-		}
+		renderDashboardActivityFeed(window.__wwDashboardActivityItems || []);
 	};
 
 	renderDashboardYearSelector();
 	renderDashboardLiveSummary();
+	loadDashboardActivityFeed(true).catch(() => {});
 	loadBulkFromServer([LAST_DATA_UPDATE_KEY, SALES_ADD_AUDIT_KEY, PRIVILEGED_ACTION_AUDIT_KEY])
-		.then(() => { renderDashboardLiveSummary(); })
+		.then(() => {
+			setDashboardDataRefreshStamp(new Date().toISOString());
+			renderDashboardLiveSummary();
+			return loadDashboardActivityFeed(true);
+		})
 		.catch(() => {});
 
 	const revData = buildRevenueData();
@@ -4414,7 +4471,9 @@ async function initDashboardPage() {
 	const refreshDashboardView = async () => {
 		dashTrace('refresh:start', { reason: 'dashboard-refresh' });
 		await loadBulkFromServer([LAST_DATA_UPDATE_KEY, SALES_ADD_AUDIT_KEY, PRIVILEGED_ACTION_AUDIT_KEY]);
+		await loadDashboardActivityFeed(true);
 		await fetchEquipmentFromServer();
+		setDashboardDataRefreshStamp(new Date().toISOString());
 		renderDashboardYearSelector();
 		const rd = buildRevenueData();
 		renderDashboardLiveSummary();
@@ -4423,6 +4482,12 @@ async function initDashboardPage() {
 		renderProfitLossChart(rd);
 		dashTrace('refresh:done', { equipmentCount: Array.isArray(equipmentStatus) ? equipmentStatus.length : -1 });
 	};
+
+	if (!window.__wwDashboardAutoRefreshTimer) {
+		window.__wwDashboardAutoRefreshTimer = setInterval(() => {
+			refreshDashboardView().catch(() => {});
+		}, DASHBOARD_AUTO_REFRESH_INTERVAL_MS);
+	}
 
 	if (!window.__wwDashboardStorageBound) {
 		window.__wwDashboardStorageBound = true;

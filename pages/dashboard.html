@@ -45,8 +45,11 @@
       <h2>Dashboard</h2>
       <p>Welcome to White Water Wells Factory Management System</p>
       <p>Live view of revenue, production, customer activity, and stock risk indicators.</p>
-      <p class="dash-meta-line">Last sync: <span id="dash-timestamp">--</span></p>
-      <p class="dash-meta-line">Business activity: <span id="dash-business-activity">--</span></p>
+      <p class="dash-meta-line">Data refreshed: <span id="dash-timestamp">--</span></p>
+      <p class="dash-meta-line">Business activity:</p>
+      <ul class="dash-activity-feed" id="dash-business-activity-feed">
+        <li class="dash-activity-empty">Loading activity...</li>
+      </ul>
     </div>
 
     <section class="month-selector-bar" id="dash-year-selector-bar" style="display:none;">

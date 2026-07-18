@@ -95,7 +95,7 @@
     </div>
     <div id="um-tab-staff-actions" class="tab-panel">
       <div class="info-box" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
-        <p style="margin:0"><i class="fa-solid fa-circle-info"></i> Shows edit/delete actions performed by staff or supervisor users who were granted edit/delete rights.</p>
+        <p style="margin:0"><i class="fa-solid fa-circle-info"></i> Shows create, edit, and delete actions performed by staff or supervisor users when they had rights at the time of action.</p>
         <button type="button" class="btn-secondary" id="um-refresh-actions-btn"><i class="fa-solid fa-rotate"></i> Refresh</button>
       </div>
       <table class="data-table">
@@ -215,9 +215,6 @@
 <script src="../src/script.js?v=20260704u"></script>
 <script>
 (function() {
-  var PRIV_ACTION_AUDIT_KEY = 'ww_privileged_action_audit_v1';
-  var PRIV_ACTION_RETENTION_DAYS = 30;
-  var PRIV_ACTION_RETENTION_MS = PRIV_ACTION_RETENTION_DAYS * 24 * 60 * 60 * 1000;
   const ACCESS_LEVELS = {
     CEO: 'Always enabled',
     manager: 'Always enabled',
@@ -266,6 +263,7 @@
     if (!normalized) return 'Update';
     if (normalized === 'delete') return 'Delete';
     if (normalized === 'edit') return 'Edit';
+    if (normalized === 'add') return 'Add';
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
 
@@ -291,8 +289,18 @@
       var userEmail = String(row.userEmail || '').trim();
       var recordText = String(row.summary || row.recordId || '').trim() || '—';
       var details = String(row.details || '').trim() || '—';
+      if ((!details || details === '—') && Array.isArray(row.changes) && row.changes.length) {
+        details = row.changes.slice(0, 3).map(function(ch) {
+          var field = String(ch && ch.field || '').trim();
+          if (!field) return '';
+          var oldValue = ch && ch.oldValue;
+          var newValue = ch && ch.newValue;
+          return field + ': ' + String(oldValue == null ? 'empty' : oldValue) + ' -> ' + String(newValue == null ? 'empty' : newValue);
+        }).filter(Boolean).join('; ');
+      }
       var action = formatActionLabel(row.action);
-      var actionClass = String(row.action || '').toLowerCase() === 'delete' ? 'status-red' : 'status-blue';
+      var actionLower = String(row.action || '').toLowerCase();
+      var actionClass = actionLower === 'delete' ? 'status-red' : (actionLower === 'add' ? 'status-green' : 'status-blue');
       var userDisplay = userEmail ? (userName + '<br><small style="color:#64748b">' + userEmail + '</small>') : userName;
       return '<tr>' +
         '<td>' + formatLogin(row.timestamp) + '</td>' +
@@ -310,32 +318,11 @@
     if (!actionsTbody) return;
     actionsTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">Loading actions...</td></tr>';
     try {
-      var res = await fetch('/api/app-data/' + encodeURIComponent(PRIV_ACTION_AUDIT_KEY), { credentials: 'include', cache: 'no-store' });
+      var res = await fetch('/api/staff-actions?limit=300', { credentials: 'include', cache: 'no-store' });
       var json = await res.json().catch(function() { return {}; });
-      var rows = Array.isArray(json && json.data) ? json.data : [];
-      var cutoff = Date.now() - PRIV_ACTION_RETENTION_MS;
-      var retainedRows = rows.filter(function(row) {
-        var ts = Date.parse(String(row && row.timestamp || ''));
-        return Number.isFinite(ts) && ts >= cutoff;
-      });
-      if (retainedRows.length !== rows.length) {
-        try {
-          await fetch('/api/app-data/' + encodeURIComponent(PRIV_ACTION_AUDIT_KEY), {
-            method: 'PUT',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ data: retainedRows }),
-          });
-        } catch (_e) { /* keep rendering retained rows locally */ }
-      }
-      rows = retainedRows;
-      rows = rows.filter(function(row) {
-        var role = String((row && row.userRole) || '').trim().toLowerCase();
-        return role === 'staff' || role === 'supervisor';
-      }).sort(function(a, b) {
-        return new Date(String(b && b.timestamp || '')).getTime() - new Date(String(a && a.timestamp || '')).getTime();
-      });
-      renderStaffActions(rows.slice(0, 300));
+      if (!res.ok) throw new Error((json && json.message) || 'Failed to load staff actions');
+      var rows = Array.isArray(json && json.items) ? json.items : [];
+      renderStaffActions(rows);
     } catch (_err) {
       renderStaffActions([]);
     }

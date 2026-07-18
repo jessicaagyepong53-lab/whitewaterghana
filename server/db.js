@@ -1,6 +1,9 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
+const STAFF_ACTION_RETENTION_DAYS = 30;
+const STAFF_ACTION_RETENTION_SECONDS = STAFF_ACTION_RETENTION_DAYS * 24 * 60 * 60;
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -238,6 +241,77 @@ const userRightsAuditSchema = new mongoose.Schema({
 
 userRightsAuditSchema.index({ user_id: 1, changed_at: -1 });
 
+const activityLogSchema = new mongoose.Schema({
+  action:     { type: String, enum: ['create', 'update', 'delete'], required: true },
+  module:     { type: String, default: '' },
+  entityType: { type: String, required: true },
+  entityId:   { type: mongoose.Schema.Types.Mixed, default: null },
+  details:    { type: String, default: '' },
+  changes:    { type: [mongoose.Schema.Types.Mixed], default: [] },
+  batchId:    { type: String, required: true, index: true },
+  userName:   { type: String, required: true },
+  userRole:   { type: String, required: true },
+  timestamp:  { type: Date, required: true, default: Date.now, index: true },
+}, { timestamps: true, toJSON: toJSONOpts });
+
+activityLogSchema.index({ timestamp: -1, batchId: 1 });
+
+const staffActionSchema = new mongoose.Schema({
+  action: {
+    type: String,
+    enum: ['add', 'edit', 'delete'],
+    required: true,
+  },
+  module: {
+    type: String,
+    required: true,
+  },
+  entityType: {
+    type: String,
+    default: '',
+  },
+  recordId: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null,
+  },
+  changes: {
+    type: [{
+      field: String,
+      oldValue: mongoose.Schema.Types.Mixed,
+      newValue: mongoose.Schema.Types.Mixed,
+    }],
+    default: undefined,
+  },
+  batchId: {
+    type: String,
+    default: null,
+    index: true,
+  },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+  },
+  userName: {
+    type: String,
+    required: true,
+  },
+  userRole: {
+    type: String,
+    required: true,
+  },
+  timestamp: {
+    type: Date,
+    default: Date.now,
+    index: true,
+  },
+}, { timestamps: true, toJSON: toJSONOpts });
+
+staffActionSchema.index({ timestamp: -1 });
+staffActionSchema.index({ timestamp: 1 }, { expireAfterSeconds: STAFF_ACTION_RETENTION_SECONDS });
+staffActionSchema.index({ userId: 1, timestamp: -1 });
+staffActionSchema.index({ module: 1, timestamp: -1 });
+
 /* ── Register models ── */
 
 const User            = mongoose.model('User', userSchema);
@@ -260,6 +334,8 @@ const FactoryEquipment = mongoose.model('FactoryEquipment', factoryEquipmentSche
 const AppData          = mongoose.model('AppData', appDataSchema);
 const TrashBin         = mongoose.model('TrashBin', trashBinSchema);
 const UserRightsAudit  = mongoose.model('UserRightsAudit', userRightsAuditSchema);
+const ActivityLog      = mongoose.model('ActivityLog', activityLogSchema);
+const StaffAction      = mongoose.model('StaffAction', staffActionSchema);
 
 /* ═══════════════════════════════════════════════
    HELPER FUNCTIONS
@@ -512,4 +588,6 @@ module.exports = {
   AppData,
   TrashBin,
   UserRightsAudit,
+  ActivityLog,
+  StaffAction,
 };

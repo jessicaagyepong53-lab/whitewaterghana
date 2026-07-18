@@ -74,6 +74,10 @@ const {
 
   UserRightsAudit,
 
+  ActivityLog,
+
+  StaffAction,
+
 } = require('./server/db');
 
 
@@ -616,6 +620,624 @@ async function adjustInventoryQuantity(name, quantityChange) {
 async function createAccountingEntry(type, category, amount, description, entryDate) {
 
   await AccountingEntry.create({ type, category, amount, entry_date: entryDate, description });
+
+}
+
+function getActivityBatchId(req) {
+
+  if (req && req.__activityBatchId) return req.__activityBatchId;
+
+  const headerBatch = String(req && req.get && req.get('x-batch-id') || '').trim();
+
+  const body = req && req.body && typeof req.body === 'object' ? req.body : {};
+
+  const bodyBatch = String(body.batchId || body.batch_id || '').trim();
+
+  const value = headerBatch || bodyBatch || crypto.randomUUID();
+
+  if (req) req.__activityBatchId = value;
+
+  return value;
+
+}
+
+function toActivityEntityType(entityType) {
+
+  const raw = String(entityType || '').trim();
+
+  if (!raw) return 'record';
+
+  const map = {
+
+    users: 'user',
+
+    customers: 'customer',
+
+    vendors: 'vendor',
+
+    inventory: 'inventory',
+
+    machines: 'machine',
+
+    production: 'production',
+
+    sales: 'sale',
+
+    invoices: 'invoice',
+
+    purchaseOrders: 'purchaseOrder',
+
+    accounting: 'accountingEntry',
+
+    approvals: 'approval',
+
+    equipment: 'equipment',
+
+    taxRecords: 'taxRecord',
+
+    recordVaultFile: 'recordVaultFile',
+
+    recordVaultFolder: 'recordVaultFolder',
+
+    storeOrder: 'storeOrder',
+
+  };
+
+  return map[raw] || raw;
+
+}
+
+function toActivityEntityId(entityId) {
+
+  const raw = String(entityId || '').trim();
+
+  if (!raw) return null;
+
+  if (isValidObjectId(raw)) return toObjectId(raw);
+
+  return raw;
+
+}
+
+function isHumanBusinessAction(req) {
+
+  if (!req || !req.user) return false;
+
+  const automated = String(req.get('x-ww-automation') || '').trim().toLowerCase();
+
+  if (automated === '1' || automated === 'true') return false;
+
+  return true;
+
+}
+
+function toStaffActionName(action) {
+
+  const value = String(action || '').trim().toLowerCase();
+
+  if (value === 'create') return 'add';
+
+  if (value === 'update') return 'edit';
+
+  if (value === 'delete') return 'delete';
+
+  return '';
+
+}
+
+function toStaffModuleFromEntityType(entityType) {
+
+  const key = String(entityType || '').trim();
+
+  const map = {
+
+    users: 'Users',
+
+    customers: 'Customers',
+
+    vendors: 'Vendors',
+
+    inventory: 'Raw Materials',
+
+    machines: 'Machines',
+
+    production: 'Production',
+
+    sales: 'Sales',
+
+    invoices: 'Invoices',
+
+    purchaseOrders: 'Purchase Orders',
+
+    accounting: 'Accounting',
+
+    taxRecords: 'Tax Records',
+
+    equipment: 'Factory Equipment',
+
+    recordVaultFile: 'Record Vault',
+
+    recordVaultFolder: 'Record Vault',
+
+    storeOrder: 'Store Orders',
+
+  };
+
+  return map[key] || map[toActivityEntityType(key)] || 'General';
+
+}
+
+function toResourceKeyFromEntityType(entityType) {
+
+  const key = String(entityType || '').trim();
+
+  const map = {
+
+    users: 'users',
+
+    customers: 'customers',
+
+    vendors: 'vendors',
+
+    inventory: 'inventory',
+
+    machines: 'machines',
+
+    production: 'production',
+
+    sales: 'sales',
+
+    invoices: 'invoices',
+
+    purchaseOrders: 'purchaseOrders',
+
+    accounting: 'accounting',
+
+    taxRecords: 'accounting',
+
+    equipment: 'machines',
+
+    recordVaultFile: 'vault',
+
+    recordVaultFolder: 'vault',
+
+    storeOrder: 'invoices',
+
+  };
+
+  return map[key] || '';
+
+}
+
+function hasModuleRightsForUser(user, resourceKey) {
+
+  if (!user) return false;
+
+  const key = String(resourceKey || '').trim();
+
+  if (!key) return false;
+
+  const allowedRoles = RESOURCE_RULES[key];
+
+  if (!Array.isArray(allowedRoles) || !allowedRoles.length) return false;
+
+  const baseRole = String(user.role || '').trim().toLowerCase();
+
+  const overrideRoles = SPECIAL_ACCESS_OVERRIDES[String(user.email || '').toLowerCase()] || [];
+
+  const effectiveRoles = Array.from(new Set([baseRole, ...overrideRoles]));
+
+  return allowedRoles.some((role) => effectiveRoles.includes(role));
+
+}
+
+function normalizeStaffChanges(changesInput) {
+
+  const rows = Array.isArray(changesInput) ? changesInput : [];
+
+  return rows
+
+    .filter((row) => row && typeof row === 'object')
+
+    .map((row) => ({
+
+      field: String(row.field || '').trim(),
+
+      oldValue: row.oldValue,
+
+      newValue: row.newValue,
+
+    }))
+
+    .filter((row) => row.field);
+
+}
+
+function areChangeValuesEqual(a, b) {
+
+  if (a === b) return true;
+
+  return JSON.stringify(a) === JSON.stringify(b);
+
+}
+
+function collectChangedFields(specs) {
+
+  const rows = Array.isArray(specs) ? specs : [];
+
+  const changes = [];
+
+  for (const row of rows) {
+
+    if (!row || typeof row !== 'object') continue;
+
+    const field = String(row.field || '').trim();
+
+    if (!field) continue;
+
+    if (areChangeValuesEqual(row.oldValue, row.newValue)) continue;
+
+    changes.push({ field, oldValue: row.oldValue, newValue: row.newValue });
+
+  }
+
+  return changes;
+
+}
+
+function summarizeStaffActionGroup(group) {
+
+  const rows = Array.isArray(group && group.rows) ? group.rows : [];
+
+  if (!rows.length) return 'No actions logged';
+
+  const actions = Array.from(new Set(rows.map((row) => String(row.action || '').trim().toLowerCase()).filter(Boolean)));
+
+  const modules = Array.from(new Set(rows.map((row) => String(row.module || '').trim()).filter(Boolean)));
+
+  const count = rows.length;
+
+  const actionWord = actions.length === 1
+
+    ? (actions[0] === 'add' ? 'added' : actions[0] === 'edit' ? 'edited' : 'deleted')
+
+    : 'updated';
+
+  const moduleLabel = modules.length === 1 ? modules[0] : 'Multiple Modules';
+
+  const itemLabel = count === 1 ? 'record' : 'records';
+
+  return `${count} ${itemLabel} ${actionWord} in ${moduleLabel}`;
+
+}
+
+function summarizeStaffChanges(changes) {
+
+  const rows = normalizeStaffChanges(changes);
+
+  if (!rows.length) return '';
+
+  return rows
+
+    .slice(0, 4)
+
+    .map((row) => `${row.field}: ${String(row.oldValue ?? 'empty')} -> ${String(row.newValue ?? 'empty')}`)
+
+    .join('; ');
+
+}
+
+async function logStaffAction({ req, action, entityType, entityId, batchId, changes }) {
+
+  if (!isHumanBusinessAction(req)) return;
+
+  const user = req.user;
+
+  if (!user) return;
+
+  const userId = toActivityEntityId(user.id || user._id);
+
+  let userForRights = user;
+
+  if (userId && isValidObjectId(String(userId))) {
+
+    const freshUser = await User.findById(userId).lean();
+
+    if (freshUser) {
+
+      userForRights = {
+
+        ...user,
+
+        role: freshUser.role,
+
+        email: freshUser.email,
+
+        canEditDelete: resolveCanEditDelete(freshUser),
+
+      };
+
+    }
+
+  }
+
+  const role = String(userForRights.role || '').trim().toLowerCase();
+
+  if (!['staff', 'supervisor'].includes(role)) return;
+
+  const actionName = toStaffActionName(action);
+
+  if (!actionName) return;
+
+  const resourceKey = toResourceKeyFromEntityType(entityType);
+
+  if (!hasModuleRightsForUser(userForRights, resourceKey)) return;
+
+  if ((actionName === 'edit' || actionName === 'delete') && !resolveCanEditDelete(userForRights)) return;
+
+  const cleanChanges = actionName === 'edit' ? normalizeStaffChanges(changes) : [];
+
+  await StaffAction.create({
+
+    action: actionName,
+
+    module: toStaffModuleFromEntityType(entityType),
+
+    entityType: String(toActivityEntityType(entityType) || '').trim(),
+
+    recordId: toActivityEntityId(entityId),
+
+    ...(cleanChanges.length ? { changes: cleanChanges } : {}),
+
+    batchId: String(batchId || getActivityBatchId(req)).trim() || null,
+
+    userId,
+
+    userName: String(userForRights.name || userForRights.email || '').trim() || 'Unknown',
+
+    userRole: role,
+
+    timestamp: new Date(),
+
+  });
+
+}
+
+async function logActivity({ req, action, entityType, entityId, batchId, changes, details }) {
+
+  if (!isHumanBusinessAction(req)) return;
+
+  const normalizedAction = String(action || '').trim().toLowerCase();
+
+  if (!['create', 'update', 'delete'].includes(normalizedAction)) return;
+
+  const userName = String(req.user.name || req.user.email || '').trim();
+
+  const userRole = String(req.user.role || '').trim();
+
+  if (!userName || !userRole) return;
+
+  await ActivityLog.create({
+
+    action: normalizedAction,
+
+    entityType: toActivityEntityType(entityType),
+
+    module: toStaffModuleFromEntityType(entityType),
+
+    entityId: toActivityEntityId(entityId),
+
+    details: String(details || '').trim(),
+
+    changes: normalizeStaffChanges(changes),
+
+    batchId: String(batchId || getActivityBatchId(req)).trim() || getActivityBatchId(req),
+
+    userName,
+
+    userRole,
+
+    timestamp: new Date(),
+
+  });
+
+  await logStaffAction({ req, action: normalizedAction, entityType, entityId, batchId, changes });
+
+}
+
+function activityPastTense(action) {
+
+  const value = String(action || '').trim().toLowerCase();
+
+  if (value === 'create') return 'added';
+
+  if (value === 'update') return 'updated';
+
+  if (value === 'delete') return 'deleted';
+
+  return 'updated';
+
+}
+
+function pluralizeEntityType(entityType, count) {
+
+  const noun = String(entityType || 'record').trim();
+
+  if (count === 1) return noun;
+
+  if (noun.endsWith('s')) return `${noun}es`;
+
+  if (noun.endsWith('y') && !/[aeiou]y$/i.test(noun)) return `${noun.slice(0, -1)}ies`;
+
+  return `${noun}s`;
+
+}
+
+function humanizeEntityType(entityType) {
+
+  const text = String(entityType || '').trim();
+
+  if (!text) return 'record';
+
+  return text
+
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+
+    .replace(/[_-]+/g, ' ')
+
+    .toLowerCase();
+
+}
+
+function isSaleLikeEntityType(entityType) {
+
+  const text = String(entityType || '').trim().toLowerCase();
+
+  return text === 'sale' || text === 'sales' || text === 'invoice' || text === 'invoices';
+
+}
+
+function formatActivityTimestamp(value) {
+
+  const stamp = new Date(value || Date.now());
+
+  if (Number.isNaN(stamp.getTime())) return '';
+
+  return stamp.toLocaleString('en-GB', {
+
+    day: '2-digit',
+
+    month: 'short',
+
+    year: 'numeric',
+
+    hour: 'numeric',
+
+    minute: '2-digit',
+
+    hour12: true,
+
+  });
+
+}
+
+function summarizeActivityBatch(group) {
+
+  const rows = Array.isArray(group && group.rows) ? group.rows : [];
+
+  const count = rows.length;
+
+  if (count === 0) return '0 records updated';
+
+  const users = Array.from(new Set(rows.map((row) => `${String(row.userName || '').trim()}|${String(row.userRole || '').trim()}`).filter(Boolean)));
+
+  let actorText = 'Unknown User';
+
+  if (users.length === 1) {
+
+    const [userName, userRole] = users[0].split('|');
+
+    actorText = `${userName || 'Unknown User'} (${(userRole || 'user').toUpperCase()})`;
+
+  } else if (users.length > 1) {
+
+    actorText = `${users.length} users`;
+
+  }
+
+  const actions = Array.from(new Set(rows.map((row) => String(row.action || '').trim().toLowerCase()).filter(Boolean)));
+
+  const entityTypes = Array.from(new Set(rows.map((row) => String(row.entityType || '').trim()).filter(Boolean)));
+
+  const sameAction = actions.length === 1;
+
+  const sameEntity = entityTypes.length === 1;
+
+  const actionText = sameAction ? activityPastTense(actions[0]) : 'updated';
+
+  const entityText = sameEntity
+
+    ? pluralizeEntityType(humanizeEntityType(entityTypes[0]), count)
+
+    : (count === 1 ? 'record' : 'records');
+
+  // For mixed entity batches (e.g. sale + invoice in one operation), show
+  // a breakdown so totals are not mistaken for one entity type.
+  let subjectText = `${count} ${entityText}`;
+
+  const salesRows = rows.filter((row) => {
+
+    const text = String(row && row.entityType || '').trim().toLowerCase();
+
+    return text === 'sale' || text === 'sales';
+
+  }).length;
+
+  const invoiceRows = rows.filter((row) => {
+
+    const text = String(row && row.entityType || '').trim().toLowerCase();
+
+    return text === 'invoice' || text === 'invoices';
+
+  }).length;
+
+  const allRowsSaleLike = rows.every((row) => isSaleLikeEntityType(row && row.entityType));
+
+  // One user action in this app often creates both a sales row and an invoice row.
+  // Count it once as a sales business action instead of double-counting technical rows.
+  if (allRowsSaleLike && sameAction) {
+
+    const businessCount = Math.max(salesRows, invoiceRows) || count;
+
+    subjectText = `${businessCount} ${pluralizeEntityType('sales record', businessCount)}`;
+
+  }
+
+  if (!sameEntity) {
+
+    const byEntity = new Map();
+
+    for (const row of rows) {
+
+      const key = humanizeEntityType(row.entityType);
+
+      byEntity.set(key, (byEntity.get(key) || 0) + 1);
+
+    }
+
+    if (byEntity.has('sale') || byEntity.has('sales') || byEntity.has('invoice') || byEntity.has('invoices')) {
+
+      const saleCount = Number(byEntity.get('sale') || 0) + Number(byEntity.get('sales') || 0);
+
+      const invCount = Number(byEntity.get('invoice') || 0) + Number(byEntity.get('invoices') || 0);
+
+      const collapsed = Math.max(saleCount, invCount);
+
+      byEntity.delete('sale');
+
+      byEntity.delete('sales');
+
+      byEntity.delete('invoice');
+
+      byEntity.delete('invoices');
+
+      if (collapsed > 0) byEntity.set('sales record', collapsed);
+
+    }
+
+    const parts = Array.from(byEntity.entries())
+
+      .sort((a, b) => b[1] - a[1])
+
+      .map(([entity, n]) => `${n} ${pluralizeEntityType(entity, n)}`);
+
+    if (parts.length > 0) subjectText = parts.join(' + ');
+
+  }
+
+  const stamp = formatActivityTimestamp(group && group.timestamp);
+
+  return `${subjectText} ${actionText} by ${actorText} — ${stamp}`;
 
 }
 
@@ -1715,6 +2337,228 @@ app.get('/api/dashboard', ensureAuthenticated, ensureRole('dashboard'), async (_
 
 
 
+app.get('/api/activity-log', ensureAuthenticated, ensureRole('dashboard'), async (req, res, next) => {
+
+  try {
+
+    const groupLimitRaw = Number(req.query.limit || 15);
+
+    const logLimitRaw = Number(req.query.logLimit || 250);
+
+    const groupLimit = Math.min(50, Math.max(1, Number.isFinite(groupLimitRaw) ? Math.floor(groupLimitRaw) : 15));
+
+    const logLimit = Math.min(1000, Math.max(groupLimit, Number.isFinite(logLimitRaw) ? Math.floor(logLimitRaw) : 250));
+
+    const rows = await ActivityLog.find({
+
+      userName: { $exists: true, $ne: '' },
+
+      userRole: { $exists: true, $ne: '' },
+
+    }).sort({ timestamp: -1, _id: -1 }).limit(logLimit).lean();
+
+    const grouped = new Map();
+
+    for (const row of rows) {
+
+      const key = String(row.batchId || row._id || '').trim() || String(row._id);
+
+      if (!grouped.has(key)) {
+
+        grouped.set(key, {
+
+          batchId: key,
+
+          rows: [],
+
+          timestamp: row.timestamp,
+
+          userName: row.userName,
+
+          userRole: row.userRole,
+
+        });
+
+      }
+
+      const group = grouped.get(key);
+
+      group.rows.push(row);
+
+      const rowMs = Date.parse(String(row.timestamp || ''));
+
+      const groupMs = Date.parse(String(group.timestamp || ''));
+
+      if (Number.isFinite(rowMs) && (!Number.isFinite(groupMs) || rowMs > groupMs)) {
+
+        group.timestamp = row.timestamp;
+
+      }
+
+    }
+
+    const items = Array.from(grouped.values())
+
+      .sort((a, b) => Date.parse(String(b.timestamp || '')) - Date.parse(String(a.timestamp || '')))
+
+      .slice(0, groupLimit)
+
+      .map((group) => {
+
+        const first = group.rows[0] || {};
+
+        return {
+
+          batchId: group.batchId,
+
+          count: group.rows.length,
+
+          action: first.action || null,
+
+          entityType: first.entityType || null,
+
+          userName: group.userName,
+
+          userRole: group.userRole,
+
+          timestamp: group.timestamp,
+
+          summary: summarizeActivityBatch(group),
+
+        };
+
+      });
+
+    res.json({ items });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+app.get('/api/staff-actions', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
+
+  try {
+
+    const groupLimitRaw = Number(req.query.limit || 200);
+
+    const logLimitRaw = Number(req.query.logLimit || 1200);
+
+    const groupLimit = Math.min(500, Math.max(1, Number.isFinite(groupLimitRaw) ? Math.floor(groupLimitRaw) : 200));
+
+    const logLimit = Math.min(5000, Math.max(groupLimit, Number.isFinite(logLimitRaw) ? Math.floor(logLimitRaw) : 1200));
+
+    const cutoffDate = new Date(Date.now() - (30 * 24 * 60 * 60 * 1000));
+
+    const rows = await StaffAction.find({
+
+      userRole: { $in: ['staff', 'supervisor'] },
+
+      action: { $in: ['add', 'edit', 'delete'] },
+
+      timestamp: { $gte: cutoffDate },
+
+    }).sort({ timestamp: -1, _id: -1 }).limit(logLimit).lean();
+
+    const grouped = new Map();
+
+    for (const row of rows) {
+
+      const key = String(row.batchId || row._id || '').trim() || String(row._id);
+
+      if (!grouped.has(key)) {
+
+        grouped.set(key, {
+
+          batchId: key,
+
+          rows: [],
+
+          timestamp: row.timestamp,
+
+          userName: row.userName,
+
+          userRole: row.userRole,
+
+        });
+
+      }
+
+      const group = grouped.get(key);
+
+      group.rows.push(row);
+
+      const rowMs = Date.parse(String(row.timestamp || ''));
+
+      const groupMs = Date.parse(String(group.timestamp || ''));
+
+      if (Number.isFinite(rowMs) && (!Number.isFinite(groupMs) || rowMs > groupMs)) {
+
+        group.timestamp = row.timestamp;
+
+      }
+
+    }
+
+    const items = Array.from(grouped.values())
+
+      .sort((a, b) => Date.parse(String(b.timestamp || '')) - Date.parse(String(a.timestamp || '')))
+
+      .slice(0, groupLimit)
+
+      .map((group) => {
+
+        const first = group.rows[0] || {};
+
+        const allChanges = group.rows.flatMap((row) => normalizeStaffChanges(row.changes));
+
+        return {
+
+          id: group.batchId,
+
+          batchId: group.batchId,
+
+          count: group.rows.length,
+
+          action: first.action || null,
+
+          module: first.module || 'General',
+
+          entityType: first.entityType || null,
+
+          recordId: first.recordId || null,
+
+          userName: group.userName,
+
+          userRole: group.userRole,
+
+          timestamp: group.timestamp,
+
+          summary: summarizeStaffActionGroup(group),
+
+          details: summarizeStaffChanges(allChanges),
+
+          changes: allChanges,
+
+        };
+
+      });
+
+    res.json({ items });
+
+  } catch (error) {
+
+    next(error);
+
+  }
+
+});
+
+
+
 app.get('/api/reports', ensureAuthenticated, ensureRole('reports'), async (_req, res, next) => {
 
   try { res.json(await getReportData()); } catch (e) { next(e); }
@@ -1746,8 +2590,6 @@ app.get('/api/reports/sales-summary', ensureAuthenticated, ensureRole('reports')
       query = { key: new RegExp('^ww_sales_' + year + '-\\d{2}$') };
 
     }
-
-
 
     const docs = await AppData.find(query).lean();
 
@@ -2098,7 +2940,6 @@ function normalizeSalesMonthPayload(key, payload) {
 }
 
 
-
 app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
 
   try {
@@ -2121,10 +2962,6 @@ app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
 
         map[d.key] = normalized;
 
-        // BUG FIX: also check deletedInvoiceIds — count-only check missed cases where
-
-        // a deletion was recorded but the array length stayed the same, causing resurrection.
-
         const origCount = Array.isArray(d.data && d.data.invoices) ? d.data.invoices.length : -1;
 
         const normCount = Array.isArray(normalized && normalized.invoices) ? normalized.invoices.length : -1;
@@ -2142,12 +2979,19 @@ app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
       } else {
 
         if (d.key === 'ww_privileged_action_audit_v1') {
+
           const pruned = prunePrivilegedActionAuditEntries(Array.isArray(d.data) ? d.data : []);
+
           map[d.key] = pruned;
+
           if (pruned.length !== (Array.isArray(d.data) ? d.data.length : 0)) {
+
             savePromises.push(AppData.updateOne({ key: d.key }, { key: d.key, data: pruned }, { upsert: true }));
+
           }
+
           continue;
+
         }
 
         map[d.key] = d.data;
@@ -2179,18 +3023,22 @@ app.get('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
     if (!doc) return res.json({ key, data: null });
 
     if (key === 'ww_privileged_action_audit_v1') {
+
       const pruned = prunePrivilegedActionAuditEntries(Array.isArray(doc.data) ? doc.data : []);
+
       if (pruned.length !== (Array.isArray(doc.data) ? doc.data.length : 0)) {
+
         await AppData.updateOne({ key }, { key, data: pruned }, { upsert: true });
+
       }
+
       return res.json({ key, data: pruned });
+
     }
 
     if (/^ww_sales_\d{4}-\d{2}$/.test(key)) {
 
       const normalized = normalizeSalesMonthPayload(key, doc.data);
-
-      // BUG FIX: also check deletedInvoiceIds, not just count
 
       const origCount = Array.isArray(doc.data && doc.data.invoices) ? doc.data.invoices.length : -1;
 
@@ -2215,7 +3063,6 @@ app.get('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
   } catch (error) { next(error); }
 
 });
-
 
 
 app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
@@ -2715,6 +3562,8 @@ app.post('/api/tax-records', ensureAuthenticated, ensureRole('accounting'), asyn
 
     const inserted = saved.find((row) => row.taxId === record.taxId) || record;
 
+    await logActivity({ req, action: 'create', entityType: 'taxRecords', entityId: inserted.taxId });
+
     res.status(201).json({ ok: true, record: inserted });
 
   } catch (error) {
@@ -2767,6 +3616,16 @@ app.patch('/api/tax-records/:taxId', ensureAuthenticated, ensureRole('accounting
 
     const updated = saved.find((row) => row.taxId === taxId) || nextRecord;
 
+    const changes = collectChangedFields([
+      { field: 'type', oldValue: current.type, newValue: nextRecord.type },
+      { field: 'period', oldValue: current.period, newValue: nextRecord.period },
+      { field: 'amount', oldValue: current.amount, newValue: nextRecord.amount },
+      { field: 'dueDate', oldValue: current.dueDate, newValue: nextRecord.dueDate },
+      { field: 'paidDate', oldValue: current.paidDate, newValue: nextRecord.paidDate },
+      { field: 'status', oldValue: current.status, newValue: nextRecord.status },
+    ]);
+    await logActivity({ req, action: 'update', entityType: 'taxRecords', entityId: taxId, changes });
+
     res.json({ ok: true, record: updated });
 
   } catch (error) {
@@ -2801,6 +3660,8 @@ app.delete('/api/tax-records/:taxId', ensureAuthenticated, ensureRole('accountin
     const source = extractRealtimeSource(req);
 
     await writeTaxRecords(nextRecords, source);
+
+    await logActivity({ req, action: 'delete', entityType: 'taxRecords', entityId: taxId });
 
     res.json({ ok: true });
 
@@ -2887,6 +3748,8 @@ app.post('/api/users', ensureAuthenticated, ensureRole('users'), async (req, res
       });
     }
 
+    await logActivity({ req, action: 'create', entityType: 'users', entityId: user._id });
+
     res.status(201).json({ id: user._id });
 
   } catch (error) {
@@ -2917,6 +3780,8 @@ app.post('/api/customers', ensureAuthenticated, ensureRole('customers'), async (
 
     });
 
+    await logActivity({ req, action: 'create', entityType: 'customers', entityId: doc._id });
+
     res.status(201).json({ id: doc._id });
 
   } catch (error) { next(error); }
@@ -2940,6 +3805,8 @@ app.post('/api/vendors', ensureAuthenticated, ensureRole('vendors'), async (req,
       address: req.body.address || '', status: req.body.status || 'Active',
 
     });
+
+    await logActivity({ req, action: 'create', entityType: 'vendors', entityId: doc._id });
 
     res.status(201).json({ id: doc._id });
 
@@ -2971,6 +3838,8 @@ app.post('/api/inventory', ensureAuthenticated, ensureRole('inventory'), async (
 
     });
 
+    await logActivity({ req, action: 'create', entityType: 'inventory', entityId: doc._id });
+
     res.status(201).json({ id: doc._id });
 
   } catch (error) { next(error); }
@@ -2996,6 +3865,8 @@ app.post('/api/machines', ensureAuthenticated, ensureRole('machines'), async (re
       operator: req.body.operator || '',
 
     });
+
+    await logActivity({ req, action: 'create', entityType: 'machines', entityId: doc._id });
 
     res.status(201).json({ id: doc._id });
 
@@ -3028,6 +3899,8 @@ app.post('/api/production', ensureAuthenticated, ensureRole('production'), async
     });
 
     if (req.body.status === 'Completed') await adjustInventoryQuantity(req.body.product, quantity);
+
+    await logActivity({ req, action: 'create', entityType: 'production', entityId: doc._id });
 
     res.status(201).json({ id: doc._id, batchCode });
 
@@ -3095,6 +3968,10 @@ app.post('/api/sales', ensureAuthenticated, ensureRole('sales'), async (req, res
 
     });
 
+    const activityBatchId = getActivityBatchId(req);
+
+    await logActivity({ req, action: 'create', entityType: 'sales', entityId: so._id, batchId: activityBatchId });
+
 
 
     let invoiceCode = null;
@@ -3122,6 +3999,8 @@ app.post('/api/sales', ensureAuthenticated, ensureRole('sales'), async (req, res
         client_txn_id: clientTxnId || undefined,
 
       });
+
+      await logActivity({ req, action: 'create', entityType: 'invoices', entityId: inv._id, batchId: activityBatchId });
 
       await SalesOrder.updateOne({ _id: so._id }, { invoice_id: inv._id });
 
@@ -3218,6 +4097,8 @@ app.post('/api/invoices', ensureAuthenticated, ensureRole('invoices'), async (re
 
     });
 
+    await logActivity({ req, action: 'create', entityType: 'invoices', entityId: doc._id });
+
     await refreshCustomerStats();
 
     const responsePayload = { id: doc._id, invoiceCode };
@@ -3267,6 +4148,8 @@ app.post('/api/purchaseOrders', ensureAuthenticated, ensureRole('purchaseOrders'
 
     });
 
+    await logActivity({ req, action: 'create', entityType: 'purchaseOrders', entityId: doc._id });
+
     if (req.body.status === 'Received') await adjustInventoryQuantity(req.body.item, Number(req.body.quantity));
 
     await createAccountingEntry('Expense', 'Supplier Payment', Number(req.body.amount), `Purchase order ${poCode}`, req.body.requiredBy || new Date().toISOString().slice(0, 10));
@@ -3285,7 +4168,21 @@ app.post('/api/accounting', ensureAuthenticated, ensureRole('accounting'), async
 
     requireFields(req.body, ['type', 'category', 'amount', 'entryDate', 'description']);
 
-    await createAccountingEntry(req.body.type, req.body.category, Number(req.body.amount), req.body.description, req.body.entryDate);
+    const entry = await AccountingEntry.create({
+
+      type: req.body.type,
+
+      category: req.body.category,
+
+      amount: Number(req.body.amount),
+
+      entry_date: req.body.entryDate,
+
+      description: req.body.description,
+
+    });
+
+    await logActivity({ req, action: 'create', entityType: 'accounting', entityId: entry._id });
 
     res.status(201).json({ ok: true });
 
@@ -3359,6 +4256,16 @@ app.put('/api/users/:id', ensureAuthenticated, ensureRole('users'), async (req, 
       });
     }
 
+    const changes = collectChangedFields([
+      { field: 'name', oldValue: existingUser.name, newValue: update.name !== undefined ? update.name : existingUser.name },
+      { field: 'email', oldValue: existingUser.email, newValue: update.email !== undefined ? update.email : existingUser.email },
+      { field: 'role', oldValue: existingUser.role, newValue: update.role !== undefined ? update.role : existingUser.role },
+      { field: 'status', oldValue: existingUser.status, newValue: update.status !== undefined ? update.status : existingUser.status },
+      { field: 'canEditDelete', oldValue: resolveCanEditDelete(existingUser), newValue: nextCanEditDeleteForAudit },
+      { field: 'password', oldValue: req.body.password ? '[set]' : undefined, newValue: req.body.password ? '[updated]' : undefined },
+    ]);
+    await logActivity({ req, action: 'update', entityType: 'users', entityId: req.params.id, changes });
+
     res.json({ ok: true });
 
   } catch (error) {
@@ -3412,7 +4319,15 @@ app.put('/api/invoices/:id/status', ensureAuthenticated, ensureRole('invoices'),
       throw createError(403, 'Invoice status changes require CEO or Manager approval');
     }
 
+    const current = await Invoice.findById(req.params.id).lean();
+    if (!current) throw createError(404, 'Invoice not found');
+
     await Invoice.updateOne({ _id: req.params.id }, { status: req.body.status });
+
+    const changes = collectChangedFields([
+      { field: 'status', oldValue: current.status, newValue: req.body.status },
+    ]);
+    await logActivity({ req, action: 'update', entityType: 'invoices', entityId: req.params.id, changes });
 
     await refreshCustomerStats();
 
@@ -3430,7 +4345,15 @@ app.put('/api/machines/:id/status', ensureAuthenticated, ensureRole('machines'),
 
     requireFields(req.body, ['status']);
 
+    const current = await Machine.findById(req.params.id).lean();
+    if (!current) throw createError(404, 'Machine not found');
+
     await Machine.updateOne({ _id: req.params.id }, { status: req.body.status });
+
+    const changes = collectChangedFields([
+      { field: 'status', oldValue: current.status, newValue: req.body.status },
+    ]);
+    await logActivity({ req, action: 'update', entityType: 'machines', entityId: req.params.id, changes });
 
     res.json({ ok: true });
 
@@ -3484,7 +4407,19 @@ app.put('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, next
 
     if (req.body.nextMaintenance !== undefined) update.nextMaintenance = req.body.nextMaintenance;
 
+    const current = await FactoryEquipment.findById(req.params.id).lean();
+    if (!current) throw createError(404, 'Equipment not found');
+
     await FactoryEquipment.updateOne({ _id: req.params.id }, update);
+
+    const changes = collectChangedFields([
+      { field: 'status', oldValue: current.status, newValue: update.status !== undefined ? update.status : current.status },
+      { field: 'equipment', oldValue: current.equipment, newValue: update.equipment !== undefined ? update.equipment : current.equipment },
+      { field: 'details', oldValue: current.details, newValue: update.details !== undefined ? update.details : current.details },
+      { field: 'lastMaintenance', oldValue: current.lastMaintenance, newValue: update.lastMaintenance !== undefined ? update.lastMaintenance : current.lastMaintenance },
+      { field: 'nextMaintenance', oldValue: current.nextMaintenance, newValue: update.nextMaintenance !== undefined ? update.nextMaintenance : current.nextMaintenance },
+    ]);
+    await logActivity({ req, action: 'update', entityType: 'equipment', entityId: req.params.id, changes });
 
     const source = extractRealtimeSource(req);
 
@@ -3516,6 +4451,8 @@ app.post('/api/factory-equipment', ensureAuthenticated, async (req, res, next) =
 
     });
 
+    await logActivity({ req, action: 'create', entityType: 'equipment', entityId: doc._id });
+
     const source = extractRealtimeSource(req);
 
     if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key: 'ww_equipment', source });
@@ -3539,6 +4476,8 @@ app.delete('/api/factory-equipment/:id', ensureAuthenticated, async (req, res, n
     await moveToTrash('factory-equipment', record, `${req.user.name} (${req.user.role})`);
 
     await FactoryEquipment.deleteOne({ _id: req.params.id });
+
+    await logActivity({ req, action: 'delete', entityType: 'equipment', entityId: req.params.id });
 
     const source = extractRealtimeSource(req);
 
@@ -4219,6 +5158,8 @@ app.delete('/api/:resource/:id', ensureAuthenticated, async (req, res, next) => 
     await moveToTrash(labelMap[resource], record, `${req.user.name} (${req.user.role})`);
 
     await Model.deleteOne({ _id: req.params.id });
+
+    await logActivity({ req, action: 'delete', entityType: labelMap[resource], entityId: req.params.id });
 
     if (resource === 'sales' || resource === 'invoices') await refreshCustomerStats();
 
@@ -5487,6 +6428,8 @@ app.post('/api/record-vault/:section/folders', ensureAuthenticated, ensureRole('
 
     await writeRecordVaultData(allData, source);
 
+    await logActivity({ req, action: 'create', entityType: 'recordVaultFolder', entityId: folder.folderId });
+
     res.status(201).json({ ok: true, folder });
 
   } catch (error) {
@@ -5526,6 +6469,8 @@ app.patch('/api/record-vault/:section/folders/:folderId', ensureAuthenticated, e
     const source = extractRealtimeSource(req);
 
     await writeRecordVaultData(allData, source);
+
+    await logActivity({ req, action: 'update', entityType: 'recordVaultFolder', entityId: folderId });
 
     res.json({ ok: true, folder: allData.folders[index] });
 
@@ -5570,6 +6515,8 @@ app.delete('/api/record-vault/:section/folders/:folderId', ensureAuthenticated, 
     const source = extractRealtimeSource(req);
 
     await writeRecordVaultData(allData, source);
+
+    await logActivity({ req, action: 'delete', entityType: 'recordVaultFolder', entityId: folderId });
 
     res.json({ ok: true });
 
@@ -5690,6 +6637,8 @@ app.post('/api/record-vault/:section/upload', ensureAuthenticated, ensureRole('v
 
     await writeRecordVaultData(allData, source);
 
+    await logActivity({ req, action: 'create', entityType: 'recordVaultFile', entityId: record.fileId });
+
     res.status(201).json({ ok: true, file: record });
 
   } catch (error) {
@@ -5777,6 +6726,8 @@ app.delete('/api/record-vault/:section/:fileId', ensureAuthenticated, ensureRole
 
     await writeRecordVaultData(allData, source);
 
+    await logActivity({ req, action: 'delete', entityType: 'recordVaultFile', entityId: fileId });
+
     res.json({ ok: true });
 
   } catch (error) {
@@ -5806,6 +6757,8 @@ const handleStoreAdminOrderStatus = async (req, res, next) => {
     if (!validStatuses.includes(req.body.status)) throw createError(400, 'Invalid status');
 
     await StoreOrder.updateOne({ _id: req.params.id }, { status: req.body.status });
+
+    await logActivity({ req, action: 'update', entityType: 'storeOrder', entityId: req.params.id });
 
     res.json({ ok: true });
 
@@ -5876,6 +6829,14 @@ app.delete('/api/admin/purge-sales-and-invoices', attachUser, ensureAuthenticate
     // 2. Delete all store orders (they auto-create sales+invoices)
 
     await StoreOrder.deleteMany({});
+
+    const purgeBatchId = getActivityBatchId(req);
+
+    await logActivity({ req, action: 'delete', entityType: 'sales', entityId: 'bulk-purge', batchId: purgeBatchId });
+
+    await logActivity({ req, action: 'delete', entityType: 'invoices', entityId: 'bulk-purge', batchId: purgeBatchId });
+
+    await logActivity({ req, action: 'delete', entityType: 'storeOrder', entityId: 'bulk-purge', batchId: purgeBatchId });
 
 
 
