@@ -2357,9 +2357,36 @@ app.get('/api/activity-log', ensureAuthenticated, ensureRole('dashboard'), async
 
     }).sort({ timestamp: -1, _id: -1 }).limit(logLimit).lean();
 
-    const grouped = new Map();
+    const dedupedRows = [];
+    const seen = new Map();
 
     for (const row of rows) {
+
+      const key = `${String(row.entityType || '').trim()}::${String(row.entityId || '').trim()}::${String(row.action || '').trim()}`;
+
+      const existing = seen.get(key);
+
+      const rowMs = Date.parse(String(row.timestamp || ''));
+
+      const existingMs = existing ? Date.parse(String(existing.timestamp || '')) : NaN;
+
+      if (!existing || (Number.isFinite(rowMs) && (!Number.isFinite(existingMs) || rowMs > existingMs))) {
+
+        seen.set(key, row);
+
+      }
+
+    }
+
+    for (const row of seen.values()) {
+
+      dedupedRows.push(row);
+
+    }
+
+    const grouped = new Map();
+
+    for (const row of dedupedRows.sort((a, b) => Date.parse(String(b.timestamp || '')) - Date.parse(String(a.timestamp || '')))) {
 
       const key = String(row.batchId || row._id || '').trim() || String(row._id);
 
@@ -2401,7 +2428,7 @@ app.get('/api/activity-log', ensureAuthenticated, ensureRole('dashboard'), async
 
       .sort((a, b) => Date.parse(String(b.timestamp || '')) - Date.parse(String(a.timestamp || '')))
 
-      .slice(0, groupLimit)
+      .slice(0, 1)
 
       .map((group) => {
 

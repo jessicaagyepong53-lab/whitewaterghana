@@ -1193,6 +1193,37 @@ function formatStampWithRelative(isoStamp) {
 	return `${rel} (${exact})`;
 }
 
+function getRecentBusinessActivityRows(rows) {
+	const filtered = (Array.isArray(rows) ? rows : [])
+		.filter((row) => row && typeof row === 'object')
+		.filter((row) => {
+			const action = String(row?.action || '').trim().toLowerCase();
+			const details = String(row?.details || '').trim();
+			// Ignore legacy synthetic entries created from sync total snapshots.
+			return !(action === 'edited' && /^Total\s+/i.test(details));
+		})
+		.map((row) => {
+			const ts = Date.parse(String(row.timestamp || ''));
+			if (!Number.isFinite(ts)) return null;
+			return { ...row, __ts: ts };
+		})
+		.filter(Boolean);
+	if (!filtered.length) return [];
+	const deduped = [];
+	const seen = new Map();
+	for (const row of filtered) {
+		const key = `${String(row.entityType || '').trim()}::${String(row.entityId || '').trim()}::${String(row.action || '').trim()}`;
+		const existing = seen.get(key);
+		if (!existing || row.__ts > existing.__ts) {
+			seen.set(key, row);
+		}
+	}
+	for (const row of seen.values()) {
+		deduped.push({ ...row, __ts: row.__ts });
+	}
+	return deduped.sort((a, b) => b.__ts - a.__ts).slice(0, 1).map(({ __ts, ...rest }) => rest);
+}
+
 function getLatestBusinessActivity() {
 	const rows = [];
 	try {
@@ -1205,26 +1236,7 @@ function getLatestBusinessActivity() {
 		const addRows = addRaw ? JSON.parse(addRaw) : [];
 		if (Array.isArray(addRows)) rows.push(...addRows);
 	} catch (_e) { /* ignore */ }
-	if (!rows.length) {
-		const stamp = getLastDataUpdateStamp();
-		if (stamp) {
-			return {
-				timestamp: stamp,
-				message: 'System data updated',
-			};
-		}
-		return null;
-	}
-	const sorted = rows
-		.filter((row) => row && typeof row === 'object')
-		.filter((row) => {
-			const action = String(row?.action || '').trim().toLowerCase();
-			const details = String(row?.details || '').trim();
-			// Ignore legacy synthetic entries created from sync total snapshots.
-			return !(action === 'edited' && /^Total\s+/i.test(details));
-		})
-		.filter((row) => Number.isFinite(Date.parse(String(row.timestamp || ''))))
-		.sort((a, b) => Date.parse(String(b.timestamp || '')) - Date.parse(String(a.timestamp || '')));
+	const sorted = getRecentBusinessActivityRows(rows);
 	if (!sorted.length) return null;
 	const latest = sorted[0];
 	const isSalesAdd = String(latest.type || '').trim() === 'invoice_add';
