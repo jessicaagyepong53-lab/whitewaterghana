@@ -1237,7 +1237,7 @@ function summarizeActivityBatch(group) {
 
   const stamp = formatActivityTimestamp(group && group.timestamp);
 
-  return `${subjectText} ${actionText} by ${actorText} — ${stamp}`;
+  return `${subjectText} ${actionText} by ${actorText} at ${stamp}`;
 
 }
 
@@ -2362,7 +2362,8 @@ app.get('/api/activity-log', ensureAuthenticated, ensureRole('dashboard'), async
 
     for (const row of rows) {
 
-      const key = `${String(row.entityType || '').trim()}::${String(row.entityId || '').trim()}::${String(row.action || '').trim()}`;
+      const userKey = `${String(row.userName || '').trim()}|${String(row.userRole || '').trim()}`;
+      const key = `${String(row.entityType || '').trim()}::${String(row.entityId || '').trim()}::${String(row.action || '').trim()}::${userKey}`;
 
       const existing = seen.get(key);
 
@@ -2388,13 +2389,15 @@ app.get('/api/activity-log', ensureAuthenticated, ensureRole('dashboard'), async
 
     for (const row of dedupedRows.sort((a, b) => Date.parse(String(b.timestamp || '')) - Date.parse(String(a.timestamp || '')))) {
 
-      const key = String(row.batchId || row._id || '').trim() || String(row._id);
+      const batchKey = String(row.batchId || row._id || '').trim() || String(row._id);
+      const actorKey = `${String(row.userName || '').trim()}|${String(row.userRole || '').trim()}`;
+      const groupKey = `${batchKey}::${actorKey}`;
 
-      if (!grouped.has(key)) {
+      if (!grouped.has(groupKey)) {
 
-        grouped.set(key, {
+        grouped.set(groupKey, {
 
-          batchId: key,
+          batchId: batchKey,
 
           rows: [],
 
@@ -2408,7 +2411,7 @@ app.get('/api/activity-log', ensureAuthenticated, ensureRole('dashboard'), async
 
       }
 
-      const group = grouped.get(key);
+      const group = grouped.get(groupKey);
 
       group.rows.push(row);
 

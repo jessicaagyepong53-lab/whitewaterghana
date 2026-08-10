@@ -3926,10 +3926,9 @@ async function initDashboardPage() {
 		if (!feed) return;
 		const rows = Array.isArray(items) ? items.filter((row) => row && typeof row === 'object') : [];
 		if (rows.length > 0) {
-			feed.innerHTML = rows.slice(0, 12).map((row) => {
-				const text = String(row.summary || '').trim();
-				return `<li class="dash-activity-item">${escapeHtml(text || 'Activity recorded')}</li>`;
-			}).join('');
+			const latest = rows[0];
+			const text = String(latest && latest.summary ? latest.summary : '').trim();
+			feed.innerHTML = `<li class="dash-activity-item">${escapeHtml(text || 'Activity recorded')}</li>`;
 			return;
 		}
 		const latest = getLatestBusinessActivity();
