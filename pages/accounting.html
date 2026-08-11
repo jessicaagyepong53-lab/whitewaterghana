@@ -405,6 +405,11 @@
       <button class="tab-btn" data-tab="taxes" onclick="switchTab('acc','taxes')">Taxes</button>
       <button class="tab-btn" data-tab="currency" onclick="switchTab('acc','currency')">Multi-Currency</button>
     </div>
+    <div class="month-selector-bar" id="acc-entry-month-bar" style="margin:0 0 14px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <label for="acc-entry-month-select" style="font-weight:600;">Working month:</label>
+      <select id="acc-entry-month-select" class="form-control" style="max-width:220px;"></select>
+      <span style="color:#64748b;font-size:0.85rem;">Use this month for new ledger, cashbook, and asset entries.</span>
+    </div>
     <div id="acc-tab-ledger" class="tab-panel tab-active">
       <div class="info-box" style="margin-bottom:14px;">
         <p><strong>General Ledger</strong> records every financial transaction using double-entry bookkeeping. Each entry has a <em>debit</em> and/or <em>credit</em> side.</p>

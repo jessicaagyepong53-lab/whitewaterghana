@@ -9096,6 +9096,7 @@ function initAccountingPage() {
 	let currentSalaryMonth = null;
 	let currentSalaryEmployee = '__all_workers__';
 	let currentExpensePeriod = null;
+	let currentLedgerMonth = null;
 	const ACCOUNTING_EXPENSE_PERIOD_MIN_MONTH = '2026-03';
 	let taxRecords = [];
 	let taxEditingId = null;
@@ -9697,7 +9698,8 @@ function initAccountingPage() {
 		return '';
 	};
 	const validateAccountingEntryMonth = (fieldId, isoDate, fieldLabel, options = {}) => {
-		return validateIsoDateForLockedMonth(isoDate, resolveAccountingLockedMonth(), {
+		const lockedMonth = options.lockedMonth || resolveAccountingLockedMonth();
+		return validateIsoDateForLockedMonth(isoDate, lockedMonth, {
 			fieldId,
 			fieldLabel,
 			inputId: `acc-field-${fieldId}`,
@@ -9739,7 +9741,7 @@ function initAccountingPage() {
 				const account = getValue('account');
 				if (!desc || !account) return;
 				const ledgerDate = getValue('date') || todayStr;
-				if (!validateAccountingEntryMonth('date', ledgerDate, 'Ledger date')) return;
+				if (!validateAccountingEntryMonth('date', ledgerDate, 'Ledger date', { lockedMonth: currentLedgerMonth || resolveAccountingLockedMonth() })) return;
 				const data = {
 					date: ledgerDate,
 					desc,
@@ -9759,7 +9761,7 @@ function initAccountingPage() {
 				const desc = getValue('desc');
 				if (!desc) return;
 				const cashbookDate = getValue('date') || todayStr;
-				if (!validateAccountingEntryMonth('date', cashbookDate, 'Cashbook date')) return;
+				if (!validateAccountingEntryMonth('date', cashbookDate, 'Cashbook date', { lockedMonth: currentLedgerMonth || resolveAccountingLockedMonth() })) return;
 				const data = {
 					date: cashbookDate,
 					desc,
@@ -9844,7 +9846,7 @@ function initAccountingPage() {
 				const name = getValue('name');
 				if (!name) return;
 				const assetDate = getValue('date') || todayStr;
-				if (!validateAccountingEntryMonth('date', assetDate, 'Asset date')) return;
+				if (!validateAccountingEntryMonth('date', assetDate, 'Asset date', { lockedMonth: currentLedgerMonth || resolveAccountingLockedMonth() })) return;
 				const data = {
 					date: assetDate,
 					name,
@@ -10005,6 +10007,15 @@ function initAccountingPage() {
 			return { category: c, accounts: grouped[c], total };
 		});
 
+		const ledgerEntryMonths = [...new Set([
+			...ledger.map((entry) => String(entry.date || '').slice(0, 7)).filter((month) => /^\d{4}-\d{2}$/.test(month)),
+			...cashbook.map((entry) => String(entry.date || '').slice(0, 7)).filter((month) => /^\d{4}-\d{2}$/.test(month)),
+			...accountingData.assets.map((entry) => String(entry.date || '').slice(0, 7)).filter((month) => /^\d{4}-\d{2}$/.test(month)),
+		])].sort();
+		const todayMonth = getTodayDateStr().slice(0, 7);
+		if (!currentLedgerMonth || !ledgerEntryMonths.includes(currentLedgerMonth)) {
+			currentLedgerMonth = ledgerEntryMonths[ledgerEntryMonths.length - 1] || todayMonth;
+		}
 		const expensePeriods = [...new Set(
 			ledger
 				.filter((entry) => String(entry.type || '').toLowerCase() === 'expense' && /^\d{4}-\d{2}-\d{2}$/.test(String(entry.date || '')))
@@ -10244,6 +10255,19 @@ function initAccountingPage() {
 				}).join('');
 		}
 
+		const entryMonthSelect = document.getElementById('acc-entry-month-select');
+		if (entryMonthSelect) {
+			const monthOptions = [...new Set([...ledgerEntryMonths, todayMonth, currentLedgerMonth].filter(Boolean))].sort();
+			entryMonthSelect.innerHTML = monthOptions.map((month) => `<option value="${month}">${monthLabel(month)}</option>`).join('');
+			entryMonthSelect.value = currentLedgerMonth || todayMonth;
+			if (!entryMonthSelect.dataset.bound) {
+				entryMonthSelect.dataset.bound = '1';
+				entryMonthSelect.addEventListener('change', () => {
+					currentLedgerMonth = entryMonthSelect.value || todayMonth;
+					renderAccountingPage();
+				});
+			}
+		}
 		const expensePeriodSelect = document.getElementById('acc-expense-period-select');
 		const expenseChartHost = document.getElementById('acc-expense-distribution-chart');
 		const expenseCategoryList = document.getElementById('acc-expense-category-list');
