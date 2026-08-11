@@ -9098,6 +9098,22 @@ function initAccountingPage() {
 	let currentExpensePeriod = null;
 	let currentLedgerMonth = null;
 	const ACCOUNTING_EXPENSE_PERIOD_MIN_MONTH = '2026-03';
+	const getLedgerMonthFromValue = (value) => {
+		const raw = String(value || '').trim();
+		if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+		if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw.slice(0, 7);
+		return null;
+	};
+	const syncCurrentLedgerMonthFromValue = (value) => {
+		const month = getLedgerMonthFromValue(value);
+		if (!month) return false;
+		currentLedgerMonth = month;
+		const entryMonthSelect = document.getElementById('acc-entry-month-select');
+		if (entryMonthSelect && entryMonthSelect.value !== month) {
+			entryMonthSelect.value = month;
+		}
+		return true;
+	};
 	let taxRecords = [];
 	let taxEditingId = null;
 	const EXPENSE_BREAKDOWN_ORDER = ['Salaries', 'Raw Materials', 'Electricity', 'Water Supply', 'Maintenance', 'Supplies', 'Other'];
@@ -9472,6 +9488,10 @@ function initAccountingPage() {
 			ctrl.addEventListener('blur', () => {
 				validateModalRequiredFields({ focusFirst: false, showSummary: false });
 			});
+			if (ctrl.id === 'acc-field-date' && ['ledger', 'cashbook', 'asset-item'].includes(currentEntity)) {
+				ctrl.addEventListener('input', () => syncCurrentLedgerMonthFromValue(ctrl.value));
+				ctrl.addEventListener('change', () => syncCurrentLedgerMonthFromValue(ctrl.value));
+			}
 		});
 	};
 
@@ -9668,6 +9688,10 @@ function initAccountingPage() {
 		addModal.style.display = 'flex';
 		const firstInput = modalFieldsEl && modalFieldsEl.querySelector('input, select');
 		if (resumeDraft) restoreModalDraft(entity);
+		if (['ledger', 'cashbook', 'asset-item'].includes(entity)) {
+			const dateInput = document.getElementById('acc-field-date');
+			if (dateInput) syncCurrentLedgerMonthFromValue(dateInput.value || todayStr);
+		}
 		if (firstInput) firstInput.focus();
 		bindModalLiveHandlers();
 		validateModalRequiredFields({ focusFirst: false, showSummary: false });
@@ -9689,6 +9713,9 @@ function initAccountingPage() {
 		if (summary) summary.textContent = message;
 	};
 	const resolveAccountingLockedMonth = () => {
+		if (/^\d{4}-\d{2}$/.test(String(currentLedgerMonth || ''))) {
+			return String(currentLedgerMonth);
+		}
 		if (/^\d{4}-\d{2}$/.test(String(currentExpensePeriod || '')) && currentExpensePeriod !== '__all__') {
 			return String(currentExpensePeriod);
 		}
@@ -10023,7 +10050,7 @@ function initAccountingPage() {
 			return [...new Set([...options, ...ledgerEntryMonths, todayMonth, currentLedgerMonth].filter(Boolean))].sort();
 		})();
 		if (!currentLedgerMonth || !/^\d{4}-\d{2}$/.test(currentLedgerMonth)) {
-			currentLedgerMonth = monthOptions[monthOptions.length - 1] || todayMonth;
+			currentLedgerMonth = todayMonth;
 		}
 		const expensePeriods = [...new Set(
 			ledger
