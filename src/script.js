@@ -9696,7 +9696,7 @@ function initAccountingPage() {
 		}
 		return '';
 	};
-	const validateAccountingEntryMonth = (fieldId, isoDate, fieldLabel) => {
+	const validateAccountingEntryMonth = (fieldId, isoDate, fieldLabel, options = {}) => {
 		return validateIsoDateForLockedMonth(isoDate, resolveAccountingLockedMonth(), {
 			fieldId,
 			fieldLabel,
@@ -9704,6 +9704,7 @@ function initAccountingPage() {
 			setFieldError: setFieldValidationError,
 			setSummary: setAccountingModalSummary,
 			notify: false,
+			...options,
 		});
 	};
 	const validateAccountingMonthField = (fieldId, monthValue, fieldLabel) => {
