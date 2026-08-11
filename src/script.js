@@ -10013,8 +10013,17 @@ function initAccountingPage() {
 			...accountingData.assets.map((entry) => String(entry.date || '').slice(0, 7)).filter((month) => /^\d{4}-\d{2}$/.test(month)),
 		])].sort();
 		const todayMonth = getTodayDateStr().slice(0, 7);
-		if (!currentLedgerMonth || !ledgerEntryMonths.includes(currentLedgerMonth)) {
-			currentLedgerMonth = ledgerEntryMonths[ledgerEntryMonths.length - 1] || todayMonth;
+		const monthOptions = (() => {
+			const [anchorYear, anchorMonth] = String(todayMonth || '2026-01').split('-').map(Number);
+			const options = [];
+			for (let offset = -12; offset <= 12; offset += 1) {
+				const date = new Date(anchorYear, anchorMonth - 1 + offset, 1);
+				options.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+			}
+			return [...new Set([...options, ...ledgerEntryMonths, todayMonth, currentLedgerMonth].filter(Boolean))].sort();
+		})();
+		if (!currentLedgerMonth || !/^\d{4}-\d{2}$/.test(currentLedgerMonth)) {
+			currentLedgerMonth = monthOptions[monthOptions.length - 1] || todayMonth;
 		}
 		const expensePeriods = [...new Set(
 			ledger
@@ -10257,7 +10266,6 @@ function initAccountingPage() {
 
 		const entryMonthSelect = document.getElementById('acc-entry-month-select');
 		if (entryMonthSelect) {
-			const monthOptions = [...new Set([...ledgerEntryMonths, todayMonth, currentLedgerMonth].filter(Boolean))].sort();
 			entryMonthSelect.innerHTML = monthOptions.map((month) => `<option value="${month}">${monthLabel(month)}</option>`).join('');
 			entryMonthSelect.value = currentLedgerMonth || todayMonth;
 			if (!entryMonthSelect.dataset.bound) {
