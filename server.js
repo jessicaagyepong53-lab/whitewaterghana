@@ -2431,7 +2431,7 @@ app.get('/api/activity-log', ensureAuthenticated, ensureRole('dashboard'), async
 
       .sort((a, b) => Date.parse(String(b.timestamp || '')) - Date.parse(String(a.timestamp || '')))
 
-      .slice(0, 1)
+      .slice(0, groupLimit)
 
       .map((group) => {
 

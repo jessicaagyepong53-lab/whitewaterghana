@@ -400,6 +400,21 @@ function getBusinessModuleLabel(moduleName) {
 	return map[key] || (key ? `${key.charAt(0).toUpperCase()}${key.slice(1)}` : 'General');
 }
 
+function appendAccountingBusinessActivity(action, entityLabel, summary, details) {
+	const normalizedAction = String(action || '').trim().toLowerCase();
+	if (!['added', 'updated', 'deleted'].includes(normalizedAction)) return;
+	const entity = String(entityLabel || 'Accounting entry').trim() || 'Accounting entry';
+	const effectiveSummary = String(summary || '').trim() || `${entity} ${normalizedAction === 'updated' ? 'updated' : normalizedAction === 'deleted' ? 'deleted' : 'added'}`;
+	appendPrivilegedActionAudit({
+		action: normalizedAction,
+		module: 'accounting',
+		entity,
+		summary: effectiveSummary,
+		details: String(details || '').trim() || 'Accounting data changed',
+		page: String(document.body?.getAttribute('data-page') || '').trim(),
+	});
+}
+
 function toTitleCaseText(value) {
 	const text = String(value || '').trim();
 	if (!text) return '';
@@ -1261,6 +1276,73 @@ function getLatestBusinessActivity() {
 		timestamp: String(latest.timestamp || ''),
 		message: `${target} ${toTitleCaseText(normalizedAction)} by ${actorWithRole}`,
 	};
+}
+
+function normalizeDashboardActivityFeedEntry(entry) {
+	if (!entry || typeof entry !== 'object') return null;
+	const timestamp = String(entry.timestamp || entry.createdAt || entry.updatedAt || '').trim();
+	if (!timestamp) return null;
+	const summary = String(entry.summary || entry.message || entry.details || '').trim();
+	const type = String(entry.type || '').trim();
+	const action = String(entry.action || '').trim().toLowerCase();
+	if (type === 'invoice_add') {
+		const invoiceId = String(entry.invoiceId || '').trim();
+		const customer = String(entry.customer || '').trim();
+		const target = invoiceId ? `Invoice ${invoiceId}` : (customer ? `Invoice for ${customer}` : 'Invoice');
+		const actor = String(entry.userName || entry.userEmail || 'User').trim();
+		const roleLabel = formatRoleLabelForActivity(entry.userRole);
+		const actorWithRole = roleLabel ? `${actor} (${roleLabel})` : actor;
+		return {
+			timestamp,
+			summary: `${toTitleCaseText(target)} Added by ${actorWithRole}`,
+			source: 'audit',
+		};
+	}
+	if (summary) {
+		return {
+			timestamp,
+			summary,
+			source: entry.source || 'server',
+		};
+	}
+	const moduleName = getBusinessModuleLabel(String(entry.module || '').trim());
+	const entity = String(entry.entity || entry.entityType || 'Activity').trim();
+	const normalizedAction = action === 'create' ? 'added' : action === 'update' ? 'updated' : action === 'delete' ? 'deleted' : action || 'updated';
+	return {
+		timestamp,
+		summary: `${toTitleCaseText(entity || moduleName)} ${toTitleCaseText(normalizedAction)}`,
+		source: entry.source || 'server',
+	};
+}
+
+function mergeDashboardActivityFeedEntries(serverItems, localItems) {
+	const combined = [];
+	[(Array.isArray(serverItems) ? serverItems : []), (Array.isArray(localItems) ? localItems : [])].forEach((list) => {
+		(list || []).forEach((entry) => {
+			const normalized = normalizeDashboardActivityFeedEntry(entry);
+			if (!normalized) return;
+			combined.push(normalized);
+		});
+	});
+	const seen = new Map();
+	combined.forEach((entry) => {
+		const key = `${String(entry.summary || '').trim()}::${String(entry.timestamp || '').trim()}`;
+		if (!seen.has(key)) seen.set(key, entry);
+	});
+	return Array.from(seen.values()).sort((a, b) => Date.parse(String(b.timestamp || '')) - Date.parse(String(a.timestamp || ''))).slice(0, 12);
+}
+
+function buildDashboardActivityFeedEntriesFromLocalAudit() {
+	const rows = [];
+	try {
+		const privRows = getPrivilegedActionAuditEntries();
+		if (Array.isArray(privRows)) rows.push(...privRows);
+	} catch (_e) { /* ignore */ }
+	try {
+		const addRows = getSalesAddAuditEntries();
+		if (Array.isArray(addRows)) rows.push(...addRows);
+	} catch (_e) { /* ignore */ }
+	return rows;
 }
 
 function setSalesSyncWarning(message) {
@@ -3928,7 +4010,8 @@ async function initDashboardPage() {
 		if (rows.length > 0) {
 			const latest = rows[0];
 			const text = String(latest && latest.summary ? latest.summary : '').trim();
-			feed.innerHTML = `<li class="dash-activity-item">${escapeHtml(text || 'Activity recorded')}</li>`;
+			const stamp = formatStampWithRelative(String(latest && latest.timestamp ? latest.timestamp : ''));
+			feed.innerHTML = `<li class="dash-activity-item"><div>${escapeHtml(text || 'Activity recorded')}</div>${stamp ? `<div class="dash-activity-meta">${escapeHtml(stamp)}</div>` : ''}</li>`;
 			return;
 		}
 		const latest = getLatestBusinessActivity();
@@ -3949,10 +4032,12 @@ async function initDashboardPage() {
 			});
 			if (!res.ok) throw new Error('activity-feed-fetch-failed');
 			const json = await res.json();
-			const items = Array.isArray(json?.items) ? json.items : [];
-			window.__wwDashboardActivityItems = items;
+			const serverItems = Array.isArray(json?.items) ? json.items : [];
+			const localItems = buildDashboardActivityFeedEntriesFromLocalAudit();
+			const mergedItems = mergeDashboardActivityFeedEntries(serverItems, localItems);
+			window.__wwDashboardActivityItems = mergedItems;
 			window.__wwDashboardActivityFetchedAt = Date.now();
-			renderDashboardActivityFeed(items);
+			renderDashboardActivityFeed(mergedItems);
 		} catch (_e) {
 			renderDashboardActivityFeed(window.__wwDashboardActivityItems || []);
 		}
@@ -9763,6 +9848,8 @@ function initAccountingPage() {
 			if (!currentEntity) return;
 			if (!validateModalRequiredFields()) return;
 
+			let pendingAccountingActivity = null;
+
 			if (currentEntity === 'ledger') {
 				const desc = getValue('desc');
 				const account = getValue('account');
@@ -9779,8 +9866,10 @@ function initAccountingPage() {
 				};
 				if (editingAccIdx >= 0 && accountingData.ledger[editingAccIdx]) {
 					Object.assign(accountingData.ledger[editingAccIdx], data);
+					pendingAccountingActivity = { action: 'updated', entity: 'Ledger entry', summary: 'Ledger entry updated', details: 'Ledger entry saved in accounting' };
 				} else {
 					accountingData.ledger.push(data);
+					pendingAccountingActivity = { action: 'added', entity: 'Ledger entry', summary: 'Ledger entry added', details: 'Ledger entry saved in accounting' };
 				}
 			}
 
@@ -9796,8 +9885,10 @@ function initAccountingPage() {
 				};
 				if (editingAccIdx >= 0 && accountingData.cashbook[editingAccIdx]) {
 					Object.assign(accountingData.cashbook[editingAccIdx], data);
+					pendingAccountingActivity = { action: 'updated', entity: 'Cashbook entry', summary: 'Cashbook entry updated', details: 'Cashbook entry saved in accounting' };
 				} else {
 					accountingData.cashbook.push(data);
+					pendingAccountingActivity = { action: 'added', entity: 'Cashbook entry', summary: 'Cashbook entry added', details: 'Cashbook entry saved in accounting' };
 				}
 			}
 
@@ -9808,8 +9899,10 @@ function initAccountingPage() {
 				const data = { category, name, value: getNum('value') };
 				if (editingAccIdx >= 0 && accountingData.summary[editingAccIdx]) {
 					Object.assign(accountingData.summary[editingAccIdx], data);
+					pendingAccountingActivity = { action: 'updated', entity: 'Account', summary: 'Account updated', details: 'Account summary entry saved in accounting' };
 				} else {
 					accountingData.summary.push(data);
+					pendingAccountingActivity = { action: 'added', entity: 'Account', summary: 'Account added', details: 'Account summary entry saved in accounting' };
 				}
 			}
 
@@ -9820,8 +9913,10 @@ function initAccountingPage() {
 				const data = { code, name, rate: getNum('rate') };
 				if (editingAccIdx >= 0 && accountingData.currencies[editingAccIdx]) {
 					Object.assign(accountingData.currencies[editingAccIdx], data);
+					pendingAccountingActivity = { action: 'updated', entity: 'Currency', summary: 'Currency updated', details: 'Currency entry saved in accounting' };
 				} else {
 					accountingData.currencies.push(data);
+					pendingAccountingActivity = { action: 'added', entity: 'Currency', summary: 'Currency added', details: 'Currency entry saved in accounting' };
 				}
 			}
 
@@ -9861,10 +9956,12 @@ function initAccountingPage() {
 					if (li >= 0) { accountingData.ledger[li].date = data.date; accountingData.ledger[li].desc = `Salary — ${data.employee}`; accountingData.ledger[li].debit = data.amount; }
 					Object.assign(accountingData.salaries[editingAccIdx], data);
 					if (!keepMarchWeekly) delete accountingData.salaries[editingAccIdx].week;
+					pendingAccountingActivity = { action: 'updated', entity: 'Salary record', summary: 'Salary record updated', details: 'Salary record saved in accounting' };
 				} else {
 					if (!keepMarchWeekly) delete data.week;
 					accountingData.salaries.push(data);
 					accountingData.ledger.push({ date: data.date, desc: `Salary — ${data.employee}`, account: 'Salaries', type: 'expense', debit: data.amount, credit: 0 });
+					pendingAccountingActivity = { action: 'added', entity: 'Salary record', summary: 'Salary record added', details: 'Salary record saved in accounting' };
 				}
 				currentSalaryMonth = monthVal;
 			}
@@ -9883,9 +9980,15 @@ function initAccountingPage() {
 				};
 				if (editingAccIdx >= 0 && accountingData.assets[editingAccIdx]) {
 					Object.assign(accountingData.assets[editingAccIdx], data);
+					pendingAccountingActivity = { action: 'updated', entity: 'Asset', summary: 'Asset updated', details: 'Asset entry saved in accounting' };
 				} else {
 					accountingData.assets.push(data);
+					pendingAccountingActivity = { action: 'added', entity: 'Asset', summary: 'Asset added', details: 'Asset entry saved in accounting' };
 				}
+			}
+
+			if (pendingAccountingActivity) {
+				appendAccountingBusinessActivity(pendingAccountingActivity.action, pendingAccountingActivity.entity, pendingAccountingActivity.summary, pendingAccountingActivity.details);
 			}
 
 			saveAccountingDataToStorage();
@@ -9947,24 +10050,28 @@ function initAccountingPage() {
 				const removed = accountingData.ledger[idx];
 				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'ledger' });
 				accountingData.ledger.splice(idx, 1);
+				appendAccountingBusinessActivity('deleted', 'Ledger entry', 'Ledger entry deleted', 'Ledger entry removed from accounting');
 				toastMsg = 'Ledger entry deleted.';
 			}
 			else if (entity === 'cashbook') {
 				const removed = accountingData.cashbook[idx];
 				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'cashbook' });
 				accountingData.cashbook.splice(idx, 1);
+				appendAccountingBusinessActivity('deleted', 'Cashbook entry', 'Cashbook entry deleted', 'Cashbook entry removed from accounting');
 				toastMsg = 'Cashbook entry deleted.';
 			}
 			else if (entity === 'account') {
 				const removed = accountingData.summary[idx];
 				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'summary' });
 				accountingData.summary.splice(idx, 1);
+				appendAccountingBusinessActivity('deleted', 'Account', 'Account removed', 'Account summary entry removed from accounting');
 				toastMsg = 'Account removed.';
 			}
 			else if (entity === 'currency') {
 				const removed = accountingData.currencies[idx];
 				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'currencies' });
 				accountingData.currencies.splice(idx, 1);
+				appendAccountingBusinessActivity('deleted', 'Currency', 'Currency removed', 'Currency entry removed from accounting');
 				toastMsg = 'Currency removed.';
 			}
 			else if (entity === 'salary') {
@@ -9975,12 +10082,14 @@ function initAccountingPage() {
 					if (li >= 0) accountingData.ledger.splice(li, 1);
 				}
 				accountingData.salaries.splice(idx, 1);
+				appendAccountingBusinessActivity('deleted', 'Salary record', 'Salary record deleted', 'Salary record removed from accounting');
 				toastMsg = `Salary record for ${sal ? sal.employee : 'employee'} deleted.`;
 			}
 			else if (entity === 'asset-item') {
 				const removed = accountingData.assets[idx];
 				if (removed) moveAppDataDeleteToTrash('accounting', removed, { kind: 'appDataArray', key: 'ww_accounting_data_v2', arrayPath: 'assets' });
 				accountingData.assets.splice(idx, 1);
+				appendAccountingBusinessActivity('deleted', 'Asset', 'Asset deleted', 'Asset entry removed from accounting');
 				toastMsg = `Asset "${removed ? removed.name : 'item'}" deleted.`;
 			}
 			saveAccountingDataToStorage();
