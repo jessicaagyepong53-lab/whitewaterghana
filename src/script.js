@@ -10293,14 +10293,18 @@ function initAccountingPage() {
 
 		const entryMonthSelect = document.getElementById('acc-entry-month-select');
 		if (entryMonthSelect) {
-			entryMonthSelect.innerHTML = monthOptions.map((month) => `<option value="${month}">${monthLabel(month)}</option>`).join('');
 			entryMonthSelect.value = currentLedgerMonth || todayMonth;
 			if (!entryMonthSelect.dataset.bound) {
 				entryMonthSelect.dataset.bound = '1';
-				entryMonthSelect.addEventListener('change', () => {
-					currentLedgerMonth = entryMonthSelect.value || todayMonth;
-					renderAccountingPage();
-				});
+				const applyEntryMonth = () => {
+					const chosenMonth = getLedgerMonthFromValue(entryMonthSelect.value);
+					if (chosenMonth) {
+						currentLedgerMonth = chosenMonth;
+						renderAccountingPage();
+					}
+				};
+				entryMonthSelect.addEventListener('change', applyEntryMonth);
+				entryMonthSelect.addEventListener('input', applyEntryMonth);
 			}
 		}
 		const expensePeriodSelect = document.getElementById('acc-expense-period-select');
