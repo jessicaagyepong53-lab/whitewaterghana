@@ -4011,7 +4011,12 @@ async function initDashboardPage() {
 			const latest = rows[0];
 			const text = String(latest && latest.summary ? latest.summary : '').trim();
 			const stamp = formatStampWithRelative(String(latest && latest.timestamp ? latest.timestamp : ''));
-			feed.innerHTML = `<li class="dash-activity-item"><div>${escapeHtml(text || 'Activity recorded')}</div>${stamp ? `<div class="dash-activity-meta">${escapeHtml(stamp)}</div>` : ''}</li>`;
+			const actor = String(latest && (latest.userName || latest.userEmail || latest.actor || '') ? (latest.userName || latest.userEmail || latest.actor || '') : '').trim();
+			const roleLabel = latest && latest.userRole ? formatRoleLabelForActivity(latest.userRole) : '';
+			const actorText = actor ? (roleLabel ? `${actor} (${roleLabel})` : actor) : 'Unknown user';
+			const actionText = latest && latest.action ? String(latest.action).trim() : 'updated';
+			const displayText = text ? `${text} • ${actorText} • ${actionText}` : `${actorText} • ${actionText}`;
+			feed.innerHTML = `<li class="dash-activity-item"><div>${escapeHtml(displayText || 'Activity recorded')}</div>${stamp ? `<div class="dash-activity-meta">${escapeHtml(stamp)}</div>` : ''}</li>`;
 			return;
 		}
 		const latest = getLatestBusinessActivity();
