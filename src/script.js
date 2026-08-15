@@ -462,9 +462,14 @@ function getBusinessCountFromSyncPayload(key, data) {
 	const text = String(key || '').trim();
 	if (Array.isArray(data)) return data.length;
 	if (/^ww_sales_\d{4}-\d{2}$/.test(text)) {
+		// A single sale writes BOTH an invoice row and a sales-order row to this
+		// same payload, so summing them double-counts every transaction (4 sales
+		// entered would report as 8). Mirror the server's own collapsing logic in
+		// summarizeActivityBatch() (server.js) and take the max of the two counts
+		// instead, so one sale is counted once.
 		const inv = Array.isArray(data?.invoices) ? data.invoices.length : 0;
 		const ord = Array.isArray(data?.salesOrders) ? data.salesOrders.length : 0;
-		return inv + ord;
+		return Math.max(inv, ord);
 	}
 	if (text === 'ww_purchase_data_v2') {
 		return Array.isArray(data?.purchaseOrders) ? data.purchaseOrders.length : 0;
@@ -4006,21 +4011,20 @@ async function initDashboardPage() {
 	const renderDashboardActivityFeed = (items) => {
 		const feed = document.getElementById('dash-business-activity-feed');
 		if (!feed) return;
-		const rows = Array.isArray(items) ? items.filter((row) => row && typeof row === 'object') : [];
-		if (rows.length > 0) {
-			const latest = rows[0];
-			const text = String(latest && latest.summary ? latest.summary : '').trim();
-			const stamp = formatStampWithRelative(String(latest && latest.timestamp ? latest.timestamp : ''));
-			const actor = String(latest && (latest.userName || latest.userEmail || latest.actor || '') ? (latest.userName || latest.userEmail || latest.actor || '') : '').trim();
-			const roleLabel = latest && latest.userRole ? formatRoleLabelForActivity(latest.userRole) : '';
-			const actorText = actor ? (roleLabel ? `${actor} (${roleLabel})` : actor) : 'Unknown user';
-			const actionText = latest && latest.action ? String(latest.action).trim() : 'updated';
-			const displayText = text ? `${text} • ${actorText} • ${actionText}` : `${actorText} • ${actionText}`;
-			feed.innerHTML = `<li class="dash-activity-item"><div>${escapeHtml(displayText || 'Activity recorded')}</div>${stamp ? `<div class="dash-activity-meta">${escapeHtml(stamp)}</div>` : ''}</li>`;
+		// Server-side /api/activity-log already returns fully-formed, correctly
+		// attributed summaries (who did what, when — with sales+invoice pairs
+		// already collapsed into one "sales record" count). Render the single most
+		// recent summary as-is instead of re-deriving actor/action text client-side,
+		// which is what previously produced "Unknown user" and inflated counts.
+		const rows = Array.isArray(items) ? items.filter((row) => row && typeof row === 'object' && String(row.summary || '').trim()) : [];
+		if (!rows.length) {
+			feed.innerHTML = `<li class="dash-activity-empty">No recent activity</li>`;
 			return;
 		}
-		const latest = getLatestBusinessActivity();
-		feed.innerHTML = `<li class="dash-activity-empty">${escapeHtml(latest ? `${latest.message}, ${formatStampWithRelative(latest.timestamp)}` : 'No recent activity')}</li>`;
+		const latest = rows[0];
+		const summary = String(latest.summary || '').trim();
+		const stamp = formatStampWithRelative(String(latest.timestamp || ''));
+		feed.innerHTML = `<li class="dash-activity-item"><div>${escapeHtml(summary)}</div>${stamp ? `<div class="dash-activity-meta">${escapeHtml(stamp)}</div>` : ''}</li>`;
 	};
 
 	const loadDashboardActivityFeed = async (force = false) => {
@@ -4037,12 +4041,19 @@ async function initDashboardPage() {
 			});
 			if (!res.ok) throw new Error('activity-feed-fetch-failed');
 			const json = await res.json();
-			const serverItems = Array.isArray(json?.items) ? json.items : [];
-			const localItems = buildDashboardActivityFeedEntriesFromLocalAudit();
-			const mergedItems = mergeDashboardActivityFeedEntries(serverItems, localItems);
-			window.__wwDashboardActivityItems = mergedItems;
+			// NOTE: intentionally NOT merging in buildDashboardActivityFeedEntriesFromLocalAudit()
+			// here. That local audit trail is derived by diffing raw record counts on this
+			// browser after every save, which (a) has no reliable way to know who is signed
+			// in if the user object hasn't loaded yet (-> "Unknown user"), and (b) double-counts
+			// sales because one sale writes both an invoice row and a sales-order row to the
+			// same payload (-> 4 invoices entered showing as 8). The server's /api/activity-log
+			// is the single source of truth for this feed: it reads the real ActivityLog
+			// collection, attributes every entry to the signed-in user, and already collapses
+			// sale+invoice pairs into one correctly-counted "sales record" entry.
+			const serverItems = Array.isArray(json?.items) ? json.items.filter((row) => row && String(row.summary || '').trim()) : [];
+			window.__wwDashboardActivityItems = serverItems;
 			window.__wwDashboardActivityFetchedAt = Date.now();
-			renderDashboardActivityFeed(mergedItems);
+			renderDashboardActivityFeed(serverItems);
 		} catch (_e) {
 			renderDashboardActivityFeed(window.__wwDashboardActivityItems || []);
 		}
