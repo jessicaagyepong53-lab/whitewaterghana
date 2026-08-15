@@ -3354,6 +3354,67 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
 
 
+      // ── Activity logging for sales/invoice sync ──
+      // The Sales & Invoicing page saves invoices/orders through this bulk month-sync
+      // endpoint rather than the discrete POST /api/sales or POST /api/invoices routes,
+      // so day-to-day invoice activity was never being written to ActivityLog and never
+      // showed up in the dashboard's "Business activity" feed. Diff the merged result
+      // against what was on the server before this request and log what actually
+      // changed, attributed to whichever signed-in user made the request (CEO, Manager,
+      // Supervisor, or Staff alike — attribution comes from req.user via the session,
+      // not the role).
+      const previousInvoiceIds = new Set(serverInvoiceMap.keys());
+      const previousOrderIds = new Set(serverOrderMap.keys());
+      const previousServerDeletedInvoiceIds = new Set(
+        (Array.isArray(serverData.deletedInvoiceIds) ? serverData.deletedInvoiceIds : [])
+          .map((id) => String(id || '').trim()).filter(Boolean)
+      );
+      const previousServerDeletedOrderIds = new Set(
+        (Array.isArray(serverData.deletedOrderIds) ? serverData.deletedOrderIds : [])
+          .map((id) => String(id || '').trim()).filter(Boolean)
+      );
+
+      const newInvoiceIds = mergedInvoices
+        .map((inv) => String(inv.id).trim())
+        .filter((id) => !previousInvoiceIds.has(id));
+      const updatedInvoiceIds = mergedInvoices
+        .filter((inv) => {
+          const id = String(inv.id).trim();
+          if (!previousInvoiceIds.has(id) || newInvoiceIds.includes(id)) return false;
+          return JSON.stringify(serverInvoiceMap.get(id)) !== JSON.stringify(inv);
+        })
+        .map((inv) => String(inv.id).trim());
+      const deletedInvoiceIdsThisRequest = Array.from(deletedInvoiceIds)
+        .filter((id) => !previousServerDeletedInvoiceIds.has(id) && previousInvoiceIds.has(id));
+
+      const newOrderIds = mergedOrders
+        .map((ord) => String(ord.id).trim())
+        .filter((id) => !previousOrderIds.has(id));
+      const deletedOrderIdsThisRequest = Array.from(deletedOrderIds)
+        .filter((id) => !previousServerDeletedOrderIds.has(id) && previousOrderIds.has(id));
+
+      const hasSalesActivityToLog = newInvoiceIds.length || updatedInvoiceIds.length
+        || deletedInvoiceIdsThisRequest.length || newOrderIds.length || deletedOrderIdsThisRequest.length;
+
+      if (isHumanBusinessAction(req) && hasSalesActivityToLog) {
+        const salesBatchId = getActivityBatchId(req);
+        for (const id of newOrderIds) {
+          await logActivity({ req, action: 'create', entityType: 'sales', entityId: id, batchId: salesBatchId });
+        }
+        for (const id of newInvoiceIds) {
+          await logActivity({ req, action: 'create', entityType: 'invoices', entityId: id, batchId: salesBatchId });
+        }
+        for (const id of updatedInvoiceIds) {
+          await logActivity({ req, action: 'update', entityType: 'invoices', entityId: id, batchId: salesBatchId });
+        }
+        for (const id of deletedOrderIdsThisRequest) {
+          await logActivity({ req, action: 'delete', entityType: 'sales', entityId: id, batchId: salesBatchId });
+        }
+        for (const id of deletedInvoiceIdsThisRequest) {
+          await logActivity({ req, action: 'delete', entityType: 'invoices', entityId: id, batchId: salesBatchId });
+        }
+      }
+
       await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
 
       if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key, source });
