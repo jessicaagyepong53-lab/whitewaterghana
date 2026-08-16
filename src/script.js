@@ -7929,7 +7929,7 @@ async function initSalesInvoicesPage() {
 		const overallSales = getAllSalesData();
 		const overallInvoiceCount = Array.isArray(overallSales.invoices) ? overallSales.invoices.length : 0;
 		const invoiceRevenue = registerInvoices.filter((inv) => inv.status === 'paid').reduce((sum, inv) => sum + inv.amount, 0);
-		const pendingInvoices = approvalQueue.reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+		const pendingInvoices = registerInvoices.filter((inv) => inv.status === 'pending').reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
 		const pendingSales = orders.filter((o) => ['confirmed', 'processing', 'shipped'].includes(o.status)).reduce((sum, o) => sum + Number(o.amount || 0), 0);
 		const overdueInvAmt = registerInvoices.filter((inv) => inv.status === 'overdue').reduce((sum, inv) => sum + inv.amount, 0);
 		const overdueTotal = overdueInvAmt;
