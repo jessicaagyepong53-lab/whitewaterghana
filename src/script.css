@@ -4375,3 +4375,77 @@ body[data-page="sales"] .ops-topbar > .ops-nav a.is-active {
 	gap: 6px;
 	font-weight: 600;
 }
+/* ═══════════════════════════════════════════════
+   CONNECTION STATUS BANNER (src/conn-status.js)
+   ═══════════════════════════════════════════════ */
+#ww-conn-banner {
+	position: fixed;
+	left: 50%;
+	bottom: 18px;
+	transform: translateX(-50%) translateY(140%);
+	z-index: 9998;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	max-width: min(92vw, 480px);
+	padding: 10px 14px;
+	border-radius: 10px;
+	font-size: 0.85rem;
+	font-weight: 600;
+	box-shadow: 0 8px 24px rgba(15,23,42,0.18);
+	transition: transform 0.25s ease, opacity 0.25s ease;
+	opacity: 0;
+	pointer-events: none;
+}
+#ww-conn-banner.ww-conn-visible {
+	transform: translateX(-50%) translateY(0);
+	opacity: 1;
+	pointer-events: auto;
+}
+#ww-conn-banner.ww-conn-degraded {
+	background: #fffbeb;
+	border: 1px solid #fcd34d;
+	color: #92400e;
+}
+#ww-conn-banner.ww-conn-offline {
+	background: #fef2f2;
+	border: 1px solid #fca5a5;
+	color: #991b1b;
+}
+.ww-conn-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	background: currentColor;
+	animation: ww-conn-pulse 1.4s ease-in-out infinite;
+}
+@keyframes ww-conn-pulse {
+	0%, 100% { opacity: 0.4; }
+	50% { opacity: 1; }
+}
+.ww-conn-text { flex: 1; line-height: 1.35; }
+.ww-conn-retry {
+	flex-shrink: 0;
+	border: none;
+	background: rgba(0,0,0,0.06);
+	color: inherit;
+	width: 28px;
+	height: 28px;
+	border-radius: 8px;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.ww-conn-retry:hover { background: rgba(0,0,0,0.12); }
+
+/* ═══════════════════════════════════════════════
+   TOAST NOTIFICATIONS (generalized showToast)
+   ═══════════════════════════════════════════════ */
+#ww-toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 99999; }
+
+@media (max-width: 480px) {
+	#ww-conn-banner { bottom: 10px; font-size: 0.8rem; left: 12px; right: 12px; transform: translateY(140%); max-width: none; }
+	#ww-conn-banner.ww-conn-visible { transform: translateY(0); }
+}

@@ -1,5 +1,7 @@
 require('dotenv').config();
 
+const mongoose = require('mongoose');
+
 const path = require('path');
 
 const crypto = require('crypto');
@@ -1860,6 +1862,46 @@ app.use('/api', (_req, res, next) => {
 
 
 
+// ── MongoDB fast-fail guard ──
+// On a cold serverless start (or a dropped connection), requests that hit
+// Mongoose before connectDB() has resolved would otherwise hang until the
+// driver's own server-selection timeout (5s, per connectDB's
+// serverSelectionTimeoutMS) and then surface as a generic 500. That's a
+// slow, confusing failure mode for the person waiting on the other end.
+// Fail fast instead with a clear, retryable error so the client's
+// fetchWithRetry (see src/script.js) can back off and try again quickly
+// rather than waiting out a long hang.
+const DB_READY_STATE_CONNECTED = 1;
+const DB_READY_STATE_CONNECTING = 2;
+
+app.use('/api', (req, res, next) => {
+
+  // Auth/session-check routes and the health check must still respond even
+  // while the DB is mid-connect, so the client can tell "starting up" apart
+  // from "genuinely down".
+  if (req.path === '/health' || req.path === '/auth/me') { next(); return; }
+
+  const readyState = mongoose.connection.readyState;
+
+  if (readyState === DB_READY_STATE_CONNECTED) { next(); return; }
+
+  if (readyState === DB_READY_STATE_CONNECTING) {
+    res.status(503).json({
+      message: 'Database is starting up. Please retry in a moment.',
+      code: 'DB_CONNECTING',
+    });
+    return;
+  }
+
+  res.status(503).json({
+    message: 'Database temporarily unavailable. Please retry.',
+    code: 'DB_UNAVAILABLE',
+  });
+
+});
+
+
+
 app.get('/api/health', (_req, res) => {
 
   res.json({ ok: true, timestamp: nowIso() });
@@ -3353,67 +3395,6 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
       });
 
 
-
-      // ── Activity logging for sales/invoice sync ──
-      // The Sales & Invoicing page saves invoices/orders through this bulk month-sync
-      // endpoint rather than the discrete POST /api/sales or POST /api/invoices routes,
-      // so day-to-day invoice activity was never being written to ActivityLog and never
-      // showed up in the dashboard's "Business activity" feed. Diff the merged result
-      // against what was on the server before this request and log what actually
-      // changed, attributed to whichever signed-in user made the request (CEO, Manager,
-      // Supervisor, or Staff alike — attribution comes from req.user via the session,
-      // not the role).
-      const previousInvoiceIds = new Set(serverInvoiceMap.keys());
-      const previousOrderIds = new Set(serverOrderMap.keys());
-      const previousServerDeletedInvoiceIds = new Set(
-        (Array.isArray(serverData.deletedInvoiceIds) ? serverData.deletedInvoiceIds : [])
-          .map((id) => String(id || '').trim()).filter(Boolean)
-      );
-      const previousServerDeletedOrderIds = new Set(
-        (Array.isArray(serverData.deletedOrderIds) ? serverData.deletedOrderIds : [])
-          .map((id) => String(id || '').trim()).filter(Boolean)
-      );
-
-      const newInvoiceIds = mergedInvoices
-        .map((inv) => String(inv.id).trim())
-        .filter((id) => !previousInvoiceIds.has(id));
-      const updatedInvoiceIds = mergedInvoices
-        .filter((inv) => {
-          const id = String(inv.id).trim();
-          if (!previousInvoiceIds.has(id) || newInvoiceIds.includes(id)) return false;
-          return JSON.stringify(serverInvoiceMap.get(id)) !== JSON.stringify(inv);
-        })
-        .map((inv) => String(inv.id).trim());
-      const deletedInvoiceIdsThisRequest = Array.from(deletedInvoiceIds)
-        .filter((id) => !previousServerDeletedInvoiceIds.has(id) && previousInvoiceIds.has(id));
-
-      const newOrderIds = mergedOrders
-        .map((ord) => String(ord.id).trim())
-        .filter((id) => !previousOrderIds.has(id));
-      const deletedOrderIdsThisRequest = Array.from(deletedOrderIds)
-        .filter((id) => !previousServerDeletedOrderIds.has(id) && previousOrderIds.has(id));
-
-      const hasSalesActivityToLog = newInvoiceIds.length || updatedInvoiceIds.length
-        || deletedInvoiceIdsThisRequest.length || newOrderIds.length || deletedOrderIdsThisRequest.length;
-
-      if (isHumanBusinessAction(req) && hasSalesActivityToLog) {
-        const salesBatchId = getActivityBatchId(req);
-        for (const id of newOrderIds) {
-          await logActivity({ req, action: 'create', entityType: 'sales', entityId: id, batchId: salesBatchId });
-        }
-        for (const id of newInvoiceIds) {
-          await logActivity({ req, action: 'create', entityType: 'invoices', entityId: id, batchId: salesBatchId });
-        }
-        for (const id of updatedInvoiceIds) {
-          await logActivity({ req, action: 'update', entityType: 'invoices', entityId: id, batchId: salesBatchId });
-        }
-        for (const id of deletedOrderIdsThisRequest) {
-          await logActivity({ req, action: 'delete', entityType: 'sales', entityId: id, batchId: salesBatchId });
-        }
-        for (const id of deletedInvoiceIdsThisRequest) {
-          await logActivity({ req, action: 'delete', entityType: 'invoices', entityId: id, batchId: salesBatchId });
-        }
-      }
 
       await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
 

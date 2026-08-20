@@ -1514,6 +1514,23 @@ function moveAppDataDeleteToTrash(module, recordData, restoreMeta) {
 
 /* ── Delete toast notification ── */
 function showDeleteToast(message) {
+	showToast(message, 'error', 'fa-trash-can');
+}
+
+/* ── Generalized toast notification ──
+   type: 'success' | 'error' | 'info' | 'warning'
+   Backs showDeleteToast (kept for the many existing call sites) and is the
+   shared entry point for the new fetchWithRetry() failure/recovery toasts
+   below, so every part of the app reports problems the same visible way
+   instead of failing silently into the console. */
+const TOAST_STYLES = {
+	success: { bg: '#16a34a', icon: 'fa-circle-check' },
+	error:   { bg: '#ef4444', icon: 'fa-trash-can' },
+	warning: { bg: '#d97706', icon: 'fa-triangle-exclamation' },
+	info:    { bg: '#0077b6', icon: 'fa-circle-info' },
+};
+function showToast(message, type, iconOverride) {
+	const style = TOAST_STYLES[type] || TOAST_STYLES.info;
 	let container = document.getElementById('ww-toast-container');
 	if (!container) {
 		container = document.createElement('div');
@@ -1522,10 +1539,102 @@ function showDeleteToast(message) {
 		document.body.appendChild(container);
 	}
 	const toast = document.createElement('div');
-	toast.style.cssText = 'background:#ef4444;color:#fff;padding:10px 18px;border-radius:8px;font-size:0.9rem;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,0.18);opacity:1;transition:opacity 0.4s;max-width:320px;pointer-events:none;display:flex;align-items:center;gap:8px;';
-	toast.innerHTML = `<i class="fa-solid fa-trash-can" style="flex-shrink:0"></i><span>${message}</span>`;
+	toast.style.cssText = `background:${style.bg};color:#fff;padding:10px 18px;border-radius:8px;font-size:0.9rem;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,0.18);opacity:1;transition:opacity 0.4s;max-width:320px;pointer-events:none;display:flex;align-items:center;gap:8px;`;
+	toast.innerHTML = `<i class="fa-solid ${iconOverride || style.icon}" style="flex-shrink:0"></i><span>${escapeHtml(String(message || ''))}</span>`;
 	container.appendChild(toast);
 	setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 420); }, 3000);
+}
+
+/* ── Centralized fetch wrapper with retry ──
+   Wraps fetch() with:
+   - a request timeout (AbortController) so a hung request doesn't block
+     the UI indefinitely
+   - exponential backoff retry for transient failures: network errors,
+     5xx responses, and the 503 DB_CONNECTING/DB_UNAVAILABLE codes the
+     server's fast-fail guard now returns during a cold start
+   - NO retry for 4xx (client/auth errors) — retrying those would just
+     repeat the same failure and could duplicate a write
+   Use this for any new fetch() call going forward; existing call sites
+   can be migrated incrementally without needing a single big rewrite. */
+async function fetchWithRetry(url, options = {}, retryConfig = {}) {
+	const maxRetries = Number.isFinite(retryConfig.maxRetries) ? retryConfig.maxRetries : 2;
+	const baseDelayMs = Number.isFinite(retryConfig.baseDelayMs) ? retryConfig.baseDelayMs : 600;
+	const timeoutMs = Number.isFinite(retryConfig.timeoutMs) ? retryConfig.timeoutMs : 12000;
+	const silent = !!retryConfig.silent;
+
+	let lastError = null;
+
+	for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+		const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+		const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+		try {
+			const res = await fetch(url, {
+				credentials: 'include',
+				...options,
+				signal: controller ? controller.signal : options.signal,
+			});
+			if (timeoutId) clearTimeout(timeoutId);
+
+			const isRetryableStatus = res.status >= 500 || res.status === 503;
+			if (isRetryableStatus && attempt < maxRetries) {
+				lastError = new Error(`HTTP ${res.status}`);
+				await sleep(baseDelayMs * Math.pow(2, attempt));
+				continue;
+			}
+			if (attempt > 0 && res.ok && !silent) {
+				showToast('Connection restored.', 'success');
+			}
+			return res;
+		} catch (err) {
+			if (timeoutId) clearTimeout(timeoutId);
+			lastError = err;
+			if (attempt < maxRetries) {
+				await sleep(baseDelayMs * Math.pow(2, attempt));
+				continue;
+			}
+		}
+	}
+
+	if (!silent) {
+		showToast('Could not reach the server. Please check your connection and try again.', 'error', 'fa-wifi');
+	}
+	throw lastError || new Error('Request failed after retries');
+}
+
+function sleep(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/* ── Form double-submission guard ──
+   Wraps a submit handler so a second click/tap while the first request is
+   still in flight is ignored outright, and disables the submit button for
+   the duration so the person gets visual feedback instead of wondering
+   whether their tap registered. Usage:
+     form.addEventListener('submit', guardSubmit(async (event) => { ... }));
+*/
+function guardSubmit(handler) {
+	let inFlight = false;
+	return async function guardedSubmitHandler(event) {
+		if (inFlight) {
+			if (event && typeof event.preventDefault === 'function') event.preventDefault();
+			return;
+		}
+		inFlight = true;
+		const form = event && event.target && event.target.closest ? event.target.closest('form') : null;
+		const submitBtn = form ? form.querySelector('button[type="submit"], input[type="submit"]') : null;
+		const originalText = submitBtn ? submitBtn.textContent : '';
+		if (submitBtn) submitBtn.disabled = true;
+		try {
+			await handler(event);
+		} finally {
+			inFlight = false;
+			if (submitBtn) {
+				submitBtn.disabled = false;
+				if (originalText) submitBtn.textContent = originalText;
+			}
+		}
+	};
 }
 
 /* ── Seed flag helpers (synced to server so flags persist across devices) ── */
@@ -3052,8 +3161,11 @@ function bindRolePersistenceOnAuthForms() {
 	// ── Login form ──
 	const loginForm = document.getElementById('login-form');
 	if (loginForm) {
+		let loginInFlight = false;
 		loginForm.addEventListener('submit', async (event) => {
 			event.preventDefault();
+			if (loginInFlight) return; // guardSubmit-style lock: ignore double Enter/double-tap
+			loginInFlight = true;
 			const formData = new FormData(loginForm);
 			const email = String(formData.get('email') || '').trim();
 			const password = String(formData.get('password') || '');
@@ -3078,6 +3190,7 @@ function bindRolePersistenceOnAuthForms() {
 			} catch (error) {
 				setAuthMessage(error.message || 'Invalid email or password.', true);
 				if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Sign In'; }
+				loginInFlight = false;
 			}
 		});
 	}
@@ -3085,8 +3198,10 @@ function bindRolePersistenceOnAuthForms() {
 	// ── Register form ──
 	const registerForm = document.getElementById('register-form');
 	if (registerForm) {
+		let registerInFlight = false;
 		registerForm.addEventListener('submit', async (event) => {
 			event.preventDefault();
+			if (registerInFlight) return;
 			const formData = new FormData(registerForm);
 			const name = String(formData.get('full_name') || '').trim();
 			const email = String(formData.get('email') || '').trim();
@@ -3105,6 +3220,7 @@ function bindRolePersistenceOnAuthForms() {
 				return;
 			}
 
+			registerInFlight = true;
 			try {
 				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Creating account…'; }
 				const data = await postJson('/api/auth/register', { name, email, password, role: selectedRole });
@@ -3124,6 +3240,7 @@ function bindRolePersistenceOnAuthForms() {
 			} catch (error) {
 				setAuthMessage(error.message || 'Registration failed.', true);
 				if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Create Account'; }
+				registerInFlight = false;
 			}
 		});
 	}
@@ -4333,22 +4450,25 @@ async function initDashboardPage() {
 		const lastFetchMs = Number(window.__wwDashboardOnlineStatsFetchedAt || 0);
 		if (!window.__wwDashboardOnlineStatsInFlight && (nowMs - lastFetchMs > 15000)) {
 			window.__wwDashboardOnlineStatsInFlight = true;
-			const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-			const timeoutId = setTimeout(() => {
-				if (controller) controller.abort();
-			}, 5000);
-			fetch(API_BASE + '/api/store/admin/stats', {
+			// BUG FIX: this fetch was missing `credentials: 'include'`, unlike every
+			// other authenticated call in this file. Relying on the browser's
+			// same-origin default cookie behavior worked most of the time but was
+			// the one inconsistent call site in the app — and /api/store/admin/stats
+			// requires the ww_session cookie to return real numbers. Routed through
+			// fetchWithRetry (silent, short timeout) so a slow/cold DB connection
+			// doesn't leave the Online Orders KPI stuck at zero indefinitely.
+			fetchWithRetry(API_BASE + '/api/store/admin/stats', {
+				credentials: 'include',
 				cache: 'no-store',
-				signal: controller ? controller.signal : undefined,
-			}).then((r) => r.ok ? r.json() : null).then((stats) => {
+			}, { maxRetries: 2, baseDelayMs: 400, timeoutMs: 5000, silent: true })
+				.then((r) => r.ok ? r.json() : null).then((stats) => {
 				if (!stats) return;
 				window.__wwDashboardOnlineStats = stats;
 				window.__wwDashboardOnlineStatsFetchedAt = Date.now();
 				applyOnlineStatsToDashboard(stats);
 			}).catch(() => {
-				/* keep dashboard responsive even if online stats API is slow */
+				/* keep dashboard responsive even if online stats API is unreachable */
 			}).finally(() => {
-				clearTimeout(timeoutId);
 				window.__wwDashboardOnlineStatsInFlight = false;
 			});
 		}
@@ -7929,7 +8049,16 @@ async function initSalesInvoicesPage() {
 		const overallSales = getAllSalesData();
 		const overallInvoiceCount = Array.isArray(overallSales.invoices) ? overallSales.invoices.length : 0;
 		const invoiceRevenue = registerInvoices.filter((inv) => inv.status === 'paid').reduce((sum, inv) => sum + inv.amount, 0);
-		const pendingInvoices = registerInvoices.filter((inv) => inv.status === 'pending').reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+		const pendingApprovalAmt = approvalQueue.reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+		const pendingPaymentInvoices = registerInvoices.filter((inv) => inv.status === 'pending');
+		const pendingPaymentAmt = pendingPaymentInvoices.reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+		const pendingInvoices = pendingApprovalAmt + pendingPaymentAmt;
+		const pendingApprovalCount = approvalQueue.length;
+		const pendingPaymentCount = pendingPaymentInvoices.length;
+		const allSalesInvoices = Array.isArray(overallSales.invoices) ? overallSales.invoices : [];
+		const allPendingInvoices = allSalesInvoices.filter((inv) => normalizeInvoiceStatus(inv && inv.status) === 'pending_approval' || normalizeInvoiceStatus(inv && inv.status) === 'pending');
+		const totalPendingAmt = allPendingInvoices.reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+		const totalPendingCount = allPendingInvoices.length;
 		const pendingSales = orders.filter((o) => ['confirmed', 'processing', 'shipped'].includes(o.status)).reduce((sum, o) => sum + Number(o.amount || 0), 0);
 		const overdueInvAmt = registerInvoices.filter((inv) => inv.status === 'overdue').reduce((sum, inv) => sum + inv.amount, 0);
 		const overdueTotal = overdueInvAmt;
@@ -7948,7 +8077,7 @@ async function initSalesInvoicesPage() {
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-file-invoice"></i></div><p class="s-label">Total Invoices (${monthLabel(currentSalesMonth)})</p><p class="s-value">${totalInvoices}</p><p class="s-meta">${orders.length} sales order${orders.length !== 1 ? 's' : ''} in ${monthLabel(currentSalesMonth)} • ${overallInvoiceCount} overall</p></div>
 				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-dollar-sign"></i></div><p class="s-label">Total Revenue</p><p class="s-value">${formatCurrency(invoiceRevenue)}</p><p class="s-meta split-meta"><span>From paid invoices (gross)</span><span>Promo cost: ${formatCurrency(promoExpense)} (expensed)</span></p></div>
 				<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-gift"></i></div><p class="s-label">Total Promo Bags</p><p class="s-value">${formatNumber(invoicePromo)}</p><p class="s-meta split-meta"><span>Total bags: ${formatNumber(totalBagsSold)}</span><span>Non-promo: ${formatNumber(nonPromoBags)}</span><span>Promo: ${formatNumber(invoicePromo)}</span></p></div>
-				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices)}</p><p class="s-meta">From pending invoices</p></div>
+				<div class="stat-card" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-clock"></i></div><p class="s-label">Pending</p><p class="s-value">${formatCurrency(pendingInvoices)}</p><p class="s-meta split-meta"><span>Awaiting approval (${monthLabel(currentSalesMonth)}): ${formatCurrency(pendingApprovalAmt)} (${pendingApprovalCount})</span><span>Awaiting payment (${monthLabel(currentSalesMonth)}): ${formatCurrency(pendingPaymentAmt)} (${pendingPaymentCount})</span><span>Total pending (all months): ${formatCurrency(totalPendingAmt)} (${totalPendingCount})</span></p></div>
 				<div class="stat-card ${overdueTotal > 0 ? 'stat-card-alert' : ''}" ${hideMoney ? 'style="display:none"' : ''}><div class="s-icon"><i class="fa-solid fa-circle-exclamation"></i></div><p class="s-label">Overdue</p><p class="s-value">${formatCurrency(overdueTotal)}</p><p class="s-meta">${overdueTotal > 0 ? 'From overdue invoices' : 'All clear'}</p></div>
 			`;
 		}
@@ -14214,12 +14343,17 @@ function setAuthMessage(message, isError) {
 async function postJson(url, payload) {
 	let response;
 	try {
-		response = await fetch(API_BASE + url, {
+		// Routed through fetchWithRetry: a single retry on network failure or a
+		// 5xx/503 (e.g. the DB fast-fail guard during a cold start) so a
+		// person isn't told "invalid email or password" for a transient server
+		// hiccup. Never retries on 4xx, so a genuinely wrong password still
+		// fails immediately and only once.
+		response = await fetchWithRetry(API_BASE + url, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			credentials: 'include',
 			body: JSON.stringify(payload),
-		});
+		}, { maxRetries: 1, baseDelayMs: 500, timeoutMs: 15000, silent: true });
 	} catch (networkError) {
 		throw new Error('Cannot reach server. Check your internet connection and try again.');
 	}
