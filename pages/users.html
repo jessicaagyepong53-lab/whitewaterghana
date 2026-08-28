@@ -319,7 +319,7 @@
     if (!actionsTbody) return;
     actionsTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">Loading actions...</td></tr>';
     try {
-      var res = await fetch('/api/staff-actions?limit=300', { credentials: 'include', cache: 'no-store' });
+      var res = await fetch(API_BASE + '/api/staff-actions?limit=300', { credentials: 'include', cache: 'no-store' });
       var json = await res.json().catch(function() { return {}; });
       if (!res.ok) throw new Error((json && json.message) || 'Failed to load staff actions');
       var rows = Array.isArray(json && json.items) ? json.items : [];
@@ -369,7 +369,7 @@
 
   async function loadUsers() {
     try {
-      const res = await fetch('/api/users', { credentials: 'include' });
+      const res = await fetch(API_BASE + '/api/users', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to load users');
       const users = await res.json();
       renderTable(users);
@@ -428,7 +428,7 @@
     if (rightsHistoryModal) rightsHistoryModal.style.display = 'flex';
 
     try {
-      var res = await fetch('/api/users/' + user.id + '/rights-history', { credentials: 'include' });
+      var res = await fetch(API_BASE + '/api/users/' + user.id + '/rights-history', { credentials: 'include' });
       var rows = await res.json().catch(function() { return []; });
       if (!res.ok) {
         if (rightsHistoryTbody) rightsHistoryTbody.innerHTML = '<tr><td colspan="5" style="color:#ef4444;text-align:center;padding:14px">Failed to load rights history.</td></tr>';
@@ -497,7 +497,7 @@
         : 'Revoke edit/delete rights from "' + toggleUser.name + '"?';
       if (!confirm(confirmationText)) return;
       try {
-        var toggleRes = await fetch('/api/users/' + toggleId, {
+        var toggleRes = await fetch(API_BASE + '/api/users/' + toggleId, {
           method: 'PUT', credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ canEditDelete: nextCanEdit }),
@@ -557,7 +557,7 @@
       if (!u2) return;
       if (!confirm('Delete user "' + u2.name + '"?')) return;
       try {
-        var res = await fetch('/api/users/' + id2, { method: 'DELETE', credentials: 'include' });
+        var res = await fetch(API_BASE + '/api/users/' + id2, { method: 'DELETE', credentials: 'include' });
         if (!res.ok) { var err = await res.json().catch(function() { return {}; }); alert(err.message || 'Delete failed'); return; }
         loadUsers();
       } catch (err) { alert('Delete failed'); }
@@ -577,7 +577,7 @@
       if (editingUserId) {
         var body = { name: name, email: email, role: role.toLowerCase(), canEditDelete: canEditDelete };
         if (password) body.password = password;
-        var res = await fetch('/api/users/' + editingUserId, {
+        var res = await fetch(API_BASE + '/api/users/' + editingUserId, {
           method: 'PUT', credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -585,7 +585,7 @@
         if (!res.ok) { var err = await res.json().catch(function() { return {}; }); alert(err.message || 'Update failed'); return; }
       } else {
         if (!password) { alert('Password is required for new users'); return; }
-        var res2 = await fetch('/api/users', {
+        var res2 = await fetch(API_BASE + '/api/users', {
           method: 'POST', credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: name, email: email, role: role.toLowerCase(), password: password, canEditDelete: canEditDelete }),
@@ -640,7 +640,7 @@
     if (newPwd !== confirmPwd) { alert('Passwords do not match'); return; }
 
     try {
-      var res3 = await fetch('/api/auth/admin-reset-password', {
+      var res3 = await fetch(API_BASE + '/api/auth/admin-reset-password', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: resettingUserId, newPassword: newPwd }),
@@ -741,7 +741,7 @@
 
   async function loadTrash() {
     try {
-      var res = await fetch('/api/trash', { credentials: 'include' });
+      var res = await fetch(API_BASE + '/api/trash', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed');
       cachedTrash = await res.json();
       renderTrash(cachedTrash);
@@ -772,7 +772,7 @@
         'Continue with restore?';
       if (!confirm(previewText)) return;
       try {
-        var res = await fetch('/api/trash/' + id + '/restore', { method: 'POST', credentials: 'include' });
+        var res = await fetch(API_BASE + '/api/trash/' + id + '/restore', { method: 'POST', credentials: 'include' });
         if (!res.ok) { var err = await res.json().catch(function() { return {}; }); alert(err.message || 'Restore failed'); return; }
         await loadTrash();
         alert('Item restored. You can click "Undo Last Restore" if this was a mistake.');
@@ -783,7 +783,7 @@
       var id2 = purgeBtn.dataset.id;
       if (!confirm('Permanently delete this item? This cannot be undone.')) return;
       try {
-        var res2 = await fetch('/api/trash/' + id2, { method: 'DELETE', credentials: 'include' });
+        var res2 = await fetch(API_BASE + '/api/trash/' + id2, { method: 'DELETE', credentials: 'include' });
         if (!res2.ok) { var err2 = await res2.json().catch(function() { return {}; }); alert(err2.message || 'Delete failed'); return; }
         await loadTrash();
       } catch (err) { alert('Delete failed'); }
@@ -793,7 +793,7 @@
   if (undoLastBtn) undoLastBtn.addEventListener('click', async function() {
     if (!confirm('Undo the most recent restore action?')) return;
     try {
-      var res = await fetch('/api/trash/restore/undo-last', { method: 'POST', credentials: 'include' });
+      var res = await fetch(API_BASE + '/api/trash/restore/undo-last', { method: 'POST', credentials: 'include' });
       var data = await res.json().catch(function() { return {}; });
       if (!res.ok) { alert(data.message || 'No recent restore to undo.'); return; }
       alert(data.message || 'Last restore undone successfully.');

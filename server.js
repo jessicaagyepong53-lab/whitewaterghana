@@ -104,7 +104,7 @@ const SESSION_COOKIE = 'ww_session';
 
 const SESSION_AGE_MS = 1000 * 60 * 60 * 12;
 
-const IS_PROD = process.env.NODE_ENV === 'production' || !!process.env.VERCEL || !!process.env.RENDER;
+const IS_PROD = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 
 const DEV_EMAIL = 'naanabrenda52@gmail.com';
 
