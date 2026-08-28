@@ -199,7 +199,7 @@
       const filterMonth = document.getElementById('rep-filter-month');
       const filterYear = document.getElementById('rep-filter-year');
 
-      let url = '/api/reports/sales-summary';
+      let url = API_BASE + '/api/reports/sales-summary';
       if (filterType && filterType.value === 'month' && filterMonth && filterMonth.value) {
         url += '?month=' + encodeURIComponent(filterMonth.value);
       } else if (filterType && filterType.value === 'year' && filterYear && filterYear.value) {

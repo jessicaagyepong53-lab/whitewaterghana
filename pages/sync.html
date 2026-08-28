@@ -17,6 +17,21 @@ h1{color:#60a5fa}
 <button onclick="pullAll()">Pull from Server</button>
 <div id="out" style="margin-top:16px"></div>
 <script>
+// This page is served from Vercel but the API runs on Render, so every
+// request needs an absolute URL pointing at Render (see script.js for the
+// same logic used on the other pages — this page doesn't load script.js,
+// so it's duplicated here).
+const RENDER_API_ORIGIN = 'https://whitewaterghana.onrender.com';
+const API_BASE = (function resolveApiBase() {
+	try {
+		const host = window.location.hostname;
+		if (host === 'localhost' || host === '127.0.0.1') return '';
+		if (window.location.origin === RENDER_API_ORIGIN) return '';
+		return RENDER_API_ORIGIN;
+	} catch (_e) {
+		return '';
+	}
+})();
 const out = document.getElementById('out');
 function log(html) { out.innerHTML += html + '<br>'; }
 function ok(msg) { log('<span class="ok">✓ ' + msg + '</span>'); }
@@ -75,7 +90,7 @@ async function mergeAndPush() {
   out.innerHTML = '';
   log('Checking authentication...');
   try {
-    const me = await fetch('/api/auth/me', {credentials:'include'});
+    const me = await fetch(API_BASE + '/api/auth/me', {credentials:'include'});
     if (!me.ok) { fail('Not logged in! Please log in first then come back.'); return; }
     ok('Authenticated');
   } catch(e) { fail('Cannot reach server: ' + e.message); return; }
@@ -93,7 +108,7 @@ async function mergeAndPush() {
   info('Fetching current server data for merge…');
   let serverItems = {};
   try {
-    const r = await fetch('/api/app-data-bulk?keys=' + allKeys.map(encodeURIComponent).join(','), {credentials:'include', cache:'no-store'});
+    const r = await fetch(API_BASE + '/api/app-data-bulk?keys=' + allKeys.map(encodeURIComponent).join(','), {credentials:'include', cache:'no-store'});
     if (r.ok) { const j = await r.json(); serverItems = j.items || {}; }
   } catch(e) { warn('Could not fetch server data — will push local only. (' + e.message + ')'); }
 
@@ -134,7 +149,7 @@ async function mergeAndPush() {
     if (finalData && typeof finalData === 'object' && !Array.isArray(finalData) && Object.keys(finalData).length === 0) { skipped++; continue; }
 
     try {
-      const res = await fetch('/api/app-data/' + encodeURIComponent(key), {
+      const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(key), {
         method: 'PUT', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: finalData }),
@@ -159,14 +174,14 @@ async function pullAll() {
   out.innerHTML = '';
   log('Checking authentication...');
   try {
-    const me = await fetch('/api/auth/me', {credentials:'include'});
+    const me = await fetch(API_BASE + '/api/auth/me', {credentials:'include'});
     if (!me.ok) { fail('Not logged in!'); return; }
     ok('Authenticated');
   } catch(e) { fail('Cannot reach server: ' + e.message); return; }
 
   // Load sales months first
   try {
-    const r = await fetch('/api/app-data/ww_sales_months', {credentials:'include', cache:'no-store'});
+    const r = await fetch(API_BASE + '/api/app-data/ww_sales_months', {credentials:'include', cache:'no-store'});
     if (r.ok) {
       const j = await r.json();
       if (j.data) { localStorage.setItem('ww_sales_months', JSON.stringify(j.data)); ok('ww_sales_months loaded'); }
@@ -179,7 +194,7 @@ async function pullAll() {
 
   const keyParam = allKeys.map(encodeURIComponent).join(',');
   try {
-    const r = await fetch('/api/app-data-bulk?keys=' + keyParam, {credentials:'include', cache:'no-store'});
+    const r = await fetch(API_BASE + '/api/app-data-bulk?keys=' + keyParam, {credentials:'include', cache:'no-store'});
     if (!r.ok) { fail('Bulk load failed: HTTP ' + r.status); return; }
     const j = await r.json();
     const items = j.items || {};
@@ -201,4 +216,3 @@ async function pullAll() {
 }
 </script>
 </body></html>
-
