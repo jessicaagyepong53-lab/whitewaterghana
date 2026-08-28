@@ -18,6 +18,45 @@ const API_BASE = (function resolveApiBase() {
 	}
 })();
 const LAST_DATA_UPDATE_KEY = 'ww_last_data_update';
+
+// ── Bearer-token auth ──
+// The ops console (Vercel) and API (Render) are different domains, so the
+// session cookie is a third-party cookie in the browser's eyes. Safari
+// blocks third-party cookies by default, Firefox's standard tracking
+// protection increasingly does too, and Chrome users can toggle the same
+// block — for anyone in that situation, the cookie set at login either
+// never gets stored or never gets sent back, and /api/auth/me instantly
+// reports "not signed in" right after a successful login. To make login
+// work regardless of any browser's cookie policy, the server also returns
+// the session token in the login/register response body. It's stored here
+// and every fetch() call below automatically gets it attached as a Bearer
+// token, which isn't subject to cookie rules at all. Storage is per-page
+// origin scoped by the browser already (localStorage), so nothing extra
+// is needed there.
+const AUTH_TOKEN_KEY = 'ww_auth_token';
+function getAuthToken() {
+	try { return localStorage.getItem(AUTH_TOKEN_KEY) || ''; } catch (_e) { return ''; }
+}
+function setAuthToken(token) {
+	try {
+		if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+		else localStorage.removeItem(AUTH_TOKEN_KEY);
+	} catch (_e) { /* ignore */ }
+}
+(function patchFetchWithAuthToken() {
+	if (typeof window === 'undefined' || !window.fetch || window.fetch.__wwAuthPatched) return;
+	const originalFetch = window.fetch.bind(window);
+	function patchedFetch(input, init) {
+		const token = getAuthToken();
+		if (!token) return originalFetch(input, init);
+		const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined));
+		if (!headers.has('Authorization')) headers.set('Authorization', 'Bearer ' + token);
+		const opts = Object.assign({}, init, { headers });
+		return originalFetch(input, opts);
+	}
+	patchedFetch.__wwAuthPatched = true;
+	window.fetch = patchedFetch;
+})();
 const DASHBOARD_REFRESH_STAMP_KEY = 'ww_dashboard_data_refreshed_at';
 const DASHBOARD_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const SALES_PENDING_SYNC_PREFIX = 'ww_pending_sales_sync_';
@@ -2900,6 +2939,7 @@ function bindLogoutLinks() {
 			} catch (_error) {
 				// Redirect anyway.
 			}
+			setAuthToken('');
 			localStorage.removeItem('ww_user_email');
 			localStorage.removeItem('ww_user_role');
 			localStorage.removeItem('ww_can_edit_delete');
@@ -3101,6 +3141,7 @@ function renderTopbarUserMenu(userInput) {
 					try {
 						await fetch(API_BASE + '/api/auth/logout', { method: 'POST', credentials: 'include' });
 					} catch (_error) { /* redirect anyway */ }
+					setAuthToken('');
 					localStorage.removeItem('ww_user_email');
 					localStorage.removeItem('ww_user_role');
 					localStorage.removeItem('ww_can_edit_delete');
@@ -3202,6 +3243,7 @@ function bindRolePersistenceOnAuthForms() {
 			try {
 				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Signing in…'; }
 				const data = await postJson('/api/auth/login', { email, password });
+				setAuthToken(data.token || '');
 				const loginEmail = String(data.user?.email || email || '').trim().toLowerCase();
 				if (loginEmail) localStorage.setItem('ww_user_email', loginEmail);
 				const role = resolveEffectiveClientRole(normalizeRole(data.user?.effectiveRole || data.user?.role), loginEmail);
@@ -3252,6 +3294,7 @@ function bindRolePersistenceOnAuthForms() {
 			try {
 				if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Creating account…'; }
 				const data = await postJson('/api/auth/register', { name, email, password, role: selectedRole });
+				setAuthToken(data.token || '');
 				const registerEmail = String(data.user?.email || email || '').trim().toLowerCase();
 				if (registerEmail) localStorage.setItem('ww_user_email', registerEmail);
 				const role = resolveEffectiveClientRole(normalizeRole(data.user?.effectiveRole || data.user?.role), registerEmail);
@@ -14684,7 +14727,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 		const connectSse = () => {
 			if (window.__wwSseSource) { try { window.__wwSseSource.close(); } catch (_e) {} }
-			const es = new EventSource(API_BASE + '/api/live-updates', { withCredentials: true });
+			// EventSource can't send custom headers, so the token (needed since
+			// this connects cross-domain and the session cookie may be blocked
+			// as third-party) is passed as a query param instead — the server's
+			// /api/live-updates route accepts it that way specifically for this.
+			const liveUpdatesToken = getAuthToken();
+			const liveUpdatesUrl = API_BASE + '/api/live-updates' + (liveUpdatesToken ? ('?token=' + encodeURIComponent(liveUpdatesToken)) : '');
+			const es = new EventSource(liveUpdatesUrl, { withCredentials: true });
 			window.__wwSseSource = es;
 			es.addEventListener('data_updated', handleRealtimeUpdate);
 			es.onerror = () => {

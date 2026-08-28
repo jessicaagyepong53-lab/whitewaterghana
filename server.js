@@ -217,7 +217,7 @@ app.use((req, res, next) => {
     // preflight — but this app sends several custom headers
     // (x-idempotency-key, x-batch-id, x-ww-automation, x-ww-source-instance)
     // that the browser will block unless explicitly allow-listed here.
-    res.header('Access-Control-Allow-Headers', 'Content-Type, x-idempotency-key, x-batch-id, x-ww-automation, x-ww-source-instance');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-idempotency-key, x-batch-id, x-ww-automation, x-ww-source-instance');
 
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
 
@@ -423,9 +423,25 @@ async function getSession(token) {
 
 
 
+function extractBearerToken(headerValue) {
+  if (!headerValue) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(String(headerValue).trim());
+  return match ? match[1].trim() : null;
+}
+
 async function attachUser(req, _res, next) {
 
-  req.user = await getSession(req.cookies[SESSION_COOKIE]);
+  // Prefer a Bearer token (used by the ops console, which runs on a
+  // different domain than this API — a cross-site cookie is unreliable
+  // there since many browsers block third-party cookies outright). Fall
+  // back to the cookie for same-origin callers. EventSource (used for
+  // /api/live-updates) can't send custom headers at all, so as a last
+  // resort that one route also accepts the token as a query param.
+  const headerToken = extractBearerToken(req.headers.authorization);
+  const queryToken = (req.path === '/api/live-updates' && typeof req.query.token === 'string') ? req.query.token : null;
+  const token = headerToken || req.cookies[SESSION_COOKIE] || queryToken;
+
+  req.user = await getSession(token);
 
   next();
 
@@ -2313,6 +2329,7 @@ app.post('/api/auth/register', async (req, res, next) => {
 
     res.status(201).json({
 
+      token,
       user: { id: user._id, name, email, role: authorized.role, status: 'Active', canEditDelete: resolveCanEditDelete(user) },
 
     });
@@ -2407,6 +2424,7 @@ app.post('/api/auth/login', async (req, res, next) => {
 
     res.json({
 
+      token,
       user: {
 
         id: user._id,
@@ -2440,7 +2458,7 @@ app.post('/api/auth/login', async (req, res, next) => {
 
 app.post('/api/auth/logout', ensureAuthenticated, async (req, res) => {
 
-  const token = req.cookies[SESSION_COOKIE];
+  const token = req.user.token;
 
   await Session.deleteOne({ token });
 
