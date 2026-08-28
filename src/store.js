@@ -5,6 +5,26 @@
 (function () {
 	'use strict';
 
+	// ── API origin resolution ──
+	// This storefront is served as a static file from Vercel, but the API
+	// (server.js) runs as a persistent service on Render. A bare relative
+	// fetch('/api/...') would silently hit Vercel's own domain instead of
+	// Render, and — since it's genuinely cross-origin now — every request
+	// also needs credentials:'include' so the ww_store_session cookie is
+	// actually sent. See API_BASE in src/script.js for the same pattern
+	// used by the internal ops console.
+	const RENDER_API_ORIGIN = 'https://whitewaterghana.onrender.com';
+	const API_BASE = (function resolveApiBase() {
+		try {
+			const host = window.location.hostname;
+			if (host === 'localhost' || host === '127.0.0.1') return '';
+			if (window.location.origin === RENDER_API_ORIGIN) return '';
+			return RENDER_API_ORIGIN;
+		} catch (_e) {
+			return '';
+		}
+	})();
+
 	// ── State ──
 	let currentCustomer = null;
 	let cart = JSON.parse(localStorage.getItem('ww_store_cart') || '[]');
@@ -61,7 +81,7 @@
 	// ═══════ AUTH SESSION ═══════
 	async function checkSession() {
 		try {
-			const res = await fetch('/api/store/me');
+			const res = await fetch(API_BASE + '/api/store/me', { credentials: 'include' });
 			if (res.ok) {
 				const data = await res.json();
 				setLoggedIn(data.customer);
@@ -115,8 +135,9 @@
 		};
 
 		try {
-			const res = await fetch('/api/store/register', {
+			const res = await fetch(API_BASE + '/api/store/register', {
 				method: 'POST',
+				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(body),
 			});
@@ -138,8 +159,9 @@
 		errEl.textContent = '';
 
 		try {
-			const res = await fetch('/api/store/login', {
+			const res = await fetch(API_BASE + '/api/store/login', {
 				method: 'POST',
+				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					email: form.email.value.trim(),
@@ -158,7 +180,7 @@
 
 	// ═══════ LOGOUT ═══════
 	window.storeLogout = async function () {
-		await fetch('/api/store/logout', { method: 'POST' });
+		await fetch(API_BASE + '/api/store/logout', { method: 'POST', credentials: 'include' });
 		setLoggedOut();
 		showSection('home');
 	};
@@ -167,7 +189,7 @@
 	async function loadProducts() {
 		const grid = $('#products-grid');
 		try {
-			const res = await fetch('/api/store/products');
+			const res = await fetch(API_BASE + '/api/store/products', { credentials: 'include' });
 			const products = await res.json();
 			if (!products.length) {
 				grid.innerHTML = '<p class="st-loading">No products available right now. Check back soon!</p>';
@@ -360,8 +382,9 @@
 		if (submitBtn) submitBtn.disabled = true;
 
 		try {
-			const res = await fetch('/api/store/orders', {
+			const res = await fetch(API_BASE + '/api/store/orders', {
 				method: 'POST',
+				credentials: 'include',
 				headers: {
 					'Content-Type': 'application/json',
 					'X-Idempotency-Key': checkoutRequestKey,
@@ -412,7 +435,7 @@
 		list.innerHTML = '<div class="st-loading"><i class="fa-solid fa-spinner fa-spin"></i> Loading orders...</div>';
 
 		try {
-			const res = await fetch('/api/store/orders');
+			const res = await fetch(API_BASE + '/api/store/orders', { credentials: 'include' });
 			if (!res.ok) throw new Error('Not authenticated');
 			const orders = await res.json();
 

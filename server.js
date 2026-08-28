@@ -82,6 +82,8 @@ const {
 
 } = require('./server/db');
 
+const { mountAssistantRoutes } = require('./server/assistant');
+
 
 
 const app = express();
@@ -96,7 +98,7 @@ const io = new Server(server, {
 
 const rootDir = __dirname;
 
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 const SESSION_COOKIE = 'ww_session';
 
@@ -133,9 +135,21 @@ function resolveCanEditDelete(userLike) {
 
 function cookieOpts(maxAge) {
 
-  const opts = { httpOnly: true, sameSite: 'lax', maxAge };
+  const opts = { httpOnly: true, maxAge };
 
-  if (IS_PROD) { opts.secure = true; }
+  // Frontend (Vercel) and API (Render) are different domains in production,
+  // so every authenticated request is now genuinely cross-site. SameSite=Lax
+  // silently drops the cookie on cross-site requests — no CORS setting can
+  // override that, it's enforced at the browser's cookie-storage layer — so
+  // production needs SameSite=None, which in turn requires Secure (both
+  // platforms are HTTPS-only, so that's already satisfied). Local dev stays
+  // on Lax since it's same-origin there and typically plain HTTP.
+  if (IS_PROD) {
+    opts.sameSite = 'none';
+    opts.secure = true;
+  } else {
+    opts.sameSite = 'lax';
+  }
 
   return opts;
 
@@ -169,7 +183,7 @@ const RESOURCE_RULES = {
 
   vault: ['ceo', 'manager'],
 
-  dashboard: ['ceo', 'manager', 'supervisor', 'staff'],
+  dashboard: ['ceo', 'manager'],
 
   purchaseOrders: ['ceo', 'manager', 'supervisor'],
 
@@ -197,7 +211,13 @@ app.use((req, res, next) => {
 
     res.header('Access-Control-Allow-Credentials', 'true');
 
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    // Frontend (Vercel) and API (Render) are different origins now, so
+    // preflight requests are real for the first time. Content-Type alone
+    // used to be enough because same-origin requests never trigger a
+    // preflight — but this app sends several custom headers
+    // (x-idempotency-key, x-batch-id, x-ww-automation, x-ww-source-instance)
+    // that the browser will block unless explicitly allow-listed here.
+    res.header('Access-Control-Allow-Headers', 'Content-Type, x-idempotency-key, x-batch-id, x-ww-automation, x-ww-source-instance');
 
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
 
@@ -1005,6 +1025,101 @@ async function logStaffAction({ req, action, entityType, entityId, batchId, chan
 
 }
 
+// Cheap, dependency-free content hash — good enough to give repeated-content
+// rows a stable-ish entityId for the activity log without needing a real id
+// field (accounting ledger/cashbook/salary/asset rows don't have one).
+function hashRecordContent(record) {
+
+  const str = JSON.stringify(record == null ? '' : record);
+
+  let hash = 0;
+
+  for (let i = 0; i < str.length; i += 1) {
+
+    hash = (hash * 31 + str.charCodeAt(i)) | 0;
+
+  }
+
+  return 'h' + Math.abs(hash).toString(36);
+
+}
+
+// Diffs two arrays of plain-object rows by content (not by id, since many
+// AppData-backed sub-arrays — accounting ledger/cashbook/salaries/assets in
+// particular — don't carry a stable id field). A row present in both arrays
+// the same number of times nets out as unchanged; a net increase in a given
+// row's count logs that many 'create' entries, a net decrease logs that many
+// 'delete' entries. In-place edits are therefore seen as a delete + create
+// pair rather than a single 'update' — an accepted approximation so that
+// adds/removes on these pages are visible in the activity feed at all.
+async function logContentDiffActivity({ req, entityType, previousArr, nextArr, batchId }) {
+
+  const prev = Array.isArray(previousArr) ? previousArr : [];
+
+  const next = Array.isArray(nextArr) ? nextArr : [];
+
+  if (!prev.length && !next.length) return;
+
+  const prevCounts = new Map();
+
+  for (const row of prev) {
+
+    const key = JSON.stringify(row);
+
+    prevCounts.set(key, (prevCounts.get(key) || 0) + 1);
+
+  }
+
+  const nextCounts = new Map();
+
+  for (const row of next) {
+
+    const key = JSON.stringify(row);
+
+    nextCounts.set(key, (nextCounts.get(key) || 0) + 1);
+
+  }
+
+  const allKeys = new Set([...prevCounts.keys(), ...nextCounts.keys()]);
+
+  for (const key of allKeys) {
+
+    const delta = (nextCounts.get(key) || 0) - (prevCounts.get(key) || 0);
+
+    if (delta === 0) continue;
+
+    const sampleRow = delta > 0
+
+      ? next.find((row) => JSON.stringify(row) === key)
+
+      : prev.find((row) => JSON.stringify(row) === key);
+
+    const baseId = hashRecordContent(sampleRow);
+
+    const count = Math.abs(delta);
+
+    for (let i = 0; i < count; i += 1) {
+
+      await logActivity({
+
+        req,
+
+        action: delta > 0 ? 'create' : 'delete',
+
+        entityType,
+
+        entityId: `${baseId}-${i}`,
+
+        batchId,
+
+      });
+
+    }
+
+  }
+
+}
+
 async function logActivity({ req, action, entityType, entityId, batchId, changes, details }) {
 
   if (!isHumanBusinessAction(req)) return;
@@ -1578,6 +1693,126 @@ function resolveInvoiceCreateStatus(user, requestedStatus, fallbackStatus = 'Pen
 
 /* ═══════════════════════════════════════════════
 
+   LOGIN ATTEMPT LOCKOUT
+
+   ───────────────────────────────────────────────
+   Tracked by attempted email (not tied to whether the account exists,
+   so guessing valid emails is also slowed) using the existing AppData
+   key-value store rather than a new Mongoose model — this is deliberately
+   NOT registered in ALLOWED_DATA_KEYS, so it is only ever touched here,
+   server-side, during the login flow itself, and is never exposed
+   through the generic /api/app-data/:key routes.
+
+   ═══════════════════════════════════════════════ */
+
+const LOGIN_ATTEMPTS_KEY = 'ww_login_attempts';
+const MAX_LOGIN_ATTEMPTS = 3;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000; // 1st time an account hits the attempt limit
+const LOGIN_REPEAT_LOCKOUT_MS = 24 * 60 * 60 * 1000; // 2nd+ time — escalates to a full day
+
+// MongoDB's dot-notation update paths treat '.' as a path separator, so a
+// raw email can't safely be used as a nested field name in an atomic
+// update. This produces a Mongo-safe key while staying effectively unique
+// for this app's small, known set of authorized email addresses.
+function sanitizeLoginAttemptKey(email) {
+  return String(email || '').trim().toLowerCase().replace(/[.$]/g, '_');
+}
+
+async function readLoginAttemptEntry(attemptKey) {
+  const doc = await AppData.findOne({ key: LOGIN_ATTEMPTS_KEY }).lean();
+  const map = (doc && doc.data && typeof doc.data === 'object' && !Array.isArray(doc.data)) ? doc.data : {};
+  return map[attemptKey] || null;
+}
+
+// Full reset — used on a *successful* login. Wipes the attempt count AND the
+// escalation counter (lockoutCount), since a successful login is the one
+// event that should give an account a clean slate.
+async function clearLoginAttempts(attemptKey) {
+  await AppData.updateOne(
+    { key: LOGIN_ATTEMPTS_KEY },
+    { $unset: { [`data.${attemptKey}`]: '' } },
+    { upsert: true },
+  );
+}
+
+// Partial reset — used when a lockout window has simply expired on its own
+// (no successful login yet). Clears attempts/lockedUntil so the account gets
+// a fresh set of 3 attempts, but deliberately keeps lockoutCount so the
+// escalation is remembered: a 2nd unlock-then-relock still jumps straight to
+// the 24-hour tier instead of quietly resetting back to 15 minutes.
+async function clearExpiredLockoutFields(attemptKey) {
+  await AppData.updateOne(
+    { key: LOGIN_ATTEMPTS_KEY },
+    { $unset: { [`data.${attemptKey}.attempts`]: '', [`data.${attemptKey}.lockedUntil`]: '' } },
+    { upsert: true },
+  );
+}
+
+// Atomic increment (via MongoDB's own $inc) so concurrent failed attempts
+// from the same email — e.g. someone mashing the login button — can't
+// under-count and quietly bypass the lockout.
+async function recordFailedLoginAttempt(attemptKey, email) {
+  const nowIsoStr = new Date().toISOString();
+  const updated = await AppData.findOneAndUpdate(
+    { key: LOGIN_ATTEMPTS_KEY },
+    {
+      $setOnInsert: { key: LOGIN_ATTEMPTS_KEY },
+      $inc: { [`data.${attemptKey}.attempts`]: 1 },
+      $set: {
+        [`data.${attemptKey}.email`]: email,
+        [`data.${attemptKey}.lastAttemptAt`]: nowIsoStr,
+      },
+    },
+    { upsert: true, new: true },
+  ).lean();
+
+  const entry = (updated && updated.data) ? updated.data[attemptKey] : null;
+  const attempts = entry ? Number(entry.attempts || 0) : 1;
+
+  // How many times has this account ever been locked out before? Escalation
+  // is based on this count, not on the current (possibly-reset) attempts
+  // count, so it survives across lockout windows expiring.
+  const priorLockoutCount = entry ? Number(entry.lockoutCount || 0) : 0;
+  const upcomingLockoutCount = priorLockoutCount + 1;
+  const upcomingLockoutMs = upcomingLockoutCount >= 2 ? LOGIN_REPEAT_LOCKOUT_MS : LOGIN_LOCKOUT_MS;
+
+  if (attempts >= MAX_LOGIN_ATTEMPTS) {
+    const lockedUntilIso = new Date(Date.now() + upcomingLockoutMs).toISOString();
+    await AppData.updateOne(
+      { key: LOGIN_ATTEMPTS_KEY },
+      {
+        $set: {
+          [`data.${attemptKey}.lockedUntil`]: lockedUntilIso,
+          [`data.${attemptKey}.lockoutCount`]: upcomingLockoutCount,
+        },
+      },
+    );
+    return { attempts, lockedUntil: lockedUntilIso, lockoutDurationMs: upcomingLockoutMs };
+  }
+
+  return { attempts, lockedUntil: (entry && entry.lockedUntil) || null, upcomingLockoutMs };
+}
+
+// Formats a duration in ms as the largest sensible unit ("45 minutes",
+// "2 hours", "1 day") rather than always showing minutes, since a 24-hour
+// lockout displayed as "1440 minutes" would be a poor message to show someone.
+function formatDurationLabel(ms) {
+  const totalMinutes = Math.max(1, Math.ceil(Number(ms || 0) / 60000));
+  if (totalMinutes < 60) {
+    return `${totalMinutes} minute${totalMinutes === 1 ? '' : 's'}`;
+  }
+  const totalHours = Math.ceil(totalMinutes / 60);
+  if (totalHours < 24) {
+    return `${totalHours} hour${totalHours === 1 ? '' : 's'}`;
+  }
+  const totalDays = Math.ceil(totalHours / 24);
+  return `${totalDays} day${totalDays === 1 ? '' : 's'}`;
+}
+
+
+
+/* ═══════════════════════════════════════════════
+
    OPTIONS / DASHBOARD / REPORTS
 
    ═══════════════════════════════════════════════ */
@@ -1910,6 +2145,23 @@ app.get('/api/health', (_req, res) => {
 
 
 
+// ── AI Assistant (CEO/Manager only, read-only, full-system) ──
+// See server/assistant.js for the tool definitions and access gate.
+mountAssistantRoutes(app, {
+  AppData,
+  Invoice,
+  Customer,
+  InventoryItem,
+  FactoryEquipment,
+  User,
+  StaffAction,
+  SPECIAL_ACCESS_OVERRIDES,
+  nowIso,
+  createError,
+});
+
+
+
 // ── SSE: real-time cross-device sync ──
 
 const sseClients = new Set();
@@ -2085,17 +2337,49 @@ app.post('/api/auth/login', async (req, res, next) => {
 
     const email = String(req.body.email).trim().toLowerCase();
 
+    const attemptKey = sanitizeLoginAttemptKey(email);
+
+    const existingEntry = await readLoginAttemptEntry(attemptKey);
+
+    if (existingEntry && existingEntry.lockedUntil) {
+      const lockedUntilMs = Date.parse(existingEntry.lockedUntil);
+      if (Number.isFinite(lockedUntilMs) && lockedUntilMs > Date.now()) {
+        const remainingLabel = formatDurationLabel(lockedUntilMs - Date.now());
+        throw createError(429, `Too many failed attempts. Please come back in ${remainingLabel}.`);
+      }
+      // Lockout window has passed - clear attempts/lockedUntil only, so this
+      // email gets a fresh set of 3 attempts while its lockoutCount (used to
+      // escalate future lockouts) is preserved.
+      await clearExpiredLockoutFields(attemptKey);
+    }
+
     const user = await User.findOne({ email });
 
-    if (!user) throw createError(401, 'Invalid email or password');
+    const passwordOk = !!(user && bcrypt.compareSync(String(req.body.password), user.password_hash));
 
+    if (!user || !passwordOk) {
 
+      const attemptResult = await recordFailedLoginAttempt(attemptKey, email);
 
-    if (!bcrypt.compareSync(String(req.body.password), user.password_hash)) {
+      if (attemptResult.lockedUntil && attemptResult.lockoutDurationMs) {
+        const lockoutLabel = formatDurationLabel(attemptResult.lockoutDurationMs);
+        throw createError(429, `Too many failed attempts. Your account is locked for ${lockoutLabel}.`);
+      }
 
-      throw createError(401, 'Invalid email or password');
+      const attemptsLeft = Math.max(0, MAX_LOGIN_ATTEMPTS - attemptResult.attempts);
+      const upcomingLabel = formatDurationLabel(attemptResult.upcomingLockoutMs || LOGIN_LOCKOUT_MS);
+      throw createError(
+        401,
+        attemptsLeft > 0
+          ? `Invalid email or password. ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before a ${upcomingLabel} lockout.`
+          : 'Invalid email or password'
+      );
 
     }
+
+    // Successful login clears any tracked failed attempts AND the escalation
+    // counter for this email — a genuine successful login is a clean slate.
+    if (existingEntry) await clearLoginAttempts(attemptKey);
 
 
 
@@ -2785,6 +3069,8 @@ const ALLOWED_DATA_KEYS = [
 
   'ww_tax_records',
 
+  'ww_bvc_notes',
+
 ];
 
 
@@ -3396,6 +3682,91 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
 
 
+      // ── Diff-based activity logging ──
+      // This route (bulk sales-month sync) is the actual save path used by the
+      // Sales & Invoicing page's Add/Edit Invoice flow — but bulk-sync writes
+      // don't log activity automatically (see README §11: "Any new bulk-sync
+      // route... remember logActivity() is not called automatically for bulk
+      // writes"). Without this, invoice adds/edits made from that page never
+      // reached the ActivityLog collection, so the dashboard's "Business
+      // activity" card kept showing whatever the last logActivity-covered
+      // event was (e.g. from PUT /api/invoices/:id/status) instead of today's
+      // real changes. Diff previous vs. merged invoices to log creates,
+      // content updates, and deletions under one batch.
+      try {
+
+        const previousInvoiceMap = new Map();
+
+        for (const inv of (Array.isArray(serverData.invoices) ? serverData.invoices : [])) {
+
+          if (inv && inv.id) previousInvoiceMap.set(String(inv.id).trim(), inv);
+
+        }
+
+        const previousDeletedIds = new Set(
+
+          (Array.isArray(serverData.deletedInvoiceIds) ? serverData.deletedInvoiceIds : [])
+
+            .map((id) => String(id || '').trim())
+
+            .filter(Boolean)
+
+        );
+
+        const activityBatchId = getActivityBatchId(req);
+
+        const INVOICE_ACTIVITY_FIELDS = ['customer', 'amount', 'status', 'date', 'paymentMode', 'carType', 'carNumber', 'promo'];
+
+        for (const inv of normalized.invoices) {
+
+          if (!inv || !inv.id) continue;
+
+          const id = String(inv.id).trim();
+
+          const prev = previousInvoiceMap.get(id);
+
+          if (!prev) {
+
+            await logActivity({ req, action: 'create', entityType: 'invoices', entityId: id, batchId: activityBatchId });
+
+            continue;
+
+          }
+
+          const changes = collectChangedFields(
+
+            INVOICE_ACTIVITY_FIELDS.map((field) => ({ field, oldValue: prev[field], newValue: inv[field] }))
+
+          );
+
+          if (changes.length) {
+
+            await logActivity({ req, action: 'update', entityType: 'invoices', entityId: id, batchId: activityBatchId, changes });
+
+          }
+
+        }
+
+        for (const id of deletedInvoiceIds) {
+
+          if (previousDeletedIds.has(id)) continue;
+
+          if (!previousInvoiceMap.has(id)) continue;
+
+          await logActivity({ req, action: 'delete', entityType: 'invoices', entityId: id, batchId: activityBatchId });
+
+        }
+
+      } catch (activityErr) {
+
+        // Never let activity logging failures block the actual save.
+
+        console.error('[ActivityLog] Failed to log sales-month activity:', activityErr && activityErr.message);
+
+      }
+
+
+
       await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
 
       if (typeof broadcastRealtimeUpdate === 'function') broadcastRealtimeUpdate({ key, source });
@@ -3408,7 +3779,68 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
     // Non-sales keys: simple normalize and save.
 
+    // ── Content-diff activity logging ──
+    // Same gap as the sales-month branch above: Inventory (raw materials /
+    // finished products), Production (batches), Purchase & Vendors (POs /
+    // suppliers), and Accounting (ledger / cashbook / salaries / assets) all
+    // save through this generic bulk-sync branch, which never logged to
+    // ActivityLog. Unlike invoices, most of these rows don't carry a stable
+    // 'id' we can diff on (accounting ledger/cashbook rows especially), so we
+    // diff by row content instead: a row that disappears from "previous" and
+    // reappears in "next" nets out as unchanged; a net increase in a row's
+    // count logs that many creates, a net decrease logs that many deletes.
+    // This can't distinguish an in-place edit from a delete+re-add, which is
+    // an accepted limitation (mirrors the count-based approach already used
+    // client-side for the local audit trail) but it means adds and removes on
+    // these pages now show up at all, which they did not before.
+
+    const priorDocForActivity = await AppData.findOne({ key }).lean();
+
+    const priorDataForActivity = priorDocForActivity && priorDocForActivity.data;
+
     const normalized = normalizeSalesMonthPayload(key, req.body.data);
+
+    try {
+
+      const activityBatchId = getActivityBatchId(req);
+
+      const priorObj = priorDataForActivity && typeof priorDataForActivity === 'object' ? priorDataForActivity : {};
+
+      const nextObj = normalized && typeof normalized === 'object' ? normalized : {};
+
+      if (key === 'ww_raw_materials' || key === 'ww_finished_products') {
+
+        await logContentDiffActivity({ req, entityType: 'inventory', previousArr: priorDataForActivity, nextArr: normalized, batchId: activityBatchId });
+
+      } else if (key === 'ww_production_batches') {
+
+        await logContentDiffActivity({ req, entityType: 'production', previousArr: priorDataForActivity, nextArr: normalized, batchId: activityBatchId });
+
+      } else if (key === 'ww_purchase_data_v2') {
+
+        await logContentDiffActivity({ req, entityType: 'purchaseOrders', previousArr: priorObj.purchaseOrders, nextArr: nextObj.purchaseOrders, batchId: activityBatchId });
+
+        await logContentDiffActivity({ req, entityType: 'vendors', previousArr: priorObj.suppliers, nextArr: nextObj.suppliers, batchId: activityBatchId });
+
+      } else if (key === 'ww_accounting_data_v2') {
+
+        await logContentDiffActivity({ req, entityType: 'accounting', previousArr: priorObj.ledger, nextArr: nextObj.ledger, batchId: activityBatchId });
+
+        await logContentDiffActivity({ req, entityType: 'accounting', previousArr: priorObj.cashbook, nextArr: nextObj.cashbook, batchId: activityBatchId });
+
+        await logContentDiffActivity({ req, entityType: 'accounting', previousArr: priorObj.salaries, nextArr: nextObj.salaries, batchId: activityBatchId });
+
+        await logContentDiffActivity({ req, entityType: 'accounting', previousArr: priorObj.assets, nextArr: nextObj.assets, batchId: activityBatchId });
+
+      }
+
+    } catch (activityErr) {
+
+      // Never let activity logging failures block the actual save.
+
+      console.error('[ActivityLog] Failed to log app-data activity for', key, activityErr && activityErr.message);
+
+    }
 
     await AppData.updateOne({ key }, { key, data: normalized }, { upsert: true });
 

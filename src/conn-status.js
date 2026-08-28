@@ -1,11 +1,30 @@
 /* ═══════════════════════════════════════════════════════════════════
    CONNECTION STATUS BANNER
    ───────────────────────────────────────────────────────────────────
-   Watches the real-time sync transport already set up in script.js
-   (Socket.IO → SSE → 15s poll) and surfaces a small, unobtrusive
-   banner when the app is NOT on the fastest transport, so staff
-   understand why a change from another device hasn't shown up yet
-   instead of assuming the app is broken or their entry was lost.
+   Surfaces a small, unobtrusive banner when the app hasn't actually
+   pulled fresh data from the server recently, so staff understand why
+   a change from another device hasn't shown up yet instead of assuming
+   the app is broken or their entry was lost.
+
+   WHY THIS CHECKS SYNC FRESHNESS, NOT TRANSPORT STATE
+   ────────────────────────────────────────────────────
+   script.js wires up Socket.IO and SSE for instant cross-device push,
+   falling back to a periodic poll. On serverless hosting (this app is
+   deployed on Vercel) neither push channel can be trusted as a signal
+   of health:
+     - Socket.IO never actually connects there — the serverless
+       entrypoint invokes the plain Express app, not the http.Server
+       instance Socket.IO is attached to.
+     - An SSE connection genuinely opens (readyState reports OPEN) but
+       the list of "who's listening" lives in that one serverless
+       instance's memory. A write handled by a different instance has
+       no way to reach it, so the connection can look perfectly healthy
+       while silently delivering nothing.
+   Checking window.__wwLastSyncMs — a timestamp script.js updates every
+   time it actually finishes pulling fresh data (via poll, tab refocus,
+   or a lucky same-instance push) — reports what actually matters: is
+   the data on screen current, not whether a particular transport
+   object exists.
 
    INTEGRATION
    ───────────
@@ -16,13 +35,7 @@
         <script src="../src/script.js?v=20260704u"></script>
         <script src="../src/conn-status.js?v=1"></script>
 
-   3. Add the CSS block at the bottom of this file to src/script.css.
-
-   This module does not modify script.js. It reads the same global
-   state script.js already maintains (window.__wwSocket,
-   window.__wwSocketConnected, window.__wwSseSource) and polls it,
-   so it stays in sync with whatever transport is currently active
-   without duplicating connection logic.
+   3. The CSS for this banner lives in src/script.css (already appended).
    ═══════════════════════════════════════════════════════════════════ */
 
 (function () {
@@ -32,7 +45,11 @@
 	if (!document.body || !document.body.classList.contains('ops-page')) return;
 
 	const CHECK_INTERVAL_MS = 4000;
-	const DEGRADED_GRACE_MS = 8000; // avoid flashing the banner during normal reconnect blips
+	// The realtime poller in script.js runs every 8s. Anything within ~2.5x
+	// that window is "on schedule"; past that, something is actually stuck
+	// (tab was hidden, a request failed repeatedly, etc.) and worth surfacing.
+	const STALE_THRESHOLD_MS = 20000;
+	const DEGRADED_GRACE_MS = 6000; // avoid flashing the banner during normal reconnect blips
 	const STATE = { ok: 'ok', degraded: 'degraded', offline: 'offline' };
 
 	let banner = null;
@@ -71,16 +88,18 @@
 		el.querySelector('.ww-conn-text').textContent = text;
 	}
 
-	function detectTransportState() {
+	function detectSyncState() {
 		if (!navigator.onLine) return STATE.offline;
 
-		const socketConnected = !!window.__wwSocketConnected;
-		const sseOpen = !!(window.__wwSseSource && window.__wwSseSource.readyState === 1 /* OPEN */);
+		const lastSyncMs = Number(window.__wwLastSyncMs || 0);
+		if (!lastSyncMs) {
+			// Page just loaded and hasn't completed its first sync yet — that's
+			// normal for the first couple of seconds, not a fault.
+			return STATE.ok;
+		}
 
-		if (socketConnected || sseOpen) return STATE.ok;
-
-		// Neither Socket.IO nor SSE is currently connected — the app has
-		// fallen back to (or is waiting to fall back to) periodic polling.
+		const ageMs = Date.now() - lastSyncMs;
+		if (ageMs <= STALE_THRESHOLD_MS) return STATE.ok;
 		return STATE.degraded;
 	}
 
@@ -95,7 +114,9 @@
 		// A full data pull mirrors what script.js already does on focus/visibility change.
 		try {
 			if (typeof window.pullRemoteDataAndRefreshUi === 'function') {
-				window.pullRemoteDataAndRefreshUi().catch(() => {});
+				window.pullRemoteDataAndRefreshUi().then(() => {
+					if (typeof document !== 'undefined') document.dispatchEvent(new Event('ww-refresh-page'));
+				}).catch(() => {});
 			}
 		} catch (_e) { /* ignore */ }
 		// Re-evaluate shortly after to update the banner text.
@@ -103,7 +124,7 @@
 	}
 
 	function evaluate() {
-		const detected = detectTransportState();
+		const detected = detectSyncState();
 		const now = Date.now();
 
 		if (detected === STATE.ok) {
@@ -125,7 +146,7 @@
 		if (detected === STATE.offline) {
 			setBannerState(STATE.offline, 'No internet connection. Your changes are saved locally and will sync once you\u2019re back online.');
 		} else {
-			setBannerState(STATE.degraded, 'Live sync is running slower than usual (checking every 15s). Your changes are still saved.');
+			setBannerState(STATE.degraded, 'Sync is behind — tap to refresh now. Changes from other devices may take a moment to appear.');
 		}
 	}
 
@@ -139,4 +160,4 @@
 	setInterval(evaluate, CHECK_INTERVAL_MS);
 })();
 
-/* CSS for this banner now lives in src/script.css (already appended). */
+/* CSS for this banner lives in src/script.css (already appended). */

@@ -159,8 +159,26 @@
       </form>
     </div>
   </div>
+  <div id="ai-assistant-widget" style="display:none">
+  <button id="ai-assistant-toggle" class="btn-primary" style="position:fixed;bottom:20px;right:20px;border-radius:50%;width:56px;height:56px;">
+    <i class="fa-solid fa-robot"></i>
+  </button>
+  <div id="ai-assistant-panel" style="display:none;position:fixed;bottom:88px;right:20px;width:340px;max-height:480px;background:#fff;border:1px solid #c8ddec;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,0.15);">
+    <!-- chat UI goes here -->
+  </div>
+</div>
 </main>
 <script src="../src/script.js?v=20260704u"></script>
+<script src="../src/assistant.js?v=2"></script>
 <script src="../src/conn-status.js?v=1"></script>
+<script>
+(async function initAssistantWidget() {
+  const role = await resolveCurrentUserRole();
+  if (role === 'ceo' || role === 'manager') {
+    const widget = document.getElementById('ai-assistant-widget');
+    if (widget) widget.style.display = 'block';
+  }
+})();
+</script>
 </body>
 </html>

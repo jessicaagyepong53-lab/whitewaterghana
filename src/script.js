@@ -1,4 +1,22 @@
-﻿const API_BASE = '';
+﻿// ── API origin resolution ──
+// The ops console is served as static files from Vercel, but the API
+// (server.js) now runs as a persistent Render Web Service — required for
+// Socket.IO/SSE to work at all (see conn-status.js and the realtime poller
+// below for why Vercel serverless can't support them). A bare relative
+// fetch('/api/...') would silently hit Vercel's own domain instead of
+// Render, so every request needs an absolute URL pointing at Render
+// whenever this page isn't already being served from that origin.
+const RENDER_API_ORIGIN = 'https://whitewaterghana.onrender.com';
+const API_BASE = (function resolveApiBase() {
+	try {
+		const host = window.location.hostname;
+		if (host === 'localhost' || host === '127.0.0.1') return '';
+		if (window.location.origin === RENDER_API_ORIGIN) return '';
+		return RENDER_API_ORIGIN;
+	} catch (_e) {
+		return '';
+	}
+})();
 const LAST_DATA_UPDATE_KEY = 'ww_last_data_update';
 const DASHBOARD_REFRESH_STAMP_KEY = 'ww_dashboard_data_refreshed_at';
 const DASHBOARD_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -2040,6 +2058,12 @@ async function pullRemoteDataAndRefreshUi() {
 	await refreshEquipmentFromServerAuthoritative();
 	keysToRefresh.forEach((key) => emitStorageKeyChange(key));
 	broadcastRemoteSyncRefresh();
+	// Single choke point for "when did we last actually pull fresh data from the
+	// server" — used by the realtime poller's self-gating and by the connection
+	// status banner (src/conn-status.js) to report real sync health instead of
+	// raw transport state, which is misleading on serverless hosting (see the
+	// comment above connectSse()/the poller below for why).
+	window.__wwLastSyncMs = Date.now();
 }
 
 function formatCurrency(value) {
@@ -3021,6 +3045,10 @@ function renderTopbarUserMenu(userInput) {
 	const displayRole = toRoleLabel(user?.roleLabel || user?.role || 'user');
 	const initials = toUserInitials(displayName, user?.email || '');
 
+	const canOpenSettings = ['ceo', 'manager'].includes(String(user?.role || '').trim().toLowerCase());
+	const settingsMenuItem = canOpenSettings
+		? `<button type="button" class="ww-user-menu-item" data-user-action="settings" role="menuitem"><i class="fa-solid fa-sliders"></i> Settings</button>`
+		: '';
 	topbars.forEach((topbar) => {
 		let menu = topbar.querySelector('.ww-user-dropdown');
 		if (!menu) {
@@ -3037,7 +3065,7 @@ function renderTopbarUserMenu(userInput) {
 				</button>
 				<div class="ww-user-menu" role="menu" aria-label="User menu">
 					<button type="button" class="ww-user-menu-item" data-user-action="profile" role="menuitem"><i class="fa-regular fa-user"></i> Profile</button>
-					<button type="button" class="ww-user-menu-item" data-user-action="settings" role="menuitem"><i class="fa-solid fa-sliders"></i> Settings</button>
+					${settingsMenuItem}
 					<button type="button" class="ww-user-menu-item danger" data-user-action="logout" role="menuitem"><i class="fa-solid fa-arrow-right-from-bracket"></i> Log Out</button>
 				</div>
 			`;
@@ -7017,21 +7045,21 @@ function renderInvoiceDetail(invoice) {
 					<span>Prepared by:</span>
 					<div class="inv-doc-sig-line">
 						<div class="inv-doc-sig-name">${escapeHtml(preparedByName)}</div>
-						<div class="inv-doc-sig-role">${escapeHtml(preparedByRole)}</div>
+						<div class="inv-doc-sig-role">(${escapeHtml(preparedByRole)})</div>
 					</div>
 				</div>
 				<div class="inv-doc-sig">
 					<span>Checked by:</span>
 					<div class="inv-doc-sig-line">
 						<div class="inv-doc-sig-name">${escapeHtml(checkedByName || '________________')}</div>
-						<div class="inv-doc-sig-role">${escapeHtml(checkedByRole)}</div>
+						<div class="inv-doc-sig-role">(${escapeHtml(checkedByRole)})</div>
 					</div>
 				</div>
 				<div class="inv-doc-sig">
 					<span>Received by:</span>
 					<div class="inv-doc-sig-line">
 						<div class="inv-doc-sig-name">${escapeHtml(receivedByName || '________________')}</div>
-						<div class="inv-doc-sig-role">${escapeHtml(receivedByRole)}</div>
+						<div class="inv-doc-sig-role">(${escapeHtml(receivedByRole)})</div>
 					</div>
 				</div>
 			</div>
@@ -8316,7 +8344,7 @@ async function loadOnlineOrders() {
 	window.__wwOnlineOrdersLoading = true;
 
 	try {
-		const res = await fetch(API_BASE + '/api/store/admin/orders');
+		const res = await fetch(API_BASE + '/api/store/admin/orders', { credentials: 'include' });
 		if (!res.ok) {
 			tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#587289;padding:24px">Unable to load online orders. Make sure you are logged in.</td></tr>';
 			tbody.dataset.ordersSignature = 'error';
@@ -8386,6 +8414,7 @@ async function updateOnlineOrderStatus(orderId, newStatus) {
 	try {
 		const res = await fetch(API_BASE + `/api/store/admin/orders/${orderId}/status`, {
 			method: 'PUT',
+			credentials: 'include',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ status: newStatus }),
 		});
@@ -14594,6 +14623,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 						await refreshEquipmentFromServerAuthoritative();
 						emitStorageKeyChange('ww_equipment');
 						broadcastRemoteSyncRefresh();
+						window.__wwLastSyncMs = Date.now();
 						document.dispatchEvent(new Event('ww-refresh-page'));
 						return;
 					}
@@ -14674,15 +14704,34 @@ document.addEventListener('DOMContentLoaded', async () => {
 				} catch (_e) {}
 			}
 		});
+		// ── Realtime poller: the reliable sync path on serverless hosting ──
+		// Socket.IO and SSE are wired up above as a "best effort, sometimes
+		// instant" channel, but on Vercel (and any horizontally-scaled
+		// serverless host) neither can be trusted as the primary sync path:
+		//   - Socket.IO never actually connects in that environment (the
+		//     serverless entrypoint invokes the plain Express app, not the
+		//     http.Server the Socket.IO instance is attached to).
+		//   - An SSE connection genuinely opens, but the list of "who's
+		//     listening" lives in that one serverless instance's memory —
+		//     a write handled by a different instance has no way to reach it.
+		//     window.__wwSseSource being truthy therefore does NOT mean
+		//     updates from other devices are actually arriving.
+		// This poller used to skip itself whenever an SSE object existed,
+		// which meant it almost never ran — that's why a status change made
+		// on one device (e.g. marking equipment faulty) could sit invisible
+		// on another device indefinitely instead of catching up within
+		// seconds. It now only defers to Socket.IO, which — if it's ever
+		// genuinely connected (e.g. a future non-serverless deployment) — is
+		// a reliable same-process channel worth trusting.
 		if (!window.__wwRealtimePoller) {
 			window.__wwRealtimePoller = setInterval(async () => {
 				if (document.hidden) return;
-				if (window.__wwSseSource || window.__wwSocketConnected) return;
+				if (window.__wwSocketConnected) return;
 				try {
 					await pullRemoteDataAndRefreshUi();
 					document.dispatchEvent(new Event('ww-refresh-page'));
 				} catch (_e) { /* noop */ }
-			}, 15000);
+			}, 8000);
 		}
 	}
 

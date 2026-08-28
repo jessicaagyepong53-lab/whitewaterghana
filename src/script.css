@@ -2788,6 +2788,14 @@ canvas {
 	background: #fef2f2;
 }
 
+.bvc-company-logo {
+    height: 32px;
+    width: auto;
+    object-fit: contain;
+    vertical-align: middle;
+    margin-right: 8px;
+}
+
 /* ═══════════════════  WAYBILL  ═══════════════════ */
 .waybill-toolbar {
 	display: flex;
