@@ -25,6 +25,39 @@
 		}
 	})();
 
+	// ── Bearer-token auth ──
+	// Like the ops console, this storefront (Vercel) and the API (Render)
+	// are different domains, so ww_store_session is a third-party cookie —
+	// Safari blocks those by default, and other browsers increasingly do
+	// too, which made login appear to instantly fail for affected
+	// customers. The server also returns the session token in the
+	// register/login response body now; it's stored here and attached to
+	// every fetch() automatically, sidestepping cookie policy entirely.
+	const STORE_AUTH_TOKEN_KEY = 'ww_store_auth_token';
+	function getStoreAuthToken() {
+		try { return localStorage.getItem(STORE_AUTH_TOKEN_KEY) || ''; } catch (_e) { return ''; }
+	}
+	function setStoreAuthToken(token) {
+		try {
+			if (token) localStorage.setItem(STORE_AUTH_TOKEN_KEY, token);
+			else localStorage.removeItem(STORE_AUTH_TOKEN_KEY);
+		} catch (_e) { /* ignore */ }
+	}
+	(function patchFetchWithStoreAuthToken() {
+		if (!window.fetch || window.fetch.__wwStoreAuthPatched) return;
+		const originalFetch = window.fetch.bind(window);
+		function patchedFetch(input, init) {
+			const token = getStoreAuthToken();
+			if (!token) return originalFetch(input, init);
+			const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined));
+			if (!headers.has('Authorization')) headers.set('Authorization', 'Bearer ' + token);
+			const opts = Object.assign({}, init, { headers });
+			return originalFetch(input, opts);
+		}
+		patchedFetch.__wwStoreAuthPatched = true;
+		window.fetch = patchedFetch;
+	})();
+
 	// ── State ──
 	let currentCustomer = null;
 	let cart = JSON.parse(localStorage.getItem('ww_store_cart') || '[]');
@@ -143,6 +176,7 @@
 			});
 			const data = await res.json();
 			if (!res.ok) throw new Error(data.message || 'Registration failed');
+			setStoreAuthToken(data.token || '');
 			setLoggedIn(data.customer);
 			closeModal();
 			form.reset();
@@ -170,6 +204,7 @@
 			});
 			const data = await res.json();
 			if (!res.ok) throw new Error(data.message || 'Login failed');
+			setStoreAuthToken(data.token || '');
 			setLoggedIn(data.customer);
 			closeModal();
 			form.reset();
@@ -181,6 +216,7 @@
 	// ═══════ LOGOUT ═══════
 	window.storeLogout = async function () {
 		await fetch(API_BASE + '/api/store/logout', { method: 'POST', credentials: 'include' });
+		setStoreAuthToken('');
 		setLoggedOut();
 		showSection('home');
 	};

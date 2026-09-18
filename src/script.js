@@ -2949,6 +2949,27 @@ function bindLogoutLinks() {
 	});
 }
 
+/* ── Customer Store quick-link (sidebar) ──
+   Adds a link to the public customer store into every ops page's sidebar,
+   right above Logout. Opens in a new tab so the person's ops session stays
+   untouched. Root-relative href so it works no matter how deep the current
+   page is nested (e.g. /pages/dashboard.html vs /login.html). */
+function injectStoreLink() {
+	const nav = document.querySelector('.ops-nav');
+	if (!nav || nav.querySelector('.store-external-link')) return; // already added
+	const logoutLink = nav.querySelector('.logout-link');
+
+	const storeLink = document.createElement('a');
+	storeLink.href = 'https://wwwwhitewatersghanacom.vercel.app/';
+	storeLink.target = '_blank';
+	storeLink.rel = 'noopener noreferrer';
+	storeLink.className = 'store-external-link';
+	storeLink.innerHTML = '<i class="fa-solid fa-store"></i> Factory Website <i class="fa-solid fa-arrow-up-right-from-square" style="font-size:.7em;margin-left:4px;opacity:.6"></i>';
+
+	if (logoutLink) nav.insertBefore(storeLink, logoutLink);
+	else nav.appendChild(storeLink);
+}
+
 function toRoleLabel(role) {
 	const raw = String(role || '').trim();
 	if (!raw) return 'User';
@@ -6295,6 +6316,117 @@ function getAllSalesData() {
 		} catch (_e) { /* skip */ }
 	}
 	return { invoices: allInvoices, salesOrders: allOrders };
+}
+/* ── Customer Retention Rate (CRR) ──────────────────────────────
+   Resolves free-text "customer" fields on invoices into identifiable
+   customers, excluding placeholder/generic names that were never meant
+   to track an actual repeat buyer (Walk-in, Individual, Client, etc.).
+   Read-only over existing sales data — adds no new storage. */
+
+const CRR_GENERIC_NAME_BLOCKLIST = new Set([
+	'walk-in', 'walkin', 'walk in', 'individual', 'client', 'customer',
+	'unknown', 'n/a', 'na', 'various', 'various customers', 'guest',
+]);
+
+// Strips role/descriptor suffixes like "(driver)", "(Loader)", and splits
+// combined entries like "Charlotte / Stzpr" or "Madam Mamuko / Apr" down to
+// the first meaningful name, so near-duplicate free-text entries collapse
+// onto one canonical customer instead of each looking like a new person.
+function normalizeCustomerIdentityKey(rawName) {
+	let text = String(rawName || '').trim();
+	if (!text) return '';
+	text = text.replace(/\([^)]*\)/g, ' ');           // drop "(driver)", "(Loader)"
+	text = text.split(/[\/+,]/)[0];                    // take first segment of combined names
+	text = text.replace(/\s+/g, ' ').trim().toLowerCase();
+	return text;
+}
+
+function isIdentifiableCustomerName(rawName) {
+	const key = normalizeCustomerIdentityKey(rawName);
+	if (!key) return false;
+	if (CRR_GENERIC_NAME_BLOCKLIST.has(key)) return false;
+	if (key.length < 3) return false;
+	if (/^\d+$/.test(key)) return false; // pure numbers aren't names
+	return true;
+}
+
+// Builds { normalizedKey: { displayName, firstPurchaseMs, purchaseDatesMs: [] } }
+// across ALL recorded sales history (not just one month), so "first purchase"
+// and "existing customer" status are judged against the customer's real history.
+function buildCustomerIdentityIndex() {
+	const index = new Map();
+	const allInvoices = getAllSalesData().invoices;
+	for (const inv of allInvoices) {
+		if (!inv || !inv.id) continue;
+		if (!isIdentifiableCustomerName(inv.customer)) continue;
+		const key = normalizeCustomerIdentityKey(inv.customer);
+		const ms = parseDateLikeToMs(inv.date);
+		if (!Number.isFinite(ms)) continue;
+		if (!index.has(key)) {
+			index.set(key, { displayName: String(inv.customer).trim(), firstPurchaseMs: ms, purchaseDatesMs: [] });
+		}
+		const entry = index.get(key);
+		entry.purchaseDatesMs.push(ms);
+		if (ms < entry.firstPurchaseMs) entry.firstPurchaseMs = ms;
+	}
+	return index;
+}
+
+// periodStartMs/periodEndMs: inclusive range in ms (start of day .. end of day).
+// Returns { crr, customersAtStart, customersAtEnd, acquiredDuringPeriod, retained }
+// or { crr: null, reason } if there isn't a valid prior customer base to compare against.
+function computeCustomerRetentionRate(periodStartMs, periodEndMs) {
+	const index = buildCustomerIdentityIndex();
+
+	const activeInPeriod = new Set();
+	for (const [key, entry] of index.entries()) {
+		const wasActive = entry.purchaseDatesMs.some((ms) => ms >= periodStartMs && ms <= periodEndMs);
+		if (wasActive) activeInPeriod.add(key);
+	}
+
+	const customersAtStart = new Set();
+	for (const [key, entry] of index.entries()) {
+		if (entry.firstPurchaseMs < periodStartMs) customersAtStart.add(key);
+	}
+
+	if (customersAtStart.size === 0) {
+		return { crr: null, reason: 'No prior customer base to compare against', customersAtStart: 0, customersAtEnd: activeInPeriod.size, acquiredDuringPeriod: 0, retained: 0 };
+	}
+
+	let acquiredDuringPeriod = 0;
+	for (const key of activeInPeriod) {
+		const entry = index.get(key);
+		if (entry.firstPurchaseMs >= periodStartMs && entry.firstPurchaseMs <= periodEndMs) acquiredDuringPeriod += 1;
+	}
+
+	let retained = 0;
+	for (const key of customersAtStart) {
+		if (activeInPeriod.has(key)) retained += 1;
+	}
+
+	const customersAtEnd = activeInPeriod.size;
+	const crr = (retained / customersAtStart.size) * 100;
+
+	return { crr, customersAtStart: customersAtStart.size, customersAtEnd, acquiredDuringPeriod, retained };
+}
+
+// Convenience wrapper for a "YYYY-MM" month key, matching how the rest of
+// the sales module already keys periods.
+function computeCustomerRetentionForMonth(monthKey) {
+	const start = parseDateLikeToMs(`${monthKey}-01`);
+	if (!Number.isFinite(start)) return { crr: null, reason: 'Invalid month' };
+	const d = new Date(start);
+	const end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999).getTime();
+	return computeCustomerRetentionRate(start, end);
+}
+
+// Convenience wrapper for a full calendar year.
+function computeCustomerRetentionForYear(year) {
+	const y = Number(year);
+	if (!Number.isFinite(y)) return { crr: null, reason: 'Invalid year' };
+	const start = new Date(y, 0, 1).getTime();
+	const end = new Date(y, 11, 31, 23, 59, 59, 999).getTime();
+	return computeCustomerRetentionRate(start, end);
 }
 
 function ensureMonthExists(month) {
@@ -11232,6 +11364,7 @@ function initAccountingPage() {
 		const sectionTabs = [...document.querySelectorAll('.rv-tab[data-rv-section]')];
 		const searchEl = document.getElementById('rv-search');
 		const categoryEl = document.getElementById('rv-category-filter');
+		const yearFilterEl = document.getElementById('rv-year-filter');
 		const dateFromEl = document.getElementById('rv-date-from');
 		const dateToEl = document.getElementById('rv-date-to');
 		const viewGridBtn = document.getElementById('rv-view-grid');
@@ -11277,6 +11410,7 @@ function initAccountingPage() {
 		const categoriesBySection = {
 			companyDocuments: ['License', 'Contract', 'Certificate', 'Insurance', 'Other'],
 			receipts: ['Purchase Receipt', 'Utility Payment', 'Salary Payment', 'Other'],
+			financialReports: ['Quarterly Report', 'Annual Report'],
 		};
 
 		let currentSection = 'companyDocuments';
@@ -11571,6 +11705,33 @@ function initAccountingPage() {
 			}
 		};
 
+		// The Year filter applies to every section — Financial Reports has an
+		// explicit `year` on each record (quarterly/annual), while Company
+		// Documents and Receipts derive it from their date/uploadDate. Options
+		// are populated dynamically from whatever years actually exist in the
+		// section+folder currently being viewed, rather than a hardcoded range,
+		// so switching tabs or drilling into a folder refreshes the choices to
+		// match what's actually there.
+		const loadYearOptions = async () => {
+			if (!yearFilterEl) return;
+			const previousValue = yearFilterEl.value;
+			try {
+				const folderParam = encodeURIComponent(currentFolderId || 'root');
+				const url = `${API_BASE}/api/record-vault/${currentSection}?folderId=${folderParam}`;
+				const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+				if (!res.ok) throw new Error('Failed to load years');
+				const payload = await res.json();
+				const years = [...new Set((payload.files || [])
+					.map((f) => (Number.isFinite(Number(f.year)) ? Number(f.year) : Number(String(f.date || f.uploadDate || '').slice(0, 4))))
+					.filter((y) => Number.isFinite(y)))]
+					.sort((a, b) => b - a);
+				yearFilterEl.innerHTML = `<option value="">All Years</option>${years.map((y) => `<option value="${y}">${y}</option>`).join('')}`;
+				if (previousValue && years.includes(Number(previousValue))) yearFilterEl.value = previousValue;
+			} catch (_error) {
+				yearFilterEl.innerHTML = '<option value="">All Years</option>';
+			}
+		};
+
 		const getCurrentFolderLabel = () => (folderPath.length ? String(folderPath[folderPath.length - 1].name || '').trim() || 'Home' : 'Home');
 
 		const updateUploadTargetLabel = () => {
@@ -11632,6 +11793,14 @@ function initAccountingPage() {
 				const dateLabel = formatDateDisplay(String((currentSection === 'receipts' ? (file.date || file.uploadDate) : file.uploadDate) || '').slice(0, 10));
 				const notes = currentSection === 'receipts' && file.notes ? `<div class="rv-card-meta">Notes: ${escapeHtml(file.notes)}</div>` : '';
 				const amount = currentSection === 'receipts' && file.amount ? `<div class="rv-card-meta">Amount: ${escapeHtml(file.amount)}</div>` : '';
+				const reportMeta = currentSection === 'financialReports' ? `
+					${file.periodLabel ? `<div class="rv-card-meta">Period: ${escapeHtml(file.periodLabel)}</div>` : ''}
+					${file.summary ? `<div class="rv-card-meta">Revenue: ${escapeHtml(formatCurrency(file.summary.revenue))} · Net profit: ${escapeHtml(formatCurrency(file.summary.netProfit))}</div>` : ''}
+					<div class="rv-card-meta">${file.emailed
+						? `<i class="fa-solid fa-envelope-circle-check" style="color:#16a34a"></i> Emailed${Array.isArray(file.recipients) && file.recipients.length ? ' to ' + escapeHtml(file.recipients.join(', ')) : ''}`
+						: `<i class="fa-solid fa-envelope-circle-exclamation" style="color:#d97706"></i> Not emailed${file.emailError ? ' — ' + escapeHtml(file.emailError) : ''}`
+					}</div>
+				` : '';
 				return `
 					<article class="rv-card" data-rv-file-id="${escapeHtml(file.fileId || '')}">
 						<div class="rv-thumb">
@@ -11647,6 +11816,7 @@ function initAccountingPage() {
 							<div class="rv-card-meta">File size: ${escapeHtml(formatBytes(file.fileSize))}</div>
 							${amount}
 							${notes}
+							${reportMeta}
 						</div>
 						<div class="rv-card-actions">
 							<button type="button" class="btn-secondary" data-rv-action="open"><i class="fa-regular fa-eye"></i> Open</button>
@@ -11664,6 +11834,7 @@ function initAccountingPage() {
 			const params = new URLSearchParams();
 			if (searchEl && searchEl.value.trim()) params.set('search', searchEl.value.trim());
 			if (categoryEl && categoryEl.value && categoryEl.value !== 'All') params.set('category', categoryEl.value);
+			if (yearFilterEl && yearFilterEl.value) params.set('year', yearFilterEl.value);
 			if (dateFromEl && dateFromEl.value) params.set('dateFrom', dateFromEl.value);
 			if (dateToEl && dateToEl.value) params.set('dateTo', dateToEl.value);
 			params.set('folderId', currentFolderId || 'root');
@@ -11701,6 +11872,7 @@ function initAccountingPage() {
 		const refreshVaultView = async () => {
 			await loadFolders();
 			await loadFiles();
+			await loadYearOptions();
 		};
 
 		const closeUploadModal = () => {
@@ -11900,6 +12072,7 @@ function initAccountingPage() {
 
 		if (searchEl) searchEl.addEventListener('input', () => loadFiles());
 		if (categoryEl) categoryEl.addEventListener('change', () => loadFiles());
+		if (yearFilterEl) yearFilterEl.addEventListener('change', () => loadFiles());
 		if (dateFromEl) dateFromEl.addEventListener('change', () => loadFiles());
 		if (dateToEl) dateToEl.addEventListener('change', () => loadFiles());
 		if (viewGridBtn) viewGridBtn.addEventListener('click', () => setView('grid'));
@@ -14559,6 +14732,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 	try { initSidebarToggle(); } catch (_e) { /* ignore */ }
 	try { bindLogoutLinks(); } catch (_e) { /* ignore */ }
 	try { enforceRoleAccess(); } catch (_e) { /* ignore */ }
+	try { injectStoreLink(); } catch (_e) { /* ignore */ }
 	try { renderTopbarUserMenu(getCachedSessionUser()); } catch (_e) { /* ignore */ }
 
 	// Hydrate localStorage from server before page inits

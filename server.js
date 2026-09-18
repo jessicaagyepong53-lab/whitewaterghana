@@ -83,8 +83,7 @@ const {
 } = require('./server/db');
 
 const { mountAssistantRoutes } = require('./server/assistant');
-
-
+const { mountQuarterlyReportRoutes } = require('./server/quarterly-reports');
 
 const app = express();
 
@@ -115,6 +114,17 @@ const SPECIAL_ACCESS_OVERRIDES = {
   [DEV_EMAIL]: ['ceo', 'supervisor'],
 
 };
+
+mountQuarterlyReportRoutes(app, {
+  AppData,
+  ProductionBatch,
+  nowIso,
+  createError,
+  ensureAuthenticated,
+  SPECIAL_ACCESS_OVERRIDES,
+  getGridFSBucket,
+  broadcastRealtimeUpdate,
+});
 
 function defaultCanEditDeleteForRole(role) {
   const normalized = String(role || '').trim().toLowerCase();
@@ -6097,6 +6107,15 @@ app.get('/api/store/products', async (_req, res) => {
 
 
 
+// Mirrors attachUser's approach: store.html is also served from Vercel
+// while this API runs on Render, so the storefront session cookie has the
+// same third-party-cookie exposure as the ops console did. Prefer a Bearer
+// token; fall back to the cookie for any caller still using it.
+function resolveStoreSessionToken(req) {
+  const headerToken = extractBearerToken(req.headers.authorization);
+  return headerToken || req.cookies.ww_store_session;
+}
+
 app.post('/api/store/register', async (req, res, next) => {
 
   try {
@@ -6135,7 +6154,7 @@ app.post('/api/store/register', async (req, res, next) => {
 
     res.cookie('ww_store_session', token, cookieOpts(SESSION_AGE_MS));
 
-    res.status(201).json({ ok: true, customer: { id: customer._id, name: customer.name, email: customer.email, phone: customer.phone } });
+    res.status(201).json({ ok: true, token, customer: { id: customer._id, name: customer.name, email: customer.email, phone: customer.phone } });
 
   } catch (error) {
 
@@ -6173,7 +6192,7 @@ app.post('/api/store/login', async (req, res, next) => {
 
     res.cookie('ww_store_session', token, cookieOpts(SESSION_AGE_MS));
 
-    res.json({ ok: true, customer: { id: customer._id, name: customer.name, email: customer.email, phone: customer.phone } });
+    res.json({ ok: true, token, customer: { id: customer._id, name: customer.name, email: customer.email, phone: customer.phone } });
 
   } catch (error) { next(error); }
 
@@ -6183,7 +6202,7 @@ app.post('/api/store/login', async (req, res, next) => {
 
 app.post('/api/store/logout', async (req, res) => {
 
-  const token = req.cookies.ww_store_session;
+  const token = resolveStoreSessionToken(req);
 
   if (token) await StoreSession.deleteOne({ token });
 
@@ -6221,7 +6240,7 @@ async function getStoreCustomer(token) {
 
 app.get('/api/store/me', async (req, res) => {
 
-  const customer = await getStoreCustomer(req.cookies.ww_store_session);
+  const customer = await getStoreCustomer(resolveStoreSessionToken(req));
 
   if (!customer) return res.status(401).json({ message: 'Not authenticated' });
 
@@ -6238,7 +6257,7 @@ app.post('/api/store/orders', async (req, res, next) => {
 
   try {
 
-    const customer = await getStoreCustomer(req.cookies.ww_store_session);
+    const customer = await getStoreCustomer(resolveStoreSessionToken(req));
 
     if (!customer) throw createError(401, 'Please log in to place an order');
 
@@ -6429,7 +6448,7 @@ app.get('/api/store/orders', async (req, res, next) => {
 
   try {
 
-    const customer = await getStoreCustomer(req.cookies.ww_store_session);
+    const customer = await getStoreCustomer(resolveStoreSessionToken(req));
 
     if (!customer) throw createError(401, 'Please log in to view orders');
 
@@ -6481,13 +6500,15 @@ const handleStoreAdminOrders = async (req, res, next) => {
 
 const RECORD_VAULT_KEY = 'ww_record_vault';
 
-const RECORD_VAULT_SECTIONS = ['companyDocuments', 'receipts'];
+const RECORD_VAULT_SECTIONS = ['companyDocuments', 'receipts', 'financialReports'];
 
 const RECORD_VAULT_CATEGORY_MAP = {
 
   companyDocuments: ['License', 'Contract', 'Certificate', 'Insurance', 'Other'],
 
   receipts: ['Purchase Receipt', 'Utility Payment', 'Salary Payment', 'Other'],
+
+  financialReports: ['Quarterly Report', 'Annual Report'],
 
 };
 
@@ -6554,6 +6575,8 @@ function normalizeRecordVaultData(raw) {
 
     receipts: Array.isArray(data.receipts) ? data.receipts : [],
 
+    financialReports: Array.isArray(data.financialReports) ? data.financialReports : [],
+
     folders: Array.isArray(data.folders)
       ? data.folders
         .filter((row) => row && typeof row === 'object')
@@ -6589,6 +6612,10 @@ async function writeRecordVaultData(data, source = null) {
 
   normalized.receipts = Array.isArray(normalized.receipts)
     ? [...normalized.receipts].sort((a, b) => recordVaultDateMs(a) - recordVaultDateMs(b))
+    : [];
+
+  normalized.financialReports = Array.isArray(normalized.financialReports)
+    ? [...normalized.financialReports].sort((a, b) => recordVaultDateMs(a) - recordVaultDateMs(b))
     : [];
 
   await AppData.updateOne(
@@ -6817,10 +6844,13 @@ app.get('/api/record-vault/:section', ensureAuthenticated, ensureRole('vault'), 
 
         const dateText = String(entry.date || entry.uploadDate || '').toLowerCase();
 
+        const periodText = String(entry.periodLabel || '').toLowerCase();
+
         return fileName.includes(search)
           || uploadedBy.includes(search)
           || categoryText.includes(search)
-          || dateText.includes(search);
+          || dateText.includes(search)
+          || periodText.includes(search);
 
       });
 
@@ -6829,6 +6859,28 @@ app.get('/api/record-vault/:section', ensureAuthenticated, ensureRole('vault'), 
     if (category && category !== 'All') {
 
       files = files.filter((entry) => String(entry.category || '') === category);
+
+    }
+
+    const yearFilter = String(req.query.year || '').trim();
+
+    if (yearFilter) {
+
+      files = files.filter((entry) => {
+
+        // financialReports records carry an explicit `year`; companyDocuments
+        // and receipts don't, so fall back to deriving it from whichever
+        // date field the entry actually has.
+
+        if (Number.isFinite(Number(entry.year))) return String(entry.year) === yearFilter;
+
+        const ms = recordVaultDateMs(entry);
+
+        if (!Number.isFinite(ms)) return false;
+
+        return String(new Date(ms).getFullYear()) === yearFilter;
+
+      });
 
     }
 

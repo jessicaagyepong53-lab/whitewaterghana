@@ -17,8 +17,9 @@
   h1.bvc-title{ font-size:clamp(22px,3vw,30px); line-height:1.15; margin:0 0 8px; color:var(--text); }
   .bvc-subhead{ font-size:14px; line-height:1.6; color:var(--muted); max-width:680px; margin:0 0 20px; }
 
-  #bvc-snapshot .s-meta.up{ color:#16a34a; }
-  #bvc-snapshot .s-meta.down{ color:#ef4444; }
+    #bvc-snapshot .s-meta.up{ color:#16a34a; }
+    #bvc-snapshot .s-meta.down{ color:#ef4444; }
+    #bvc-snapshot{ grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
 
   .bvc-controls-row{
     display:flex; align-items:center; justify-content:space-between; gap:12px;
@@ -142,7 +143,7 @@
   .bvc-strip button.tier-peak{ border-color:rgba(22,163,74,.45); }
   .bvc-strip button.tier-lean{ border-color:rgba(239,68,68,.45); }
   .bvc-strip button.is-best::after{
-    content:"\\2605"; position:absolute; top:-7px; right:-4px; color:#d97706; font-size:12px;
+    content:"\2605"; position:absolute; top:-7px; right:-4px; color:#d97706; font-size:12px;
   }
   .bvc-strip button.has-note::before{
     content:""; position:absolute; top:6px; right:6px; width:6px; height:6px; border-radius:50%; background:#1d4ed8;
@@ -151,10 +152,59 @@
   .bvc-empty{ padding:28px 20px; text-align:center; color:var(--muted); font-size:13px; border:1px dashed var(--border); border-radius:12px; background:#f8fafc; }
   .bvc-disclaimer{ margin-top:22px; font-size:11.5px; line-height:1.6; color:var(--muted); border-top:1px solid var(--border); padding-top:12px; }
 
+  /* ── Compare mode ─────────────────────────────────────────── */
+  .bvc-compare-wrap{ display:none; margin-top:0; }
+  .bvc-compare-controls{
+    display:flex; align-items:flex-end; justify-content:center; gap:18px; flex-wrap:wrap;
+  }
+  .bvc-compare-period{ display:flex; flex-direction:column; gap:6px; align-items:flex-start; }
+  .bvc-compare-period-label{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .bvc-compare-period-fields{ display:flex; gap:8px; }
+  .bvc-compare-period-fields select{ min-width:112px; }
+  .bvc-compare-vs{ color:var(--accent); font-size:16px; padding-bottom:9px; flex-shrink:0; }
+
+  .bvc-compare-head{ display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:16px; flex-wrap:wrap; }
+  .bvc-compare-head-col{ flex:1; min-width:160px; }
+  .bvc-compare-head-col h3{ margin:2px 0 0; font-size:17px; color:var(--text); }
+  .bvc-compare-head-vs{ color:var(--muted); font-size:14px; flex-shrink:0; }
+  .bvc-compare-nodata{ margin:4px 0 0; font-size:11.5px; color:#b45309; font-weight:600; }
+
+  .bvc-compare-table{ display:grid; gap:6px; margin-bottom:18px; }
+  .bvc-compare-row{
+    display:grid; grid-template-columns:1.2fr 1fr 1fr .8fr; gap:10px; align-items:center;
+    background:#f8fafc; border:1px solid var(--border); border-radius:10px; padding:10px 14px; font-size:13px;
+  }
+  .bvc-compare-row-head{ background:transparent; border:none; padding:0 14px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  .bvc-compare-row-label{ font-weight:600; color:var(--text); }
+  .bvc-compare-row-a, .bvc-compare-row-b{ font-weight:700; color:var(--text); }
+  .bvc-compare-row-delta{ font-weight:800; text-align:right; }
+  .bvc-compare-row-delta.up{ color:#16a34a; }
+  .bvc-compare-row-delta.down{ color:#ef4444; }
+  .bvc-compare-row-delta.flat{ color:var(--muted); }
+
+  .bvc-compare-notes-grid{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .bvc-compare-note-col{ background:#f8fafc; border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+  .bvc-compare-note-label{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--accent); margin-bottom:6px; }
+  .bvc-compare-note-line{ font-size:12.5px; line-height:1.55; color:var(--text); margin:0 0 6px; }
+  .bvc-compare-note-line.bvc-compare-note-muted{ color:var(--muted); font-style:italic; }
+  .bvc-compare-note-line:last-child{ margin-bottom:0; }
+
+  @media (max-width:640px){
+    .bvc-compare-controls{ justify-content:flex-start; }
+    .bvc-compare-vs{ display:none; }
+    .bvc-compare-row{ grid-template-columns:1fr 1fr; grid-template-areas:"label label" "a b" "delta delta"; }
+    .bvc-compare-row-label{ grid-area:label; }
+    .bvc-compare-row-a{ grid-area:a; }
+    .bvc-compare-row-b{ grid-area:b; }
+    .bvc-compare-row-delta{ grid-area:delta; text-align:left; }
+    .bvc-compare-row-head{ display:none; }
+    .bvc-compare-notes-grid{ grid-template-columns:1fr; }
+  }
+
   @media print {
     body{ background:#fff; }
     .bvc-page-pad{ max-width:100%; padding:0; }
-    .bvc-mode-toggle, .bvc-year-select-wrap, .bvc-note-edit-btn, .bvc-note-form{ display:none !important; }
+    .bvc-mode-toggle, .bvc-year-select-wrap, .bvc-note-edit-btn, .bvc-note-form, .bvc-compare-controls{ display:none !important; }
     .panel, .stat-card{ box-shadow:none !important; break-inside:avoid; }
   }
 </style>
@@ -174,6 +224,7 @@
     <div class="tab-bar bvc-mode-toggle" id="bvc-mode-toggle">
       <button type="button" class="tab-btn tab-active" id="bvc-btn-months">Monthly</button>
       <button type="button" class="tab-btn" id="bvc-btn-years" disabled title="Available once you have at least 2 years of sales history">Yearly</button>
+      <button type="button" class="tab-btn" id="bvc-btn-compare">Compare</button>
     </div>
     <div class="bvc-year-select-wrap" id="bvc-year-select-wrap">
       <label for="bvc-year-select">Year:</label>
@@ -181,7 +232,7 @@
     </div>
   </div>
 
-  <div class="bvc-layout">
+  <div class="bvc-layout" id="bvc-layout">
     <div class="panel">
       <div class="bvc-dial-stage">
         <svg id="bvc-dial-svg" viewBox="0 0 500 500"></svg>
@@ -196,6 +247,27 @@
 
   <div class="bvc-strip" id="bvc-strip"></div>
 
+  <div class="bvc-compare-wrap" id="bvc-compare-wrap">
+    <div class="panel bvc-compare-controls">
+      <div class="bvc-compare-period">
+        <span class="bvc-compare-period-label">Period A</span>
+        <div class="bvc-compare-period-fields">
+          <select id="bvc-compare-a-year" class="form-control"></select>
+          <select id="bvc-compare-a-month" class="form-control"></select>
+        </div>
+      </div>
+      <div class="bvc-compare-vs"><i class="fa-solid fa-arrow-right-arrow-left"></i></div>
+      <div class="bvc-compare-period">
+        <span class="bvc-compare-period-label">Period B</span>
+        <div class="bvc-compare-period-fields">
+          <select id="bvc-compare-b-year" class="form-control"></select>
+          <select id="bvc-compare-b-month" class="form-control"></select>
+        </div>
+      </div>
+    </div>
+    <div class="panel bvc-detail-panel" id="bvc-compare-result"></div>
+  </div>
+
   <footer class="bvc-disclaimer" id="bvc-disclaimer"></footer>
 </div>
 
@@ -209,11 +281,11 @@
   var CX = 250, CY = 250;
   var NOTES_KEY = "ww_bvc_notes";
 
-  var mode = "months";          // 'months' | 'years'
+  var mode = "months";          // 'months' | 'years' | 'compare'
   var byYear = {};
   var years = [];               // sorted ascending, e.g. ['2026']
   var selectedYear = null;      // currently viewed year in Monthly mode
-  var selectedMonthIdx = null;  // 1-12, null = year overview
+  var selectedMonthKey = null;  // 'YYYY-MM' of the selected month, or null for year overview
   var selectedYearInYearsMode = null;
   var snapshotModel = null;
   var currentRole = "staff";
@@ -221,11 +293,32 @@
   var editingNoteKey = null;    // 'YYYY-MM' currently being edited, or null
   var svg, pointsLayer;
 
+  // Compare mode state — any two arbitrary periods (a whole year, or one
+  // specific month of a year), so e.g. April 2026 can be compared against
+  // April 2027, or against March 2026, or against 2027 as a whole year.
+  var compareAYear = null, compareAMonth = null;  // compareXMonth: 1-12, or null = whole year
+  var compareBYear = null, compareBMonth = null;
+
+  // The earliest month that has ever had a sale or ledger entry, and the
+  // current real-world month — together these define the window of months
+  // that actually mean something for this business. Months before the
+  // business started keeping records, or months that haven't happened yet,
+  // are structurally different from a month that happened but recorded zero
+  // activity, so they're excluded from the dial/strip entirely rather than
+  // shown as empty placeholders.
+  var firstDataMonthKey = null;
+  var todayMonthKey = null;
+
   function fmtMoney(v) { return (typeof formatCurrency === "function") ? formatCurrency(v) : ("GH₵" + Math.round(v).toLocaleString()); }
   function escHtml(s) { return (typeof escapeHtml === "function") ? escapeHtml(s) : String(s == null ? "" : s); }
   function pad2(n) { return String(n).padStart(2, "0"); }
   function monthKeyOf(year, monthIdx1) { return year + "-" + pad2(monthIdx1); }
   function niceMonthLabel(key) { return (typeof monthLabel === "function") ? monthLabel(key) : key; }
+  function monthIdxFromKey(key) { return Number(String(key || "").slice(5, 7)) - 1; }
+  function slotIndexByKey(slots, key) {
+    for (var i = 0; i < slots.length; i += 1) { if (slots[i].key === key) return i; }
+    return -1;
+  }
 
   /* ───────── data sourcing ───────── */
 
@@ -322,15 +415,17 @@
     return { name: entries[0][0], amount: entries[0][1], share: total > 0 ? (entries[0][1] / total) * 100 : 0 };
   }
 
-  function buildSnapshot(series) {
+    function buildSnapshot(series) {
     if (!series.length) return null;
     var current = series[series.length - 1];
     var previous = series.length > 1 ? series[series.length - 2] : null;
     var revChangePct = (previous && previous.revenue > 0) ? ((current.revenue - previous.revenue) / previous.revenue) * 100 : null;
     var margin = current.revenue > 0 ? (current.net / current.revenue) * 100 : null;
+    var crr = (typeof computeCustomerRetentionForMonth === "function") ? computeCustomerRetentionForMonth(current.key) : { crr: null };
     return {
       month: current.key, revenue: current.revenue, expense: current.expense, net: current.net,
       pending: current.pending, revChangePct: revChangePct, margin: margin, topCategory: topCategory(current.categories),
+      crr: crr,
     };
   }
 
@@ -347,10 +442,18 @@
     return out;
   }
 
+  // Builds the list of month-slots to actually plot for a given year.
+  // Months before the business's first ever recorded month, and months that
+  // are still in the future relative to today, are left out entirely — a
+  // month that genuinely happened but recorded zero activity still gets a
+  // slot (empty:true), because that's real business information, whereas a
+  // month before the system existed or one that hasn't occurred yet is not.
   function getYearSlots(year) {
     var slots = [];
     for (var m = 1; m <= 12; m += 1) {
       var key = monthKeyOf(year, m);
+      if (firstDataMonthKey && key < firstDataMonthKey) continue;
+      if (todayMonthKey && key > todayMonthKey) continue;
       var row = (byYear[year] && byYear[year].months[key]) || null;
       slots.push(row ? row : { key: key, revenue: 0, expense: 0, net: 0, pending: 0, categories: {}, empty: true });
     }
@@ -457,15 +560,18 @@
     }
     return d + "Z";
   }
-  function renderTicks(activeCount) {
+  // Draws exactly `count` tick marks evenly spaced around the dial. Used for
+  // both the monthly dial (count = number of visible month-slots, which can
+  // now be fewer than 12) and the yearly dial (count = number of years).
+  function renderTicks(count) {
     var s = "";
     s += '<circle cx="' + CX + '" cy="' + CY + '" r="230" fill="none" stroke="var(--border)" stroke-width="1"/>';
     s += '<circle cx="' + CX + '" cy="' + CY + '" r="150" fill="none" stroke="var(--border)" stroke-width="1" stroke-dasharray="2 6"/>';
-    for (var i = 0; i < 12; i += 1) {
-      var ang = i * 30;
+    var n = Math.max(1, count);
+    for (var i = 0; i < n; i += 1) {
+      var ang = i * (360 / n);
       var outer = polar(230, ang), inner = polar(216, ang);
-      var dim = i >= activeCount;
-      s += '<line x1="' + inner.x + '" y1="' + inner.y + '" x2="' + outer.x + '" y2="' + outer.y + '" stroke="' + (dim ? "var(--border)" : "#94a3b8") + '" stroke-width="' + (dim ? 1 : 1.6) + '"/>';
+      s += '<line x1="' + inner.x + '" y1="' + inner.y + '" x2="' + outer.x + '" y2="' + outer.y + '" stroke="#94a3b8" stroke-width="1.6"/>';
     }
     return s;
   }
@@ -486,11 +592,20 @@
     var top = s.topCategory;
     var topMeta = top ? "Most spent on: " + escHtml(top.name) + " (" + Math.round(top.share) + "%)" : "No expenses logged this month";
     var marginMeta = s.margin === null ? "No revenue this month" : Math.round(s.margin) + "% net margin";
+        var crrValue, crrMeta;
+    if (!s.crr || s.crr.crr === null || s.crr.crr === undefined) {
+      crrValue = "N/A";
+      crrMeta = escHtml((s.crr && s.crr.reason) || "Not enough history yet");
+    } else {
+      crrValue = Math.round(s.crr.crr) + "%";
+      crrMeta = s.crr.retained + " of " + s.crr.customersAtStart + " named customers retained";
+    }
     host.innerHTML =
       '<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-sack-dollar"></i></div><p class="s-label">Revenue — ' + escHtml(monthName) + '</p><p class="s-value">' + fmtMoney(s.revenue) + '</p><p class="s-meta ' + revMetaCls + '">' + revMeta + '</p></div>' +
       '<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-receipt"></i></div><p class="s-label">Expenses — ' + escHtml(monthName) + '</p><p class="s-value">' + fmtMoney(s.expense) + '</p><p class="s-meta">' + topMeta + '</p></div>' +
       '<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-chart-line"></i></div><p class="s-label">Net Profit — ' + escHtml(monthName) + '</p><p class="s-value">' + fmtMoney(s.net) + '</p><p class="s-meta">' + marginMeta + '</p></div>' +
-      '<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-hourglass-half"></i></div><p class="s-label">Awaiting Payment</p><p class="s-value">' + fmtMoney(s.pending) + '</p><p class="s-meta">Pending &amp; overdue invoices</p></div>';
+      '<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-hourglass-half"></i></div><p class="s-label">Awaiting Payment</p><p class="s-value">' + fmtMoney(s.pending) + '</p><p class="s-meta">Pending &amp; overdue invoices</p></div>' +
+      '<div class="stat-card"><div class="s-icon"><i class="fa-solid fa-user-check"></i></div><p class="s-label">Customer Retention — ' + escHtml(monthName) + '</p><p class="s-value">' + crrValue + '</p><p class="s-meta">' + crrMeta + '</p></div>';
   }
 
   /* ───────── render: monthly (year clock) ───────── */
@@ -507,6 +622,17 @@
     }
 
     var slots = getYearSlots(selectedYear);
+    if (!slots.length) {
+      svg.innerHTML = ""; pointsLayer.innerHTML = "";
+      document.getElementById("bvc-center-label").innerHTML = "";
+      document.getElementById("bvc-legend").innerHTML = "";
+      document.getElementById("bvc-variability").innerHTML = "";
+      document.getElementById("bvc-strip").innerHTML = "";
+      document.getElementById("bvc-panel").innerHTML = '<div class="bvc-empty">No months in ' + selectedYear + ' fall within the recorded history yet.</div>';
+      return;
+    }
+    var n = slots.length;
+    var step = 360 / n;
     var present = slots.filter(function (s) { return !s.empty; });
     var vals = present.length ? present.map(function (s) { return s.revenue; }) : [0];
     var minV = Math.min.apply(null, vals), maxV = Math.max.apply(null, vals);
@@ -516,15 +642,24 @@
     var avg = yearAverageRevenue(slots);
     var peak = findPeakMonth(slots);
 
-    var pts = slots.map(function (s, i) { var p = polar(scaleR(s.empty ? minV : s.revenue), i * 30); p.raw = s; return p; });
-    var svgHtml = renderTicks(12);
+    var pts = slots.map(function (s, i) { var p = polar(scaleR(s.empty ? minV : s.revenue), i * step); p.raw = s; return p; });
+    var svgHtml = renderTicks(n);
     if (avg > 0) {
       var baseR = scaleR(Math.min(Math.max(avg, minV), maxV));
       svgHtml += '<circle cx="' + CX + '" cy="' + CY + '" r="' + baseR + '" fill="none" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3 5"/>';
     }
     svgHtml += '<path d="' + smoothPath(pts) + '" fill="#0077b6" fill-opacity="0.08" stroke="#0077b6" stroke-width="2"/>';
 
-    var focusIdx = selectedMonthIdx ? selectedMonthIdx - 1 : (peak ? Number(peak.key.slice(5, 7)) - 1 : 0);
+    var focusIdx;
+    if (selectedMonthKey) {
+      var foundIdx = slotIndexByKey(slots, selectedMonthKey);
+      focusIdx = foundIdx >= 0 ? foundIdx : n - 1;
+    } else if (peak) {
+      var peakIdx = slotIndexByKey(slots, peak.key);
+      focusIdx = peakIdx >= 0 ? peakIdx : n - 1;
+    } else {
+      focusIdx = n - 1;
+    }
     var handTip = pts[focusIdx];
     svgHtml += '<line x1="' + CX + '" y1="' + CY + '" x2="' + handTip.x + '" y2="' + handTip.y + '" stroke="var(--text)" stroke-width="1.5" opacity="0.45"/>';
     svgHtml += '<circle cx="' + handTip.x + '" cy="' + handTip.y + '" r="4" fill="var(--accent)"/>';
@@ -535,6 +670,7 @@
 
     slots.forEach(function (s, i) {
       var pos = pts[i];
+      var mIdx = monthIdxFromKey(s.key);
       var isBest = peak && s.key === peak.key;
       var tier = s.empty ? "tier-none" : (avg > 0 && s.revenue >= avg * 1.15 ? "tier-peak" : (avg > 0 && s.revenue <= avg * 0.85 ? "tier-lean" : "tier-mid"));
       var btn = document.createElement("button");
@@ -542,9 +678,9 @@
       btn.className = "bvc-point-btn " + tier + (isBest ? " is-best" : "");
       btn.style.left = (pos.x / 500 * 100) + "%";
       btn.style.top = (pos.y / 500 * 100) + "%";
-      btn.setAttribute("aria-label", MONTH_NAMES_FULL[i] + (s.empty ? ", no data" : ", " + fmtMoney(s.revenue)));
-      if (selectedMonthIdx === i + 1) btn.classList.add("selected");
-      btn.addEventListener("click", function () { selectedMonthIdx = i + 1; renderAll(); });
+      btn.setAttribute("aria-label", MONTH_NAMES_FULL[mIdx] + (s.empty ? ", no data" : ", " + fmtMoney(s.revenue)));
+      if (selectedMonthKey === s.key) btn.classList.add("selected");
+      btn.addEventListener("click", function () { selectedMonthKey = s.key; renderAll(); });
       pointsLayer.appendChild(btn);
 
       if (isBest) {
@@ -560,7 +696,7 @@
     var yearRow = byYear[selectedYear] || { revenue: 0, expense: 0, net: 0 };
     document.getElementById("bvc-center-label").innerHTML =
       '<div class="k">' + selectedYear + ' total</div><div class="v">' + fmtMoney(yearRow.revenue) + '</div>' +
-      '<div class="v2">Net ' + fmtMoney(yearRow.net) + (peak ? ' · Best: ' + MONTH_NAMES[Number(peak.key.slice(5, 7)) - 1] : '') + '</div>';
+      '<div class="v2">Net ' + fmtMoney(yearRow.net) + (peak ? ' · Best: ' + MONTH_NAMES[monthIdxFromKey(peak.key)] : '') + '</div>';
 
     document.getElementById("bvc-legend").innerHTML =
       '<button type="button"><span class="dot" style="background:#16a34a"></span>Strong month (≥15% above avg)</button>' +
@@ -573,18 +709,19 @@
       ? "Not enough months of data yet to measure how much revenue varies within " + selectedYear + "."
       : '<strong>Revenue variability, ' + selectedYear + ':</strong> ' + Math.round(cv) + "% — " + variabilityLabel(cv);
 
-    // strip: 12 month chips
+    // strip: one chip per visible month
     var strip = document.getElementById("bvc-strip");
     strip.innerHTML = "";
     slots.forEach(function (s, i) {
+      var mIdx = monthIdxFromKey(s.key);
       var isBest = peak && s.key === peak.key;
       var tier = s.empty ? "" : (avg > 0 && s.revenue >= avg * 1.15 ? "tier-peak" : (avg > 0 && s.revenue <= avg * 0.85 ? "tier-lean" : ""));
       var hasNote = !!(notes[s.key] && notes[s.key].text);
       var b = document.createElement("button");
       b.type = "button";
-      b.className = tier + (isBest ? " is-best" : "") + (hasNote ? " has-note" : "") + (selectedMonthIdx === i + 1 ? " selected" : "");
-      b.innerHTML = MONTH_NAMES[i] + "<b>" + ((i === 1 || s.empty) ? "—" : fmtMoney(s.revenue).replace("GH₵", "")) + "</b>";
-      b.addEventListener("click", function () { selectedMonthIdx = i + 1; renderAll(); });
+      b.className = tier + (isBest ? " is-best" : "") + (hasNote ? " has-note" : "") + (selectedMonthKey === s.key ? " selected" : "");
+      b.innerHTML = MONTH_NAMES[mIdx] + "<b>" + (s.empty ? "—" : fmtMoney(s.revenue).replace("GH₵", "")) + "</b>";
+      b.addEventListener("click", function () { selectedMonthKey = s.key; renderAll(); });
       strip.appendChild(b);
     });
 
@@ -593,9 +730,9 @@
 
   function renderMonthlyPanel(slots, avg, peak, notes) {
     var panel = document.getElementById("bvc-panel");
-    var idx = selectedMonthIdx ? selectedMonthIdx - 1 : null;
+    var idx = selectedMonthKey ? slotIndexByKey(slots, selectedMonthKey) : -1;
 
-    if (idx === null) {
+    if (idx < 0) {
       // Year overview, no month picked yet
       var yearRow = byYear[selectedYear] || { revenue: 0, expense: 0, net: 0 };
       var margin = yearRow.revenue > 0 ? Math.round((yearRow.net / yearRow.revenue) * 100) : null;
@@ -605,7 +742,7 @@
         '<div class="big">' + fmtMoney(yearRow.revenue) + '</div>' +
         '<div class="delta flat">Net profit ' + fmtMoney(yearRow.net) + (margin !== null ? ' (' + margin + '% margin)' : '') + '</div>' +
         (peak
-          ? '<div class="bvc-peak-callout"><i class="fa-solid fa-crown"></i><div>' + MONTH_NAMES_FULL[Number(peak.key.slice(5, 7)) - 1] + ' ' + selectedYear + ' was the most profitable month, with ' + fmtMoney(peak.net) + ' in net profit. Click it on the dial, or below, for the full breakdown.</div></div>'
+          ? '<div class="bvc-peak-callout"><i class="fa-solid fa-crown"></i><div>' + MONTH_NAMES_FULL[monthIdxFromKey(peak.key)] + ' ' + selectedYear + ' was the most profitable month, with ' + fmtMoney(peak.net) + ' in net profit. Click it on the dial, or below, for the full breakdown.</div></div>'
           : '<p>No month has recorded a profit yet — add sales and ledger entries to see this fill in.</p>') +
         '<p>Click any point on the dial, or a month below, to see that month\'s figures, how it compares with the same month last year, and any notes explaining what happened.</p>';
       return;
@@ -613,13 +750,14 @@
 
     var monthRow = slots[idx];
     var key = monthRow.key;
-    var yoyList = getYoyComparisons(selectedYear, idx + 1);
+    var mIdx = monthIdxFromKey(key);
+    var yoyList = getYoyComparisons(selectedYear, mIdx + 1);
     var isBest = peak && key === peak.key;
     var pctVsAvg = (avg > 0 && !monthRow.empty) ? Math.round(((monthRow.revenue - avg) / avg) * 100) : null;
     var top = topCategory(monthRow.categories);
 
     var html = "";
-    html += '<span class="tag">' + MONTH_NAMES_FULL[idx] + ' ' + selectedYear + '</span>';
+    html += '<span class="tag">' + MONTH_NAMES_FULL[mIdx] + ' ' + selectedYear + '</span>';
     html += '<h2>' + (monthRow.empty ? "No sales recorded" : "Month in review") + '</h2>';
     if (!monthRow.empty) {
       html += '<div class="big">' + fmtMoney(monthRow.revenue) + '</div>';
@@ -635,17 +773,17 @@
       if (yoyList.length) {
         html += '<div class="bvc-yoy-list">';
         yoyList.forEach(function (c) {
-          var label = c.direction === "previous" ? "vs " + MONTH_NAMES[idx] + " " + c.year : "vs " + MONTH_NAMES[idx] + " " + c.year;
+          var label = c.direction === "previous" ? "vs " + MONTH_NAMES[mIdx] + " " + c.year : "vs " + MONTH_NAMES[mIdx] + " " + c.year;
           var pctCls = c.revDeltaPct === null ? "" : (c.revDeltaPct >= 0 ? "up" : "down");
           var pctText = c.revDeltaPct === null ? "n/a" : ((c.revDeltaPct >= 0 ? "+" : "") + Math.round(c.revDeltaPct) + "%");
           html += '<div class="bvc-yoy-row"><span class="yr">' + label + '</span><span class="amt">' + fmtMoney(c.revenue) + '</span><span class="pct ' + pctCls + '">' + pctText + '</span></div>';
         });
         html += '</div>';
       } else {
-        html += '<p>No matching month in an adjacent year yet to compare against.</p>';
+        html += '<p>No matching month in an adjacent year yet to compare against. Use the Compare tab to check it against any other year once that data exists.</p>';
       }
     } else {
-      html += '<p>Nothing has been logged for ' + MONTH_NAMES_FULL[idx] + ' ' + selectedYear + ' yet.</p>';
+      html += '<p>Nothing has been logged for ' + MONTH_NAMES_FULL[mIdx] + ' ' + selectedYear + ' yet.</p>';
     }
 
     panel.innerHTML = html;
@@ -835,11 +973,208 @@
       '<div class="bvc-mini-stat"><div class="lbl">Margin</div><div class="val">' + (margin === null ? "—" : margin + "%") + '</div></div>' +
       '</div>';
     if (peak) {
-      html += '<div class="bvc-peak-callout"><i class="fa-solid fa-crown"></i><div>' + MONTH_NAMES_FULL[Number(peak.key.slice(5, 7)) - 1] + ' was ' + y + '\'s most profitable month, with ' + fmtMoney(peak.net) + ' in net profit. Switch to Monthly and pick ' + y + ' to see it in detail.</div></div>';
+      html += '<div class="bvc-peak-callout"><i class="fa-solid fa-crown"></i><div>' + MONTH_NAMES_FULL[monthIdxFromKey(peak.key)] + ' was ' + y + '\'s most profitable month, with ' + fmtMoney(peak.net) + ' in net profit. Switch to Monthly and pick ' + y + ' to see it in detail.</div></div>';
     }
-    if (!prevRow) html += '<p>Once another year of history exists on either side of ' + y + ', this panel will show a year-over-year comparison here.</p>';
+    if (!prevRow) html += '<p>Once another year of history exists on either side of ' + y + ', this panel will show a year-over-year comparison here. You can also use the Compare tab to check ' + y + ' against any other year directly.</p>';
 
     panel.innerHTML = html;
+  }
+
+  /* ───────── render: compare (any two arbitrary periods) ───────── */
+
+  // A "period" is either a whole year (monthNum falsy) or one specific month
+  // of a year (monthNum 1-12). Works even for periods with no data yet, so
+  // e.g. April 2027 can be picked and compared against April 2026 before
+  // April 2027 has actually happened, and will just show "No data recorded".
+    function computePeriodStats(year, monthNum) {
+    if (!year) return null;
+    if (monthNum) {
+      var key = year + "-" + pad2(monthNum);
+      var row = (byYear[year] && byYear[year].months[key]) || { key: key, revenue: 0, expense: 0, net: 0, categories: {}, empty: true };
+      var margin = row.revenue > 0 ? (row.net / row.revenue) * 100 : null;
+      var notesAll = readNotes();
+      return {
+        label: MONTH_NAMES_FULL[monthNum - 1] + " " + year,
+        key: key,
+        isMonth: true,
+        revenue: row.revenue, expense: row.expense, net: row.net,
+        margin: margin, topCategory: topCategory(row.categories),
+        hasData: !row.empty,
+        note: notesAll[key] || null,
+        crr: (typeof computeCustomerRetentionForMonth === "function") ? computeCustomerRetentionForMonth(key) : { crr: null },
+      };
+    }
+    var yr = byYear[year] || { revenue: 0, expense: 0, net: 0, months: {} };
+    var marginY = yr.revenue > 0 ? (yr.net / yr.revenue) * 100 : null;
+    var catsTotal = {};
+    Object.keys(yr.months || {}).forEach(function (k) {
+      var m = yr.months[k];
+      Object.keys(m.categories || {}).forEach(function (c) { catsTotal[c] = (catsTotal[c] || 0) + m.categories[c]; });
+    });
+    return {
+      label: year + " (Whole Year)",
+      key: year,
+      isMonth: false,
+      revenue: yr.revenue, expense: yr.expense, net: yr.net,
+      margin: marginY, topCategory: topCategory(catsTotal),
+      hasData: Object.keys(yr.months || {}).length > 0,
+      note: null,
+      crr: (typeof computeCustomerRetentionForYear === "function") ? computeCustomerRetentionForYear(year) : { crr: null },
+    };
+    
+    var yr = byYear[year] || { revenue: 0, expense: 0, net: 0, months: {} };
+    var marginY = yr.revenue > 0 ? (yr.net / yr.revenue) * 100 : null;
+    var catsTotal = {};
+    Object.keys(yr.months || {}).forEach(function (k) {
+      var m = yr.months[k];
+      Object.keys(m.categories || {}).forEach(function (c) { catsTotal[c] = (catsTotal[c] || 0) + m.categories[c]; });
+    });
+    return {
+      label: year + " (Whole Year)",
+      key: year,
+      isMonth: false,
+      revenue: yr.revenue, expense: yr.expense, net: yr.net,
+      margin: marginY, topCategory: topCategory(catsTotal),
+      hasData: Object.keys(yr.months || {}).length > 0,
+      note: null,
+    };
+  }
+
+  function populateCompareSelectors() {
+    var ay = document.getElementById("bvc-compare-a-year");
+    var by = document.getElementById("bvc-compare-b-year");
+    var am = document.getElementById("bvc-compare-a-month");
+    var bm = document.getElementById("bvc-compare-b-month");
+    if (!ay || !by || !am || !bm) return;
+
+    var yearOptionsHtml = years.map(function (y) { return '<option value="' + y + '">' + y + '</option>'; }).join("");
+    if (ay.innerHTML !== yearOptionsHtml) ay.innerHTML = yearOptionsHtml;
+    if (by.innerHTML !== yearOptionsHtml) by.innerHTML = yearOptionsHtml;
+
+    var monthOptionsHtml = '<option value="">Whole Year</option>' + MONTH_NAMES_FULL.map(function (name, i) {
+      return '<option value="' + (i + 1) + '">' + name + '</option>';
+    }).join("");
+    if (am.innerHTML !== monthOptionsHtml) am.innerHTML = monthOptionsHtml;
+    if (bm.innerHTML !== monthOptionsHtml) bm.innerHTML = monthOptionsHtml;
+
+    if (compareAYear) ay.value = compareAYear;
+    if (compareBYear) by.value = compareBYear;
+    am.value = compareAMonth ? String(compareAMonth) : "";
+    bm.value = compareBMonth ? String(compareBMonth) : "";
+  }
+
+  // Picks a sensible starting comparison the first time Compare mode is
+  // used: the most recent recorded month vs. the same month a year earlier
+  // if that exists, otherwise vs. the very first recorded month, so the
+  // feature demonstrates itself usefully even with under a year of history.
+  function ensureCompareDefaults() {
+    if (compareAYear && years.indexOf(compareAYear) >= 0) return;
+    if (!years.length) { compareAYear = null; compareBYear = null; return; }
+    var latestKey = snapshotModel ? snapshotModel.month : (firstDataMonthKey || (years[years.length - 1] + "-01"));
+    var latestYear = latestKey.slice(0, 4);
+    var latestMonthNum = Number(latestKey.slice(5, 7));
+    compareAYear = latestYear;
+    compareAMonth = latestMonthNum;
+    var prevYear = String(Number(latestYear) - 1);
+    var prevKey = prevYear + "-" + pad2(latestMonthNum);
+    if (byYear[prevYear] && byYear[prevYear].months[prevKey]) {
+      compareBYear = prevYear;
+      compareBMonth = latestMonthNum;
+    } else if (firstDataMonthKey && firstDataMonthKey !== latestKey) {
+      compareBYear = firstDataMonthKey.slice(0, 4);
+      compareBMonth = Number(firstDataMonthKey.slice(5, 7));
+    } else {
+      compareBYear = latestYear;
+      compareBMonth = null;
+    }
+  }
+
+  function renderCompare() {
+    populateCompareSelectors();
+    var host = document.getElementById("bvc-compare-result");
+    if (!host) return;
+    if (!compareAYear || !compareBYear) {
+      host.innerHTML = '<div class="bvc-empty">Choose two periods above to compare — pick a whole year, or a specific month of any year.</div>';
+      return;
+    }
+    var a = computePeriodStats(compareAYear, compareAMonth);
+    var b = computePeriodStats(compareBYear, compareBMonth);
+    if (!a || !b) { host.innerHTML = '<div class="bvc-empty">Choose two periods above to compare.</div>'; return; }
+
+        function rowHtml(label, field, isPercent) {
+      var av = a[field], bv = b[field];
+      var d = null;
+      if (av !== null && av !== undefined && bv !== null && bv !== undefined && av !== 0) {
+        d = ((bv - av) / Math.abs(av)) * 100;
+      }
+      function fmtVal(v) {
+        if (v === null || v === undefined) return "—";
+        return isPercent ? (Math.round(v) + "%") : fmtMoney(v);
+      }
+      var dCls = d === null ? "flat" : (d >= 0 ? "up" : "down");
+      var dText = d === null ? "N/A" : ((d >= 0 ? "+" : "") + Math.round(d) + "%");
+      return '<div class="bvc-compare-row">' +
+        '<span class="bvc-compare-row-label">' + label + '</span>' +
+        '<span class="bvc-compare-row-a">' + fmtVal(av) + '</span>' +
+        '<span class="bvc-compare-row-b">' + fmtVal(bv) + '</span>' +
+        '<span class="bvc-compare-row-delta ' + dCls + '">' + dText + '</span>' +
+      '</div>';
+    }
+
+    // CRR gets its own row renderer: the "Change" column shows a
+    // percentage-POINT difference (e.g. "+10pp" for 50% -> 60%), not a
+    // relative percent-of-percent, which would misleadingly read as "+20%".
+    function crrRowHtml(periodA, periodB) {
+      function fmtCrr(period) {
+        if (!period.crr || period.crr.crr === null || period.crr.crr === undefined) return "N/A";
+        return Math.round(period.crr.crr) + "%";
+      }
+      var av = (periodA.crr && periodA.crr.crr !== null && periodA.crr.crr !== undefined) ? periodA.crr.crr : null;
+      var bv = (periodB.crr && periodB.crr.crr !== null && periodB.crr.crr !== undefined) ? periodB.crr.crr : null;
+      var d = (av !== null && bv !== null) ? (bv - av) : null;
+      var dCls = d === null ? "flat" : (d >= 0 ? "up" : "down");
+      var dText = d === null ? "N/A" : ((d >= 0 ? "+" : "") + Math.round(d) + "pp");
+      return '<div class="bvc-compare-row">' +
+        '<span class="bvc-compare-row-label">Customer Retention</span>' +
+        '<span class="bvc-compare-row-a">' + fmtCrr(periodA) + '</span>' +
+        '<span class="bvc-compare-row-b">' + fmtCrr(periodB) + '</span>' +
+        '<span class="bvc-compare-row-delta ' + dCls + '">' + dText + '</span>' +
+      '</div>';
+    }
+
+    var html = "";
+    html += '<div class="bvc-compare-head">' +
+      '<div class="bvc-compare-head-col"><span class="tag">Period A</span><h3>' + escHtml(a.label) + '</h3>' + (a.hasData ? "" : '<p class="bvc-compare-nodata">No data recorded</p>') + '</div>' +
+      '<div class="bvc-compare-head-vs"><i class="fa-solid fa-arrow-right-arrow-left"></i></div>' +
+      '<div class="bvc-compare-head-col"><span class="tag">Period B</span><h3>' + escHtml(b.label) + '</h3>' + (b.hasData ? "" : '<p class="bvc-compare-nodata">No data recorded</p>') + '</div>' +
+    '</div>';
+
+        html += '<div class="bvc-compare-table">' +
+      '<div class="bvc-compare-row bvc-compare-row-head"><span></span><span>' + escHtml(a.label) + '</span><span>' + escHtml(b.label) + '</span><span>Change</span></div>' +
+      rowHtml("Revenue", "revenue", false) +
+      rowHtml("Expenses", "expense", false) +
+      rowHtml("Net Profit", "net", false) +
+      rowHtml("Margin", "margin", true) +
+      crrRowHtml(a, b) +
+    '</div>';
+
+    html += '<div class="bvc-compare-notes-grid">';
+    [a, b].forEach(function (p) {
+      html += '<div class="bvc-compare-note-col">';
+      html += '<div class="bvc-compare-note-label">' + escHtml(p.label) + '</div>';
+      html += p.topCategory
+        ? '<p class="bvc-compare-note-line">Top spend: ' + escHtml(p.topCategory.name) + ' (' + Math.round(p.topCategory.share) + '%)</p>'
+        : '<p class="bvc-compare-note-line bvc-compare-note-muted">No expenses logged.</p>';
+      if (p.isMonth) {
+        html += (p.note && p.note.text)
+          ? '<p class="bvc-compare-note-line"><strong>Note:</strong> ' + escHtml(p.note.text) + '</p>'
+          : '<p class="bvc-compare-note-line bvc-compare-note-muted">No note added for this month.</p>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+
+    host.innerHTML = html;
   }
 
   /* ───────── mode + top-level render ───────── */
@@ -847,19 +1182,29 @@
   function renderModeButtons() {
     document.getElementById("bvc-btn-months").classList.toggle("tab-active", mode === "months");
     document.getElementById("bvc-btn-years").classList.toggle("tab-active", mode === "years");
+    document.getElementById("bvc-btn-compare").classList.toggle("tab-active", mode === "compare");
     document.getElementById("bvc-year-select-wrap").style.display = mode === "months" ? "flex" : "none";
+    document.getElementById("bvc-layout").style.display = mode === "compare" ? "none" : "grid";
+    document.getElementById("bvc-strip").style.display = mode === "compare" ? "none" : "flex";
+    document.getElementById("bvc-compare-wrap").style.display = mode === "compare" ? "block" : "none";
   }
 
   function renderDisclaimer() {
     var el = document.getElementById("bvc-disclaimer");
-    el.innerHTML = mode === "months"
-      ? "Figures are computed from your own paid invoices and accounting ledger entries — nothing here is estimated or fabricated. Notes are written by the CEO or Manager; where none exists yet, a plain summary of what the numbers show is shown instead, clearly labeled as auto-generated."
-      : "Yearly totals are the sum of each year's monthly figures above. Year-to-year variability uses the coefficient of variation of annual revenue — the same measure used for the monthly view, just applied across years instead of months.";
+    if (mode === "months") {
+      el.innerHTML = "Figures are computed from your own paid invoices and accounting ledger entries — nothing here is estimated or fabricated. Notes are written by the CEO or Manager; where none exists yet, a plain summary of what the numbers show is shown instead, clearly labeled as auto-generated.";
+    } else if (mode === "years") {
+      el.innerHTML = "Yearly totals are the sum of each year's monthly figures above. Year-to-year variability uses the coefficient of variation of annual revenue — the same measure used for the monthly view, just applied across years instead of months.";
+    } else {
+      el.innerHTML = "Pick any two periods above — a whole year, or one specific month of any year — to compare revenue, expenses, and profit side by side. This is how to check, for example, April this year against April next year once that data exists. Figures are computed the same way as the Monthly and Yearly views: from your own paid invoices and accounting ledger entries.";
+    }
   }
 
   function renderAll() {
     renderModeButtons();
-    if (mode === "months") renderMonthly(); else renderYearly();
+    if (mode === "months") renderMonthly();
+    else if (mode === "years") renderYearly();
+    else renderCompare();
     renderDisclaimer();
   }
 
@@ -874,10 +1219,13 @@
     snapshotModel = buildSnapshot(series);
     byYear = buildByYear(series);
     years = Object.keys(byYear).sort();
+    firstDataMonthKey = series.length ? series[0].key : null;
+    var now = new Date();
+    todayMonthKey = now.getFullYear() + "-" + pad2(now.getMonth() + 1);
 
     if (!selectedYear || years.indexOf(selectedYear) < 0) {
       selectedYear = years.length ? years[years.length - 1] : null;
-      selectedMonthIdx = null;
+      selectedMonthKey = null;
     }
     var yearsBtn = document.getElementById("bvc-btn-years");
     if (years.length >= 2) {
@@ -889,8 +1237,11 @@
       if (mode === "years") mode = "months";
     }
 
+    ensureCompareDefaults();
+
     renderSnapshot();
     populateYearSelect();
+    populateCompareSelectors();
     renderAll();
   }
 
@@ -900,9 +1251,14 @@
 
     document.getElementById("bvc-btn-months").addEventListener("click", function () { mode = "months"; renderAll(); });
     document.getElementById("bvc-btn-years").addEventListener("click", function () { if (!this.disabled) { mode = "years"; renderAll(); } });
+    document.getElementById("bvc-btn-compare").addEventListener("click", function () { mode = "compare"; renderAll(); });
     document.getElementById("bvc-year-select").addEventListener("change", function (e) {
-      selectedYear = e.target.value; selectedMonthIdx = null; renderAll();
+      selectedYear = e.target.value; selectedMonthKey = null; renderAll();
     });
+    document.getElementById("bvc-compare-a-year").addEventListener("change", function (e) { compareAYear = e.target.value; renderCompare(); });
+    document.getElementById("bvc-compare-a-month").addEventListener("change", function (e) { compareAMonth = e.target.value ? Number(e.target.value) : null; renderCompare(); });
+    document.getElementById("bvc-compare-b-year").addEventListener("change", function (e) { compareBYear = e.target.value; renderCompare(); });
+    document.getElementById("bvc-compare-b-month").addEventListener("change", function (e) { compareBMonth = e.target.value ? Number(e.target.value) : null; renderCompare(); });
 
     // Render immediately from whatever is already cached locally…
     refreshModels();
@@ -936,7 +1292,7 @@
       } catch (_e) { /* keep whatever rendered from local cache */ }
     })();
   });
-})();
+  })();
 </script>
 </body>
 </html>
