@@ -6444,6 +6444,382 @@ app.post('/api/store/orders', async (req, res, next) => {
 
 
 
+/* ═══════════════════════════════════════════════
+
+   EXTERNAL STORE ORDER PUSH (whitewatersghana.com)
+
+   ───────────────────────────────────────────────
+   Naana's public website (a fully separate Node/Express app with its own
+   MongoDB — see server.js there) pushes each order here so it shows up in
+   this system's Online Orders tab and dashboard KPI, the same way orders
+   placed through this app's own built-in store.html would. Auth is a
+   shared secret header instead of a customer-session cookie, since these
+   orders come from an external server, not a logged-in browser session.
+
+   ═══════════════════════════════════════════════ */
+
+const EXTERNAL_STORE_API_KEY = process.env.EXTERNAL_STORE_API_KEY || '';
+
+function ensureExternalStoreApiKey(req, _res, next) {
+
+  if (!EXTERNAL_STORE_API_KEY) {
+
+    next(createError(503, 'External store integration is not configured on this server'));
+
+    return;
+
+  }
+
+  const provided = String(req.get('x-api-key') || '').trim();
+
+  if (provided !== EXTERNAL_STORE_API_KEY) {
+
+    next(createError(401, 'Invalid or missing API key'));
+
+    return;
+
+  }
+
+  next();
+
+}
+
+// Maps the website's Order.status values to this system's StoreOrder status enum.
+
+function mapExternalStatusToFactoryStatus(status) {
+
+  const value = String(status || '').trim().toLowerCase();
+
+  const map = {
+
+    received: 'Pending',
+
+    confirmed: 'Confirmed',
+
+    processing: 'Processing',
+
+    out_for_delivery: 'Dispatched',
+
+    delivered: 'Delivered',
+
+    cancelled: 'Cancelled',
+
+  };
+
+  return map[value] || 'Pending';
+
+}
+
+app.post('/api/store/external-orders', ensureExternalStoreApiKey, async (req, res, next) => {
+
+  try {
+
+    requireFields(req.body, ['externalOrderCode', 'customerEmail', 'customerName', 'items', 'total']);
+
+    const externalOrderCode = String(req.body.externalOrderCode).trim();
+
+    // Idempotent: a retried push (e.g. after a timeout on the website's side)
+
+    // must not create a second order. The website's own invoiceNumber
+
+    // (WWW-prefixed) is reused as both the StoreOrder idempotency key and
+
+    // the linked SalesOrder/Invoice client_txn_id.
+
+    const existing = await StoreOrder.findOne({ idempotency_key: externalOrderCode }).lean();
+
+    if (existing) {
+
+      res.status(200).json({ ok: true, id: existing._id, orderCode: existing.order_code, replay: true });
+
+      return;
+
+    }
+
+    const email = String(req.body.customerEmail).trim().toLowerCase();
+
+    const name = String(req.body.customerName).trim();
+
+    const phone = String(req.body.customerPhone || '').trim();
+
+
+
+    // Find-or-create a StoreCustomer so this order can be displayed the
+
+    // same way internal store orders are (StoreOrder.customer_id refs
+
+    // StoreCustomer). Website customers don't have factory-store logins,
+
+    // so this record gets a random unusable password — it exists only to
+
+    // be referenced by the order, never for signing in here.
+
+    let storeCustomer = await StoreCustomer.findOne({ email });
+
+    if (!storeCustomer) {
+
+      storeCustomer = await StoreCustomer.create({
+
+        name: name || email,
+
+        email,
+
+        phone: phone || '0000000000',
+
+        password_hash: bcrypt.hashSync(crypto.randomUUID(), 10),
+
+        address: req.body.deliveryAddress || null,
+
+        city: req.body.deliveryCity || null,
+
+        region: req.body.deliveryRegion || null,
+
+        status: 'Active',
+
+      });
+
+    }
+
+
+
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+
+    if (!items.length) throw createError(400, 'Order must include at least one item');
+
+    const validatedItems = items.map((it) => {
+
+      const qty = Number(it.qty) || 0;
+
+      const unitPrice = Number(it.unitPrice) || 0;
+
+      return { productId: null, name: String(it.name || 'Item').trim(), qty, unitPrice, lineTotal: qty * unitPrice };
+
+    });
+
+    const subtotal = Number(req.body.subtotal) || validatedItems.reduce((sum, it) => sum + it.lineTotal, 0);
+
+    const deliveryFee = Number(req.body.deliveryFee) || 0;
+
+    const total = Number(req.body.total) || (subtotal + deliveryFee);
+
+    const status = mapExternalStatusToFactoryStatus(req.body.status);
+
+
+
+    const storeOrder = await StoreOrder.create({
+
+      order_code: externalOrderCode,
+
+      customer_id: storeCustomer._id,
+
+      items: validatedItems,
+
+      subtotal, delivery_fee: deliveryFee, total,
+
+      delivery_address: String(req.body.deliveryAddress || '').trim(),
+
+      delivery_city: req.body.deliveryCity || null,
+
+      delivery_region: req.body.deliveryRegion || null,
+
+      phone: phone || storeCustomer.phone,
+
+      notes: req.body.notes || null,
+
+      status,
+
+      idempotency_key: externalOrderCode,
+
+    });
+
+
+
+    // Mirror an internal Customer + SalesOrder + Invoice — the same trio
+
+    // /api/store/orders already creates for the built-in store — so this
+
+    // order also feeds revenue/customer stats and the Invoices page.
+
+    let internalCustomer = await Customer.findOne({ email }).lean();
+
+    if (!internalCustomer) {
+
+      internalCustomer = await Customer.create({
+
+        name, type: 'Online', phone, email,
+
+        address: req.body.deliveryAddress || '', status: 'Active',
+
+      });
+
+    }
+
+
+
+    const soCode = await nextCode(SalesOrder, 'order_code', 'SO');
+
+    const invCode = soCode.replace('SO', 'INV');
+
+    const issueDate = nowIso().slice(0, 10);
+
+    const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+
+
+
+    const so = await SalesOrder.create({
+
+      order_code: soCode, customer_id: internalCustomer._id,
+
+      product: validatedItems.map((i) => i.name).join(', '),
+
+      quantity: validatedItems.reduce((sum, i) => sum + i.qty, 0),
+
+      amount: total, order_date: issueDate, source: 'Website (whitewatersghana.com)', status: 'Pending',
+
+      idempotency_key: externalOrderCode,
+
+      client_txn_id: externalOrderCode,
+
+    });
+
+
+
+    const inv = await Invoice.create({
+
+      invoice_code: invCode, customer_id: internalCustomer._id,
+
+      sales_order_id: so._id, amount: total,
+
+      issue_date: issueDate, due_date: dueDate, status: 'Pending',
+
+      idempotency_key: externalOrderCode,
+
+      client_txn_id: externalOrderCode,
+
+    });
+
+
+
+    await SalesOrder.updateOne({ _id: so._id }, { invoice_id: inv._id });
+
+    await refreshCustomerStats();
+
+
+
+    if (typeof broadcastRealtimeUpdate === 'function') {
+
+      broadcastRealtimeUpdate({ key: 'ww_store_external_order', source: null });
+
+    }
+
+
+
+    res.status(201).json({
+
+      ok: true, id: storeOrder._id, orderCode: storeOrder.order_code,
+
+      salesOrderCode: soCode, invoiceCode: invCode,
+
+    });
+
+  } catch (error) {
+
+    if (error && error.code === 11000 && req.body && req.body.externalOrderCode) {
+
+      const dupe = await StoreOrder.findOne({ idempotency_key: String(req.body.externalOrderCode).trim() }).lean();
+
+      if (dupe) {
+
+        res.status(200).json({ ok: true, id: dupe._id, orderCode: dupe.order_code, replay: true });
+
+        return;
+
+      }
+
+    }
+
+    next(error);
+
+  }
+
+});
+
+
+
+app.patch('/api/store/external-orders/:externalOrderCode/status', ensureExternalStoreApiKey, async (req, res, next) => {
+
+  try {
+
+    requireFields(req.body, ['status']);
+
+    const externalOrderCode = String(req.params.externalOrderCode).trim();
+
+
+
+    const storeOrder = await StoreOrder.findOne({ idempotency_key: externalOrderCode });
+
+    if (!storeOrder) throw createError(404, 'Order not found — has it been pushed yet?');
+
+
+
+    const nextStatus = mapExternalStatusToFactoryStatus(req.body.status);
+
+    await StoreOrder.updateOne({ _id: storeOrder._id }, { status: nextStatus });
+
+
+
+    // Keep the linked Invoice/SalesOrder in sync too — dashboard revenue
+
+    // figures read from Invoice.status, not StoreOrder.status.
+
+    const isPaid = req.body.paid === true || String(req.body.status || '').trim().toLowerCase() === 'confirmed';
+
+    if (isPaid) {
+
+      const inv = await Invoice.findOne({ idempotency_key: externalOrderCode });
+
+      if (inv && inv.status !== 'Paid') await Invoice.updateOne({ _id: inv._id }, { status: 'Paid' });
+
+      const so = await SalesOrder.findOne({ idempotency_key: externalOrderCode });
+
+      if (so && so.status !== 'Fulfilled') await SalesOrder.updateOne({ _id: so._id }, { status: 'Fulfilled' });
+
+      await refreshCustomerStats();
+
+    }
+
+    if (nextStatus === 'Cancelled') {
+
+      const inv = await Invoice.findOne({ idempotency_key: externalOrderCode });
+
+      if (inv) await Invoice.updateOne({ _id: inv._id }, { status: 'Cancelled' });
+
+      const so = await SalesOrder.findOne({ idempotency_key: externalOrderCode });
+
+      if (so) await SalesOrder.updateOne({ _id: so._id }, { status: 'Cancelled' });
+
+      await refreshCustomerStats();
+
+    }
+
+
+
+    if (typeof broadcastRealtimeUpdate === 'function') {
+
+      broadcastRealtimeUpdate({ key: 'ww_store_external_order', source: null });
+
+    }
+
+
+
+    res.json({ ok: true, status: nextStatus });
+
+  } catch (error) { next(error); }
+
+});
+
+
+
 app.get('/api/store/orders', async (req, res, next) => {
 
   try {
