@@ -404,6 +404,7 @@
       <button class="tab-btn" data-tab="summary" onclick="switchTab('acc','summary')">Account Summary</button>
       <button class="tab-btn" data-tab="taxes" onclick="switchTab('acc','taxes')">Taxes</button>
       <button class="tab-btn" data-tab="currency" onclick="switchTab('acc','currency')">Multi-Currency</button>
+      <button class="tab-btn" data-tab="quarterly" onclick="switchTab('acc','quarterly')">Quarterly Reports</button>
     </div>
     <div class="month-selector-bar" id="acc-entry-month-bar" style="margin:0 0 14px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <label for="acc-entry-month-select" style="font-weight:600;">Working month:</label>
@@ -807,6 +808,104 @@
       <div class="table-tools table-tools-bottom"><button type="button" class="btn-secondary acc-add-btn" data-add-entity="currency">Add Currency <i class="fa-solid fa-plus"></i></button></div>
       <div class="info-box">
         <p>Multi-Currency Support<br>The system supports transactions in multiple currencies. Exchange rates are updated daily and all transactions are converted to the base currency (GH₵) in the general ledger.</p>
+      </div>
+    </div>
+    <div id="acc-tab-quarterly" class="tab-panel">
+      <div class="info-box" style="margin-bottom:14px;">
+        <p><strong>Quarterly &amp; Annual Reports</strong> are generated automatically at the end of every
+        quarter and every year, archived into <strong>Record Vault &rarr; Financial Reports</strong>,
+        and emailed to the configured recipients. You can also preview or send a report manually.</p>
+      </div>
+
+      <div class="grid-two">
+        <div class="two-panel-left">
+          <h3>Report Recipients</h3>
+          <div class="inv-modal-field" style="margin-bottom:10px;">
+            <label for="qr-recipient-input">Add recipient email</label>
+            <div style="display:flex;gap:8px;">
+              <input type="email" id="qr-recipient-input" placeholder="finance@example.com" style="flex:1;">
+              <button type="button" class="btn-secondary" id="qr-recipient-add-btn">
+                <i class="fa-solid fa-plus"></i> Add
+              </button>
+            </div>
+          </div>
+          <div id="qr-recipient-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+          <p class="s-meta" id="qr-recipient-empty" style="margin-top:8px;display:none;">
+            No recipients configured yet — reports will archive to Record Vault but will not be emailed.
+          </p>
+        </div>
+
+        <div class="two-panel-right">
+          <h3>Discount Rate (for NPV)</h3>
+          <div class="detail-row" style="border-bottom:none;">
+            <span class="detail-key">Currently used</span>
+            <span class="detail-val" id="qr-rate-current-value">Loading…</span>
+          </div>
+          <p class="s-meta" id="qr-rate-source-meta" style="margin:0 0 12px;">—</p>
+          <div class="inv-modal-field">
+            <label for="qr-rate-override-input">Manual override (%, e.g. 27 for 27%)</label>
+            <div style="display:flex;gap:8px;">
+              <input type="number" id="qr-rate-override-input" min="0" max="99" step="0.1" placeholder="27">
+              <button type="button" class="btn-secondary" id="qr-rate-save-btn">
+                <i class="fa-solid fa-floppy-disk"></i> Save
+              </button>
+            </div>
+          </div>
+          <button type="button" class="btn-secondary" id="qr-rate-clear-btn" style="margin-top:8px;">
+            <i class="fa-solid fa-rotate-left"></i> Clear override
+          </button>
+        </div>
+      </div>
+
+      <hr style="margin:20px 0;border:none;border-top:1px solid #e2eef8;">
+
+      <div class="grid-two">
+        <div class="two-panel-left">
+          <h3>Quarterly Report</h3>
+          <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;">
+            <div class="inv-modal-field" style="margin-bottom:0;">
+              <label for="qr-q-year">Year</label>
+              <select id="qr-q-year"></select>
+            </div>
+            <div class="inv-modal-field" style="margin-bottom:0;">
+              <label for="qr-q-quarter">Quarter</label>
+              <select id="qr-q-quarter">
+                <option value="1">Q1 (Jan–Mar)</option>
+                <option value="2">Q2 (Apr–Jun)</option>
+                <option value="3">Q3 (Jul–Sep)</option>
+                <option value="4">Q4 (Oct–Dec)</option>
+              </select>
+            </div>
+            <button type="button" class="btn-secondary" id="qr-q-preview-btn">
+              <i class="fa-solid fa-eye"></i> Preview
+            </button>
+            <button type="button" class="btn-primary" id="qr-q-send-btn">
+              <i class="fa-solid fa-paper-plane"></i> Generate &amp; Send Now
+            </button>
+          </div>
+          <div id="qr-q-result"></div>
+        </div>
+
+        <div class="two-panel-right">
+          <h3>Annual Report</h3>
+          <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;">
+            <div class="inv-modal-field" style="margin-bottom:0;">
+              <label for="qr-a-year">Year</label>
+              <select id="qr-a-year"></select>
+            </div>
+            <button type="button" class="btn-secondary" id="qr-a-preview-btn">
+              <i class="fa-solid fa-eye"></i> Preview
+            </button>
+            <button type="button" class="btn-primary" id="qr-a-send-btn">
+              <i class="fa-solid fa-paper-plane"></i> Generate &amp; Send Now
+            </button>
+          </div>
+          <div id="qr-a-result"></div>
+        </div>
+      </div>
+
+      <div class="info-box" style="margin-top:16px;">
+        <p id="qr-last-sent">Last automatic send: —</p>
       </div>
     </div>
   </div>
@@ -1487,5 +1586,251 @@
     openSlipFromRecord(record);
   }, { capture: true });
 </script>
+
+<script>
+(function () {
+  'use strict';
+
+  const el = id => document.getElementById(id);
+
+  function populateYears() {
+    const now = new Date();
+    const years = [];
+    for (let y = now.getFullYear() - 3; y <= now.getFullYear() + 1; y++) years.push(y);
+    const opts = years.map(y => `<option value="${y}">${y}</option>`).join('');
+    el('qr-q-year').innerHTML = opts;
+    el('qr-a-year').innerHTML = opts;
+    el('qr-q-year').value = String(now.getFullYear());
+    el('qr-a-year').value = String(now.getFullYear());
+
+    // Most recently completed quarter.
+    const m = now.getMonth() + 1;
+    const q = m <= 3 ? 4 : m <= 6 ? 1 : m <= 9 ? 2 : 3;
+    el('qr-q-quarter').value = String(q);
+  }
+
+  function renderRecipients(emails) {
+    const list = Array.isArray(emails) ? emails : [];
+    const host = el('qr-recipient-list');
+    const empty = el('qr-recipient-empty');
+
+    if (!list.length) {
+      host.innerHTML = '';
+      empty.style.display = 'block';
+      return;
+    }
+
+    empty.style.display = 'none';
+    host.innerHTML = list.map(email => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 11px;border:1px solid #dbeafe;border-radius:8px;background:#f8fbff;">
+        <span style="font-size:.88rem;color:#0f2f47;">${String(email).replace(/</g,'&lt;')}</span>
+        <button type="button" class="btn-delete" data-qr-remove-email="${String(email).replace(/"/g,'&quot;')}" style="padding:3px 8px;">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+    `).join('');
+  }
+
+  let currentEmails = [];
+
+  async function loadConfig() {
+    try {
+      const res = await fetch(API_BASE + '/api/reports/quarterly/config', { credentials:'include' });
+      if (!res.ok) throw new Error('Failed to load quarterly report settings.');
+      const cfg = await res.json();
+
+      currentEmails = Array.isArray(cfg.recipientEmails) ? cfg.recipientEmails : [];
+      renderRecipients(currentEmails);
+
+      if (cfg.discountRateManualOverride) {
+        el('qr-rate-current-value').textContent =
+          (cfg.discountRateManualOverride * 100).toFixed(1) + '% (manual override)';
+        el('qr-rate-source-meta').textContent =
+          'Set manually on ' + (cfg.discountRateManualSetAt
+            ? new Date(cfg.discountRateManualSetAt).toLocaleDateString('en-GB')
+            : 'unknown date');
+        el('qr-rate-override-input').value =
+          (cfg.discountRateManualOverride * 100).toFixed(1);
+      } else if (cfg.discountRateCacheAnnual) {
+        el('qr-rate-current-value').textContent =
+          (cfg.discountRateCacheAnnual * 100).toFixed(1) + '% (live/cached)';
+        el('qr-rate-source-meta').textContent =
+          'Last fetched ' + (cfg.discountRateCacheAt
+            ? new Date(cfg.discountRateCacheAt).toLocaleDateString('en-GB')
+            : 'unknown date');
+      } else {
+        el('qr-rate-current-value').textContent = '27.0% (documented default)';
+        el('qr-rate-source-meta').textContent = 'No live or cached rate available yet.';
+      }
+
+      const lastQ = cfg.lastSentQuarterLabel
+        ? `${cfg.lastSentQuarterLabel} (${cfg.lastSentAt ? new Date(cfg.lastSentAt).toLocaleString('en-GB') : ''})`
+        : 'none yet';
+      const lastA = cfg.lastSentAnnualLabel
+        ? `${cfg.lastSentAnnualLabel} (${cfg.lastSentAnnualAt ? new Date(cfg.lastSentAnnualAt).toLocaleString('en-GB') : ''})`
+        : 'none yet';
+      el('qr-last-sent').textContent =
+        `Last quarterly send: ${lastQ} · Last annual send: ${lastA}`;
+    } catch (err) {
+      el('qr-rate-current-value').textContent = 'Could not load';
+      el('qr-rate-source-meta').textContent = err.message || 'Server unavailable.';
+    }
+  }
+
+  async function saveConfig(patch) {
+    try {
+      const res = await fetch(API_BASE + '/api/reports/quarterly/config', {
+        method:'PUT',
+        credentials:'include',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(patch)
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message || 'Save failed.');
+      }
+      if (typeof showToast === 'function') showToast('Settings saved.', 'success');
+      await loadConfig();
+    } catch (err) {
+      alert(err.message || 'Could not save settings.');
+    }
+  }
+
+  function money(n) {
+    return 'GH₵' + Number(n || 0).toLocaleString(undefined,{
+      minimumFractionDigits:2, maximumFractionDigits:2
+    });
+  }
+
+  function pct(n) {
+    return n == null ? 'N/A' : Number(n).toFixed(1) + '%';
+  }
+
+  function renderAnalysis(analysis) {
+    if (!analysis) return '<p class="s-meta">No analysis returned.</p>';
+    return `
+      <div class="detail-section">
+        <div class="detail-row"><span class="detail-key">Revenue</span><span class="detail-val">${money(analysis.revenue?.totalRevenue)}</span></div>
+        <div class="detail-row"><span class="detail-key">Net Profit</span><span class="detail-val">${money(analysis.profitRoi?.netProfit)}</span></div>
+        <div class="detail-row"><span class="detail-key">ROI</span><span class="detail-val">${pct(analysis.profitRoi?.roiPercent)}</span></div>
+        <div class="detail-row"><span class="detail-key">Revenue Variability</span><span class="detail-val">${analysis.revenue?.variabilityBand ?? 'N/A'}</span></div>
+        <div class="detail-row"><span class="detail-key">Demand vs Supply</span><span class="detail-val">${analysis.demandSupply?.condition ?? 'N/A'}</span></div>
+        <div class="detail-row"><span class="detail-key">Indicative Forward NPV</span><span class="detail-val">${money(analysis.npv?.npv)}</span></div>
+      </div>`;
+  }
+
+  el('qr-recipient-add-btn').addEventListener('click', () => {
+    const input = el('qr-recipient-input');
+    const email = String(input.value || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      alert('Please enter a valid email address.');
+      return;
+    }
+    if (currentEmails.includes(email)) {
+      input.value = '';
+      return;
+    }
+    input.value = '';
+    saveConfig({recipientEmails:[...currentEmails, email]});
+  });
+
+  el('qr-recipient-list').addEventListener('click', e => {
+    const btn = e.target.closest('[data-qr-remove-email]');
+    if (!btn) return;
+    const email = btn.getAttribute('data-qr-remove-email');
+    saveConfig({recipientEmails:currentEmails.filter(x => x !== email)});
+  });
+
+  el('qr-rate-save-btn').addEventListener('click', () => {
+    const value = Number(el('qr-rate-override-input').value);
+    if (!Number.isFinite(value) || value <= 0 || value >= 100) {
+      alert('Enter a percentage between 0 and 100, e.g. 27 for 27%.');
+      return;
+    }
+    saveConfig({discountRateManualOverride:value / 100});
+  });
+
+  el('qr-rate-clear-btn').addEventListener('click', () => {
+    el('qr-rate-override-input').value = '';
+    saveConfig({discountRateManualOverride:null});
+  });
+
+  el('qr-q-preview-btn').addEventListener('click', async () => {
+    const year = el('qr-q-year').value;
+    const quarter = el('qr-q-quarter').value;
+    const host = el('qr-q-result');
+    host.innerHTML = '<p class="s-meta">Loading preview…</p>';
+    try {
+      const res = await fetch(`${API_BASE}/api/reports/quarterly/preview?year=${year}&quarter=${quarter}`, {credentials:'include'});
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Preview failed.');
+      host.innerHTML = `<h4 style="margin:8px 0;">${data.label}</h4>${renderAnalysis(data.analysis)}`;
+    } catch (err) {
+      host.innerHTML = `<p style="color:#b91c1c;">${err.message}</p>`;
+    }
+  });
+
+  el('qr-q-send-btn').addEventListener('click', async () => {
+    const year = Number(el('qr-q-year').value);
+    const quarter = Number(el('qr-q-quarter').value);
+    if (!confirm(`Generate and email the Q${quarter} ${year} report now to: ${currentEmails.join(', ') || '(no recipients set — archive only)'}?`)) return;
+
+    const host = el('qr-q-result');
+    host.innerHTML = '<p class="s-meta">Generating and sending…</p>';
+    try {
+      const res = await fetch(API_BASE + '/api/reports/quarterly/send-now', {
+        method:'POST', credentials:'include',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({year, quarter})
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Send failed.');
+      host.innerHTML = `<p style="color:#15803d;"><i class="fa-solid fa-circle-check"></i> Sent ${data.label} to: ${(data.recipients || []).join(', ') || 'no recipients (archived only)'}.</p>`;
+      loadConfig();
+    } catch (err) {
+      host.innerHTML = `<p style="color:#b91c1c;">${err.message}</p>`;
+    }
+  });
+
+  el('qr-a-preview-btn').addEventListener('click', async () => {
+    const year = el('qr-a-year').value;
+    const host = el('qr-a-result');
+    host.innerHTML = '<p class="s-meta">Loading preview…</p>';
+    try {
+      const res = await fetch(`${API_BASE}/api/reports/annual/preview?year=${year}`, {credentials:'include'});
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Preview failed.');
+      host.innerHTML = `<h4 style="margin:8px 0;">${data.label}</h4>${renderAnalysis(data.analysis)}`;
+    } catch (err) {
+      host.innerHTML = `<p style="color:#b91c1c;">${err.message}</p>`;
+    }
+  });
+
+  el('qr-a-send-btn').addEventListener('click', async () => {
+    const year = Number(el('qr-a-year').value);
+    if (!confirm(`Generate and email the ${year} Annual Report now to: ${currentEmails.join(', ') || '(no recipients set — archive only)'}?`)) return;
+
+    const host = el('qr-a-result');
+    host.innerHTML = '<p class="s-meta">Generating and sending…</p>';
+    try {
+      const res = await fetch(API_BASE + '/api/reports/annual/send-now', {
+        method:'POST', credentials:'include',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({year})
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Send failed.');
+      host.innerHTML = `<p style="color:#15803d;"><i class="fa-solid fa-circle-check"></i> Sent ${data.label} to: ${(data.recipients || []).join(', ') || 'no recipients (archived only)'}.</p>`;
+      loadConfig();
+    } catch (err) {
+      host.innerHTML = `<p style="color:#b91c1c;">${err.message}</p>`;
+    }
+  });
+
+  populateYears();
+  loadConfig();
+})();
+</script>
+
 </body>
 </html>

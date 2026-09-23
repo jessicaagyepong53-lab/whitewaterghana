@@ -115,17 +115,6 @@ const SPECIAL_ACCESS_OVERRIDES = {
 
 };
 
-mountQuarterlyReportRoutes(app, {
-  AppData,
-  ProductionBatch,
-  nowIso,
-  createError,
-  ensureAuthenticated,
-  SPECIAL_ACCESS_OVERRIDES,
-  getGridFSBucket,
-  broadcastRealtimeUpdate,
-});
-
 function defaultCanEditDeleteForRole(role) {
   const normalized = String(role || '').trim().toLowerCase();
   return ['ceo', 'manager'].includes(normalized);
@@ -2184,6 +2173,22 @@ mountAssistantRoutes(app, {
   SPECIAL_ACCESS_OVERRIDES,
   nowIso,
   createError,
+});
+
+// ── Quarterly/Annual Reports ──
+// Must be mounted after attachUser/cookieParser/express.json above so that
+// req.user, req.cookies, and req.body are populated before ensureAuthenticated
+// runs inside these routes (previously mounted before that middleware chain,
+// which made every quarterly-report route 401 regardless of a valid session).
+mountQuarterlyReportRoutes(app, {
+  AppData,
+  ProductionBatch,
+  nowIso,
+  createError,
+  ensureAuthenticated,
+  SPECIAL_ACCESS_OVERRIDES,
+  getGridFSBucket,
+  broadcastRealtimeUpdate,
 });
 
 
