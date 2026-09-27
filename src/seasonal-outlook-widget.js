@@ -41,6 +41,13 @@
 
 	var STYLE_ID = 'seasonal-outlook-widget-styles';
 
+	// Last computed context, kept so other widgets on the page (e.g. the
+	// Business Value Clock) can read "what season are we in and does the
+	// real revenue agree" without recomputing it themselves. See
+	// getSeasonalOutlookContext() and the 'seasonal-outlook-context' event
+	// dispatched at the bottom of render().
+	var lastContext = null;
+
 	// Month index (0 = Jan) → { key, label, tone, reason }
 	// This is the general industry pattern for Ghana, not derived from
 	// this business's own sales — see the "About this" note in the panel.
@@ -100,6 +107,10 @@
 			'.swo-datacheck.diverge{background:#fff7ed;border-color:#fed7aa;}',
 			'.swo-datacheck.nodata{color:#64748b;}',
 			'.swo-footnote{margin:10px 0 0;font-size:0.72rem;color:#94a3b8;line-height:1.5;}',
+			'.swo-crosslink{display:inline-flex;align-items:center;gap:6px;margin-top:12px;',
+			'background:none;border:none;padding:0;font:inherit;font-size:0.82rem;font-weight:600;',
+			'color:#0077b6;cursor:pointer;}',
+			'.swo-crosslink:hover{text-decoration:underline;}',
 		].join('');
 		document.head.appendChild(style);
 	}
@@ -254,6 +265,33 @@
 		return season.label + ' \u2014 revenue ' + rounded + '% ' + direction + ' ' + basisText + '.';
 	}
 
+	// Packages the season and data-check into a plain object other widgets
+	// can consume — e.g. the Business Value Clock explaining a revenue dip
+	// as "expected, it's lean season" rather than an unexplained shortfall.
+	function buildContext(season, check) {
+		var expectedDirection = (season.key === 'peak' || season.key === 'transition-up') ? 'up'
+			: (season.key === 'lean' || season.key === 'transition-down') ? 'down' : 'flat';
+
+		var dataCheck = null;
+		if (check.mode !== 'nodata') {
+			var agrees = (check.pct >= 0 && expectedDirection === 'up') || (check.pct < 0 && expectedDirection === 'down');
+			dataCheck = {
+				mode: check.mode,
+				pctVsExpected: check.pct,
+				agreesWithSeason: Math.abs(check.pct) < 5 ? null : agrees,
+				compareLabel: check.mode === 'yoy' ? check.compareLabel : 'trailing 3-month average',
+			};
+		}
+
+		return {
+			seasonKey: season.key,
+			seasonLabel: season.label,
+			seasonReason: season.reason,
+			expectedDirection: expectedDirection,
+			dataCheck: dataCheck,
+		};
+	}
+
 	function render(container) {
 		var now = new Date();
 		var season = SEASON_CALENDAR[now.getMonth()];
@@ -261,8 +299,19 @@
 		var monthName = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 		var check = computeDataCheck();
 
+		lastContext = buildContext(season, check);
+		// Let anything already listening (including a Business Value Clock
+		// iframe that's set up a message listener) know the latest reading.
+		document.dispatchEvent(new CustomEvent('seasonal-outlook-context', { detail: lastContext }));
+
 		var iconStyle = 'background:' + toneMeta.bg + ';color:' + toneMeta.color + ';border:1px solid ' + toneMeta.border + ';';
 		var summaryLine = buildSummaryLine(season, check);
+
+		// Only offer the cross-link if the Business Value Clock widget is
+		// actually on this page (it exposes window.openBusinessValueClock).
+		var crossLinkHtml = (typeof window.openBusinessValueClock === 'function')
+			? '<button type="button" class="swo-crosslink" id="swo-crosslink">See how this factors into your Business Value Clock <i class="fa-solid fa-arrow-right" aria-hidden="true"></i></button>'
+			: '';
 
 		container.innerHTML =
 			'<div class="swo-card">' +
@@ -282,6 +331,7 @@
 			'<p class="swo-reason">' + season.reason + '</p>' +
 			buildDataCheckHtml(season.key, check) +
 			'<p class="swo-footnote">The season above reflects general demand patterns for water production in Ghana, not this business\u2019s own figures. The "Your numbers" line is computed live from your recorded sales.</p>' +
+			crossLinkHtml +
 			'</div>' +
 			'</div>';
 
@@ -291,6 +341,14 @@
 			var isOpen = card.classList.toggle('is-open');
 			teaser.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
 		});
+
+		var crossLink = container.querySelector('#swo-crosslink');
+		if (crossLink) {
+			crossLink.addEventListener('click', function (e) {
+				e.stopPropagation();
+				window.openBusinessValueClock();
+			});
+		}
 	}
 
 	function initSeasonalOutlookWidget(containerId) {
@@ -302,6 +360,22 @@
 
 	window.initSeasonalOutlookWidget = initSeasonalOutlookWidget;
 	window.refreshSeasonalOutlookWidget = function () { initSeasonalOutlookWidget(); };
+	// Read-only snapshot of the current season + "your numbers" check, so
+	// e.g. business-value-clock-widget.js can reference it without
+	// depending on this widget's internals. Returns null until the widget
+	// has rendered at least once.
+	window.getSeasonalOutlookContext = function () { return lastContext; };
+	// General calendar pattern for ANY month (0 = Jan), not just the current
+	// one — used by the Business Value Clock to explain a specific past
+	// month, since getSeasonalOutlookContext() only covers "now". Safe to
+	// call even on pages that don't have a #seasonal-outlook-widget mount
+	// point (e.g. business-value-clock.html), since this doesn't touch the
+	// DOM.
+	window.getSeasonMeta = function (monthIndex) {
+		var entry = SEASON_CALENDAR[monthIndex];
+		if (!entry) return null;
+		return { key: entry.key, label: entry.label, reason: entry.reason };
+	};
 
 	document.addEventListener('DOMContentLoaded', function () {
 		if (document.getElementById('seasonal-outlook-widget')) initSeasonalOutlookWidget();

@@ -272,6 +272,12 @@
 </div>
 
 <script src="../src/script.js?v=20260704u"></script>
+<!-- Defines window.getSeasonMeta()/getSeasonalOutlookContext() — general
+     demand-season data used below in buildAutoReason() so a revenue swing
+     can be attributed to season, not left unexplained. This script only
+     renders its own card if a #seasonal-outlook-widget element exists, so
+     it's a no-op UI-wise on this page. -->
+<script src="../src/seasonal-outlook-widget.js"></script>
 <script>
 (function () {
   "use strict";
@@ -518,17 +524,42 @@
   }
   function canEditNotes() { return currentRole === "ceo" || currentRole === "manager"; }
 
+  // Looks up the general (industry-pattern, not this-business's-own-data)
+  // seasonal reading for the month being viewed, and says whether a
+  // significant revenue swing agrees or conflicts with it. Comes from
+  // seasonal-outlook-widget.js so the calendar pattern is defined in one
+  // place; returns null quietly if that script isn't loaded or the swing
+  // is too small to be worth attributing.
+  function buildSeasonalNote(monthRow, pct) {
+    if (typeof window.getSeasonMeta !== "function" || pct === undefined || Math.abs(pct) < 8) return null;
+    var monthIndex = Number(monthRow.key.slice(5, 7)) - 1;
+    var season = window.getSeasonMeta(monthIndex);
+    if (!season) return null;
+
+    var expectedDirection = (season.key === "peak" || season.key === "transition-up") ? "up"
+      : (season.key === "lean" || season.key === "transition-down") ? "down" : null;
+    if (!expectedDirection) return null;
+
+    var agrees = (pct >= 0 && expectedDirection === "up") || (pct < 0 && expectedDirection === "down");
+    return agrees
+      ? ("This lines up with " + season.label.toLowerCase() + " \u2014 " + season.reason)
+      : ("This runs counter to the general " + season.label.toLowerCase() + " pattern for this month (" + season.reason + "), so something specific to this month is likely the real driver.");
+  }
+
   function buildAutoReason(monthRow, yearAvg, yoyList) {
     if (!monthRow || monthRow.empty) return "No sales were recorded for " + niceMonthLabel(monthRow.key) + ".";
     var parts = [];
+    var pct;
     if (yearAvg > 0) {
-      var pct = Math.round(((monthRow.revenue - yearAvg) / yearAvg) * 100);
+      pct = Math.round(((monthRow.revenue - yearAvg) / yearAvg) * 100);
       if (Math.abs(pct) >= 8) {
         parts.push("Revenue was " + Math.abs(pct) + "% " + (pct >= 0 ? "above" : "below") + " the " + monthRow.key.slice(0, 4) + " monthly average.");
       } else {
         parts.push("Revenue was close to the " + monthRow.key.slice(0, 4) + " monthly average.");
       }
     }
+    var seasonalNote = buildSeasonalNote(monthRow, pct);
+    if (seasonalNote) parts.push(seasonalNote);
     var top = topCategory(monthRow.categories);
     if (top) parts.push("The largest cost category was " + top.name + " (" + Math.round(top.share) + "% of this month's spend).");
     if (monthRow.pending > 0) parts.push(fmtMoney(monthRow.pending) + " billed this month is still awaiting payment.");

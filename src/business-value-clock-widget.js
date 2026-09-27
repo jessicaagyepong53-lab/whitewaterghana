@@ -106,7 +106,25 @@
 		var iframe = document.getElementById('bvc-modal-iframe');
 		var loading = document.getElementById('bvc-modal-loading');
 		if (iframe && loading) {
-			iframe.addEventListener('load', function () { loading.style.display = 'none'; }, { once: true });
+			iframe.addEventListener('load', function () {
+				loading.style.display = 'none';
+				// Hand off the current seasonal reading so the clock page can
+				// attribute a revenue dip/uptick to season in its own
+				// projection notes, rather than treating it as unexplained.
+				// business-value-clock.html should listen with:
+				//   window.addEventListener('message', function (e) {
+				//     if (e.data && e.data.type === 'seasonal-outlook-context') {
+				//       // e.data.payload = { seasonKey, seasonLabel, seasonReason,
+				//       //   expectedDirection, dataCheck }
+				//     }
+				//   });
+				if (typeof window.getSeasonalOutlookContext === 'function') {
+					var ctx = window.getSeasonalOutlookContext();
+					if (ctx && iframe.contentWindow) {
+						iframe.contentWindow.postMessage({ type: 'seasonal-outlook-context', payload: ctx }, '*');
+					}
+				}
+			}, { once: true });
 		}
 
 		overlay.addEventListener('click', function (e) {
@@ -137,6 +155,24 @@
 		setTimeout(function () { if (overlay.parentNode) overlay.remove(); }, 180);
 	}
 
+	// If the seasonal outlook widget is on the page and has rendered, fold
+	// its reading into the teaser sub-line — e.g. a revenue dip shows up
+	// here as "Lean Season" instead of reading as an unexplained shortfall.
+	function buildWidgetSubLine() {
+		var fallback = 'Tap to see growth projections &amp; seasonal demand, from your own numbers';
+		if (typeof window.getSeasonalOutlookContext !== 'function') return fallback;
+		var ctx = window.getSeasonalOutlookContext();
+		if (!ctx) return fallback;
+
+		if (!ctx.dataCheck || ctx.dataCheck.agreesWithSeason === null) {
+			return 'Currently: ' + ctx.seasonLabel + ' \u2014 tap for projections';
+		}
+		var note = ctx.dataCheck.agreesWithSeason
+			? ' (revenue tracking as expected)'
+			: ' (revenue diverging from the expected pattern)';
+		return 'Currently: ' + ctx.seasonLabel + note;
+	}
+
 	function initBvcWidget(containerId) {
 		var container = document.getElementById(containerId || 'bvc-widget');
 		if (!container) return;
@@ -146,12 +182,19 @@
 			miniDialSvg() +
 			'<span class="bvc-widget-text">' +
 			'<span class="bvc-widget-label">Business Value Clock</span>' +
-			'<span class="bvc-widget-sub">Tap to see growth projections &amp; seasonal demand, from your own numbers</span>' +
+			'<span class="bvc-widget-sub">' + buildWidgetSubLine() + '</span>' +
 			'</span>' +
 			'<i class="fa-solid fa-arrow-up-right-from-square bvc-widget-arrow" aria-hidden="true"></i>' +
 			'</button>';
 		var btn = document.getElementById('bvc-widget-btn');
 		if (btn) btn.addEventListener('click', openBvcModal);
+
+		// Keep the sub-line current if the seasonal widget re-renders later
+		// (e.g. after a data refresh) without requiring a full page reload.
+		document.addEventListener('seasonal-outlook-context', function () {
+			var sub = container.querySelector('.bvc-widget-sub');
+			if (sub) sub.innerHTML = buildWidgetSubLine();
+		});
 	}
 
 	window.initBvcWidget = initBvcWidget;
