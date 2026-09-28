@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -6,6 +6,76 @@
   <title>Dashboard</title>
   <link rel="stylesheet" href="../src/script.css?v=20260704u">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+
+  <!-- MOBILE RESPONSIVE FIX: must stay AFTER script.css so it overrides it -->
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      max-width: 100%;
+      overflow-x: hidden;
+    }
+
+    img, svg, canvas, video { max-width: 100%; height: auto; }
+
+    /* Charts and tables scroll inside their own box, never the whole page */
+    .chart-wrap { max-width: 100%; overflow-x: auto; }
+    .table-wrap, .panel table { max-width: 100%; }
+
+    @media (max-width: 768px) {
+      .ops-main {
+        margin-left: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+      }
+
+      /* Every direct child and grid item may shrink below its content width */
+      .ops-main > *,
+      .grid-two > *,
+      .kpi-grid > *,
+      .panel,
+      .page-header {
+        min-width: 0 !important;
+        max-width: 100% !important;
+      }
+
+      /* Long text and numbers wrap instead of pushing the page wider */
+      .ops-main, .ops-main * {
+        overflow-wrap: anywhere;
+        word-break: normal;
+      }
+
+      /* Two-column sections become one column */
+      .grid-two {
+        display: grid !important;
+        grid-template-columns: 1fr !important;
+        gap: 12px !important;
+      }
+
+      /* KPI cards: two per row on most phones, one on very narrow ones */
+      .kpi-grid {
+        display: grid !important;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)) !important;
+        gap: 10px !important;
+      }
+
+      /* Scale text down so the dashboard header does not dominate the screen */
+      .page-header h2 { font-size: 1.4rem; }
+      .page-header p,
+      .dash-meta-line,
+      .dash-activity-feed li { font-size: 0.9rem; }
+
+      /* Rows that hold a badge next to text (e.g. "Critical Zone") may wrap */
+      .kpi-grid *, .panel * { flex-wrap: wrap; }
+
+      .chart-legend { flex-wrap: wrap; gap: 8px; }
+
+      .month-selector-bar { flex-wrap: wrap; }
+      .month-selector-bar select { max-width: 100%; }
+    }
+  </style>
 </head>
 <body class="ops-page" data-page="dashboard">
   <aside class="ops-sidebar" id="ops-sidebar">
