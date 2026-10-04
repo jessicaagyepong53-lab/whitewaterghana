@@ -3040,6 +3040,8 @@ function closeTopbarUserMenu() {
 }
 
 function openUserManagementPage() {
+	const role = String((window.__wwCurrentUser || getCachedSessionUser())?.role || '').trim().toLowerCase();
+	if (!['ceo', 'manager'].includes(role)) return;
 	window.location.href = resolvePageHref('users');
 }
 
@@ -3049,6 +3051,9 @@ function openTopbarProfileModal(userInput) {
 	const roleLabel = toRoleLabel(user?.roleLabel || user?.role || 'User');
 	const email = String(user?.email || '').trim() || '—';
 	const initials = toUserInitials(displayName, email);
+	const canManageUsers = ['ceo', 'manager'].includes(
+		String(user?.role || '').trim().toLowerCase()
+	);
 
 	const existing = document.querySelector('.ww-profile-overlay');
 	if (existing) existing.remove();
@@ -3076,7 +3081,7 @@ function openTopbarProfileModal(userInput) {
 				</div>
 				<div class="ww-profile-actions">
 					<button type="button" class="btn-secondary ww-profile-close-btn">Close</button>
-					<button type="button" class="btn-primary ww-profile-users-btn"><i class="fa-solid fa-users-gear"></i> User Management</button>
+					${canManageUsers ? '<button type="button" class="btn-primary ww-profile-users-btn"><i class="fa-solid fa-users-gear"></i> User Management</button>' : ''}
 				</div>
 			</div>
 		</div>
@@ -11427,6 +11432,10 @@ function initAccountingPage() {
 		let viewerObjectUrl = '';
 		let viewerRenderToken = 0;
 		let viewerScrollHandler = null;
+		let viewerPdfDoc = null;
+		let viewerZoom = 1;
+		let viewerResizeTimer = null;
+		let viewerLastWidth = 0;
 
 		const getPreviewUrl = (fileId) => `${API_BASE}/api/record-vault/${currentSection}/${encodeURIComponent(fileId)}/download`;
 		const getDownloadUrl = (fileId) => `${API_BASE}/api/record-vault/${currentSection}/${encodeURIComponent(fileId)}/download?download=1`;
@@ -11513,8 +11522,59 @@ function initAccountingPage() {
 			updateCounter();
 		};
 
+		// Draws every page of the open PDF so it fits the screen width (phone, tablet or
+		// desktop). Pages are drawn sharp for high-density screens. Called again when the
+		// screen is rotated or resized, and when the zoom buttons are used.
+		const renderViewerPdfPages = async (renderToken) => {
+			if (!viewerPdfDoc || !viewerPdfPages || !viewerBody) return;
+			const pdf = viewerPdfDoc;
+			const sidePad = window.innerWidth <= 720 ? 16 : 40;
+			const available = Math.max(240, viewerBody.clientWidth - sidePad);
+			viewerLastWidth = viewerBody.clientWidth;
+			const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+			const keepRatio = viewerBody.scrollHeight > 0 ? viewerBody.scrollTop / viewerBody.scrollHeight : 0;
+			const firstDraw = !viewerPdfPages.children.length;
+			const fresh = [];
+			for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
+				if (renderToken !== viewerRenderToken) return;
+				const page = await pdf.getPage(pageNum);
+				const base = page.getViewport({ scale: 1 });
+				const cssScale = (available / base.width) * viewerZoom;
+				const pixelScale = Math.min(cssScale * dpr, 4096 / base.width);
+				const viewport = page.getViewport({ scale: pixelScale });
+				const canvas = document.createElement('canvas');
+				canvas.className = 'rv-viewer-pdf-page';
+				canvas.width = Math.floor(viewport.width);
+				canvas.height = Math.floor(viewport.height);
+				canvas.style.width = `${Math.floor(base.width * cssScale)}px`;
+				canvas.style.height = `${Math.floor(base.height * cssScale)}px`;
+				const context = canvas.getContext('2d');
+				if (!context) continue;
+				await page.render({ canvasContext: context, viewport }).promise;
+				if (renderToken !== viewerRenderToken) return;
+				if (firstDraw) viewerPdfPages.appendChild(canvas); else fresh.push(canvas);
+			}
+			if (!firstDraw) {
+				viewerPdfPages.innerHTML = '';
+				fresh.forEach((c) => viewerPdfPages.appendChild(c));
+				viewerBody.scrollTop = keepRatio * viewerBody.scrollHeight;
+			}
+			setupViewerPageCounter(pdf.numPages);
+		};
+
+		const setViewerZoom = (next) => {
+			const z = Math.min(3, Math.max(0.5, next));
+			if (z === viewerZoom || !viewerPdfDoc) return;
+			viewerZoom = z;
+			const zl = document.getElementById('rv-viewer-zoom-label');
+			if (zl) zl.textContent = `${Math.round(z * 100)}%`;
+			renderViewerPdfPages(viewerRenderToken);
+		};
+
 		const closeViewerModal = () => {
 			viewerRenderToken += 1;
+			viewerPdfDoc = null;
+			viewerZoom = 1;
 			clearViewerPdfPreview();
 			revokeViewerObjectUrl();
 			if (viewerBody) {
@@ -11629,27 +11689,13 @@ function initAccountingPage() {
 					viewerPdfPages.style.display = 'flex';
 				}
 
-				for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
-					if (renderToken !== viewerRenderToken) return;
-					const page = await pdf.getPage(pageNum);
-					const baseViewport = page.getViewport({ scale: 1 });
-					const maxCanvasWidth = Math.max(320, Number((viewerBody && viewerBody.clientWidth) || 960) - 40);
-					const fitScale = Math.min(2, Math.max(1, maxCanvasWidth / baseViewport.width));
-					const viewport = page.getViewport({ scale: fitScale });
-
-					const canvas = document.createElement('canvas');
-					canvas.className = 'rv-viewer-pdf-page';
-					canvas.width = Math.floor(viewport.width);
-					canvas.height = Math.floor(viewport.height);
-
-					const context = canvas.getContext('2d');
-					if (!context) continue;
-					await page.render({ canvasContext: context, viewport }).promise;
-					if (viewerPdfPages) viewerPdfPages.appendChild(canvas);
-				}
-
+				viewerPdfDoc = pdf;
+				viewerZoom = 1;
+				const zlabel = document.getElementById('rv-viewer-zoom-label');
+				if (zlabel) zlabel.textContent = '100%';
+				await renderViewerPdfPages(renderToken);
+				if (renderToken !== viewerRenderToken) return;
 				if (viewerLoading) viewerLoading.style.display = 'none';
-				setupViewerPageCounter(pdf.numPages);
 			} catch (_e) {
 				if (viewerLoading) {
 					viewerLoading.style.display = 'block';
@@ -11862,6 +11908,20 @@ function initAccountingPage() {
 				if (!res.ok) throw new Error('Failed to load files');
 				const payload = await res.json();
 				files = Array.isArray(payload.files) ? payload.files : [];
+				if (currentSection === 'financialReports') {
+					const periodKey = (f) => {
+						const text = `${f.periodLabel || ''} ${f.fileName || ''}`;
+						const y = Number.isFinite(Number(f.year)) && Number(f.year) > 0
+							? Number(f.year)
+							: parseInt((text.match(/(20\d{2})/) || [])[1], 10) || 0;
+						const q = parseInt((text.match(/Q([1-4])/i) || [])[1], 10) || 5;
+						return { y, q };
+					};
+					files.sort((a, b) => {
+						const ka = periodKey(a), kb = periodKey(b);
+						return ka.y - kb.y || ka.q - kb.q;
+					});
+				}
 				renderFiles();
 			} catch (_e) {
 				files = [];
@@ -12124,6 +12184,30 @@ function initAccountingPage() {
 			});
 		}
 		if (viewerCloseBtn) viewerCloseBtn.addEventListener('click', closeViewerModal);
+		// Extra reader controls: zoom buttons in the header.
+		if (viewerModal) {
+			const headRight = viewerModal.querySelector('.rv-viewer-head-right');
+			if (headRight && !document.getElementById('rv-viewer-zoom-out')) {
+				const zoom = document.createElement('span');
+				zoom.className = 'rv-viewer-zoom';
+				zoom.innerHTML = '<button type="button" id="rv-viewer-zoom-out" aria-label="Zoom out">&minus;</button><span id="rv-viewer-zoom-label">100%</span><button type="button" id="rv-viewer-zoom-in" aria-label="Zoom in">+</button>';
+				headRight.insertBefore(zoom, headRight.firstChild);
+				zoom.querySelector('#rv-viewer-zoom-out').addEventListener('click', () => setViewerZoom(viewerZoom - 0.25));
+				zoom.querySelector('#rv-viewer-zoom-in').addEventListener('click', () => setViewerZoom(viewerZoom + 0.25));
+				zoom.querySelector('#rv-viewer-zoom-label').addEventListener('click', () => setViewerZoom(1));
+			}
+			if (viewerCloseBtn) { viewerCloseBtn.innerHTML = '&times;<span class="rv-close-word"> Close</span>'; }
+			document.addEventListener('keydown', (event) => {
+				if (event.key === 'Escape' && viewerModal.style.display !== 'none') closeViewerModal();
+			});
+			window.addEventListener('resize', () => {
+				if (!viewerPdfDoc || viewerModal.style.display === 'none') return;
+				clearTimeout(viewerResizeTimer);
+				viewerResizeTimer = setTimeout(() => {
+					if (viewerBody && Math.abs(viewerBody.clientWidth - viewerLastWidth) > 24) renderViewerPdfPages(viewerRenderToken);
+				}, 250);
+			});
+		}
 		if (viewerModal) {
 			viewerModal.addEventListener('click', (event) => {
 				if (event.target === viewerModal) closeViewerModal();

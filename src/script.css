@@ -4483,3 +4483,38 @@ body[data-page="sales"] .ops-topbar > .ops-nav a.is-active {
 .ops-main img,
 .ops-main svg,
 .ops-main canvas { max-width: 100%; }
+
+/* ═══════════════════════════════════════════════════════════════
+   RECORD VAULT PDF VIEWER: phone / tablet / desktop + Close buttons
+   Paste at the very END of src/script.css
+   ═══════════════════════════════════════════════════════════════ */
+.rv-viewer-overlay { padding: 14px; }
+.rv-viewer-modal { grid-template-rows: auto 1fr auto; }
+.rv-viewer-pdf-pages { width: max-content; min-width: 100%; align-items: center; }
+.rv-viewer-pdf-page { max-width: none !important; height: auto; display: block; margin: 0 auto; }
+.rv-viewer-body { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.rv-viewer-head { position: sticky; top: 0; z-index: 3; }
+.rv-viewer-head-right { flex-shrink: 0; }
+.rv-viewer-zoom { display: inline-flex; align-items: center; gap: 4px; background: #eff6ff; border: 1px solid #dbeafe; border-radius: 999px; padding: 2px; }
+.rv-viewer-zoom button { width: 32px; height: 32px; border: 0; border-radius: 50%; background: #fff; color: #1d4ed8; font-size: 1.1rem; font-weight: 700; cursor: pointer; }
+.rv-viewer-zoom button:hover { background: #dbeafe; }
+.rv-viewer-zoom span { min-width: 44px; text-align: center; font-size: .78rem; font-weight: 700; color: #1e3a56; cursor: pointer; }
+.rv-viewer-close { width: auto; min-width: 44px; height: 44px; padding: 0 12px; font-weight: 700; background: #0077b6; border-color: #0077b6; color: #fff; }
+.rv-viewer-close .rv-close-word { font-size: .85rem; }
+.rv-viewer-bottom { padding: 10px 14px; padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); background: #fff; border-top: 1px solid #dbeafe; }
+.rv-viewer-bottom button { width: 100%; min-height: 46px; border: 0; border-radius: 10px; background: #0077b6; color: #fff; font: inherit; font-weight: 700; font-size: .95rem; cursor: pointer; }
+.rv-viewer-bottom button:hover { background: #005f92; }
+
+@media (max-width: 720px) {
+	.rv-viewer-overlay { padding: 0; }
+	.rv-viewer-modal { width: 100vw; height: 100%; max-height: 100dvh; border-radius: 0; }
+	.rv-viewer-head { padding: 8px 10px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); flex-wrap: wrap; }
+	.rv-viewer-title { flex: 1 1 100%; order: 3; font-size: .8rem; }
+	.rv-viewer-head-right { flex: 1 1 100%; order: 1; justify-content: space-between; }
+	.rv-viewer-page-counter { order: 0; }
+	.rv-viewer-body { padding: 8px; }
+	.rv-viewer-pdf-pages { gap: 8px; }
+}
+@media (min-width: 721px) and (max-width: 1100px) {
+	.rv-viewer-modal { width: 96vw; height: 94vh; }
+}

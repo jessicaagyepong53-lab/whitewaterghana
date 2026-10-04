@@ -693,6 +693,7 @@ function toActivityEntityType(entityType) {
     vendors: 'vendor',
 
     inventory: 'inventory',
+    finishedProducts: 'finishedProduct',
 
     machines: 'machine',
 
@@ -775,6 +776,7 @@ function toStaffModuleFromEntityType(entityType) {
     vendors: 'Vendors',
 
     inventory: 'Raw Materials',
+    finishedProducts: 'Finished Products',
 
     machines: 'Machines',
 
@@ -817,6 +819,7 @@ function toResourceKeyFromEntityType(entityType) {
     vendors: 'vendors',
 
     inventory: 'inventory',
+    finishedProducts: 'inventory',
 
     machines: 'machines',
 
@@ -2183,6 +2186,7 @@ mountAssistantRoutes(app, {
 mountQuarterlyReportRoutes(app, {
   AppData,
   ProductionBatch,
+  User,
   nowIso,
   createError,
   ensureAuthenticated,
@@ -3841,10 +3845,10 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
       const nextObj = normalized && typeof normalized === 'object' ? normalized : {};
 
-      if (key === 'ww_raw_materials' || key === 'ww_finished_products') {
-
+      if (key === 'ww_raw_materials') {
         await logContentDiffActivity({ req, entityType: 'inventory', previousArr: priorDataForActivity, nextArr: normalized, batchId: activityBatchId });
-
+      } else if (key === 'ww_finished_products') {
+        await logContentDiffActivity({ req, entityType: 'finishedProducts', previousArr: priorDataForActivity, nextArr: normalized, batchId: activityBatchId });
       } else if (key === 'ww_production_batches') {
 
         await logContentDiffActivity({ req, entityType: 'production', previousArr: priorDataForActivity, nextArr: normalized, batchId: activityBatchId });

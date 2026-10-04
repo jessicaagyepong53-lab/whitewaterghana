@@ -22,6 +22,7 @@ const {
   justCompletedYear,
   yearLabel,
   buildAnnualAnalysis,
+  checkPeriodAvailability,
 } = require('./analysis');
 const { buildQuarterlyReportPDF, buildAnnualReportPDF } = require('./pdf');
 const {
@@ -38,6 +39,49 @@ function isManagerOrCeo(user, specialAccessOverrides) {
   if (role === 'ceo' || role === 'manager') return true;
   const overrides = (specialAccessOverrides && specialAccessOverrides[String(user.email || '').toLowerCase()]) || [];
   return overrides.includes('ceo');
+}
+
+// ── Review & approval sign-off ──
+// Reviewed by is always the CEO. Prepared by is whoever generated the
+// report manually (the logged-in user), or the CEO when the report is
+// generated automatically by the cron. Dates are the generation date.
+const CEO_EMAIL = 'ceo9@whitewaterghana.com';
+
+function displayRole(role) {
+  const r = String(role || '').trim();
+  if (!r) return 'User';
+  if (r.toLowerCase() === 'ceo') return 'CEO';
+  return r.charAt(0).toUpperCase() + r.slice(1).toLowerCase();
+}
+
+function initialsOf(name) {
+  const parts = String(name || '').split(/[\s.\-_]+/).filter(Boolean);
+  if (!parts.length) return '';
+  return parts.slice(0, 3).map((part) => part.charAt(0).toUpperCase()).join('');
+}
+
+// Ghana is on UTC all year (Africa/Accra), so the UTC date is the Accra date.
+function formatSignoffDate(date) {
+  const d = date instanceof Date ? date : new Date();
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  return `${dd} / ${mm} / ${d.getUTCFullYear()}`;
+}
+
+async function buildSignoff({ User }, generatedBy) {
+  let ceoDoc = null;
+  if (User) {
+    try { ceoDoc = await User.findOne({ email: CEO_EMAIL }).lean(); } catch (_error) { ceoDoc = null; }
+  }
+  const ceoName = (ceoDoc && ceoDoc.name) || 'CEO';
+  const reviewer = { name: ceoName, role: 'CEO', initials: initialsOf(ceoName) };
+
+  const generatorName = generatedBy && (generatedBy.name || generatedBy.email);
+  const preparer = generatorName
+    ? { name: generatorName, role: displayRole(generatedBy.role), initials: initialsOf(generatorName) }
+    : { ...reviewer };
+
+  return { preparer, reviewer, dateText: formatSignoffDate(new Date()) };
 }
 
 function buildMailTransport() {
@@ -194,11 +238,43 @@ async function updateVaultReportEmailStatus({ AppData, broadcastRealtimeUpdate }
   }
 }
 
-async function generateAndSendQuarterlyReport(deps, { year, quarter, dryRun = false }) {
-  const { AppData, ProductionBatch, nowIso, getGridFSBucket, broadcastRealtimeUpdate } = deps;
+function buildEmailBody(analysis, kind) {
+  const n = analysis.narrative || {};
+  const lines = [
+    `Attached is the ${kind} business and financial report for ${analysis.label}.`,
+    analysis.period ? `Reporting period: ${analysis.period.rangeText} (${analysis.period.monthNames.join(', ')}).` : '',
+    '',
+    n.headline || `Revenue: ${analysis.revenue.totalRevenue.toLocaleString()} | Net profit: ${analysis.profitRoi.netProfit.toLocaleString()}`,
+    '',
+    `ROI on assets: ${analysis.profitRoi.roiPercent === null ? 'n/a' : analysis.profitRoi.roiPercent + '%'} | Revenue variability (CV): ${analysis.revenue.coefficientOfVariation}% - ${analysis.revenue.variabilityBand}`,
+    `Indicative NPV: ${analysis.npv.npv.toLocaleString()} at a ${(analysis.discountRateInfo.rate * 100).toFixed(1)}% discount rate (${analysis.discountRateInfo.benchmark})`,
+    `Demand vs. supply: ${analysis.demandSupply.condition}`,
+  ];
+  if (analysis.partialYear) lines.push(`Note: operations ran for ${analysis.operatingMonths.length} of 12 months this year.`);
+  if (n.risks && n.risks.length) {
+    lines.push('', 'Risks to watch:');
+    n.risks.slice(0, 4).forEach((r) => lines.push(`  - ${r}`));
+  }
+  if (n.actions && n.actions.length) {
+    lines.push('', 'Recommended actions:');
+    n.actions.slice(0, 3).forEach((r) => lines.push(`  - ${r}`));
+  }
+  lines.push('', 'The attached PDF contains the charts, seasonality diagnosis, BCG customer matrix, marginal analysis, NPV scenarios and the analyst outlook.', '', 'This is an automated message from the White Water Wells factory management system.');
+  return lines.join('\n');
+}
+
+async function generateAndSendQuarterlyReport(deps, { year, quarter, dryRun = false, generatedBy = null }) {
+  const { AppData, ProductionBatch, User, nowIso, getGridFSBucket, broadcastRealtimeUpdate } = deps;
   const discountRateInfo = await resolveDiscountRate({ AppData, nowIso });
   const analysis = await buildQuarterlyAnalysis({ AppData, ProductionBatch }, { year, quarter, discountRateInfo });
-  const pdfBuffer = await buildQuarterlyReportPDF(analysis, { companyName: 'White Water Wells Ltd' });
+  if (!analysis.collections || !analysis.collections.invoiceCount) {
+    const err = new Error(`No sales were recorded for ${analysis.label} (${analysis.period ? analysis.period.rangeText : ''}), so there is nothing to report on yet. Record the period's invoices in Sales & Invoicing and try again.`);
+    err.status = 422;
+    err.code = 'NO_DATA';
+    throw err;
+  }
+  const signoff = await buildSignoff({ User }, generatedBy);
+  const pdfBuffer = await buildQuarterlyReportPDF(analysis, { companyName: 'White Water Wells Ltd', signoff });
 
   if (dryRun) {
     return { analysis, pdfBuffer, emailed: false, recipients: [] };
@@ -226,23 +302,13 @@ async function generateAndSendQuarterlyReport(deps, { year, quarter, dryRun = fa
 
     const transport = buildMailTransport();
     const subject = `White Water Wells — Quarterly Report — ${analysis.label}`;
-    const bodyLines = [
-      `Attached is the quarterly business and financial report for ${analysis.label}.`,
-      '',
-      `Revenue: ${analysis.revenue.totalRevenue.toLocaleString()} | Net profit: ${analysis.profitRoi.netProfit.toLocaleString()} | ROI: ${analysis.profitRoi.roiPercent === null ? 'N/A' : analysis.profitRoi.roiPercent + '%'}`,
-      `Revenue variability: ${analysis.revenue.variabilityBand}`,
-      `Demand vs. supply: ${analysis.demandSupply.condition}`,
-      '',
-      'Full breakdown, methodology, and assumptions are in the attached PDF.',
-      '',
-      'This is an automated message from the White Water Wells factory management system.',
-    ];
+    const emailText = buildEmailBody(analysis, 'quarterly');
 
     await transport.sendMail({
       from: `"White Water Wells Reports" <${process.env.GMAIL_USER}>`,
       to: recipients.join(', '),
       subject,
-      text: bodyLines.join('\n'),
+      text: emailText,
       attachments: [{
         filename: `WWW-Quarterly-Report-${analysis.year}-Q${analysis.quarter}.pdf`,
         content: pdfBuffer,
@@ -269,11 +335,18 @@ async function generateAndSendQuarterlyReport(deps, { year, quarter, dryRun = fa
   return { analysis, pdfBuffer, emailed: true, recipients };
 }
 
-async function generateAndSendAnnualReport(deps, { year, dryRun = false }) {
-  const { AppData, ProductionBatch, nowIso, getGridFSBucket, broadcastRealtimeUpdate } = deps;
+async function generateAndSendAnnualReport(deps, { year, dryRun = false, generatedBy = null }) {
+  const { AppData, ProductionBatch, User, nowIso, getGridFSBucket, broadcastRealtimeUpdate } = deps;
   const discountRateInfo = await resolveDiscountRate({ AppData, nowIso });
   const analysis = await buildAnnualAnalysis({ AppData, ProductionBatch }, { year, discountRateInfo });
-  const pdfBuffer = await buildAnnualReportPDF(analysis, { companyName: 'White Water Wells Ltd' });
+  if (!analysis.collections || !analysis.collections.invoiceCount) {
+    const err = new Error(`No sales were recorded for ${analysis.label} (${analysis.period ? analysis.period.rangeText : ''}), so there is nothing to report on yet. Record the period's invoices in Sales & Invoicing and try again.`);
+    err.status = 422;
+    err.code = 'NO_DATA';
+    throw err;
+  }
+  const signoff = await buildSignoff({ User }, generatedBy);
+  const pdfBuffer = await buildAnnualReportPDF(analysis, { companyName: 'White Water Wells Ltd', signoff });
 
   if (dryRun) {
     return { analysis, pdfBuffer, emailed: false, recipients: [] };
@@ -298,24 +371,13 @@ async function generateAndSendAnnualReport(deps, { year, dryRun = false }) {
 
     const transport = buildMailTransport();
     const subject = `White Water Wells — Annual Report — ${analysis.label}`;
-    const bodyLines = [
-      `Attached is the annual business and financial report for ${analysis.label}.`,
-      '',
-      `Revenue: ${analysis.revenue.totalRevenue.toLocaleString()} | Net profit: ${analysis.profitRoi.netProfit.toLocaleString()} | ROI: ${analysis.profitRoi.roiPercent === null ? 'N/A' : analysis.profitRoi.roiPercent + '%'}`,
-      `Revenue variability: ${analysis.revenue.variabilityBand}`,
-      `Demand vs. supply: ${analysis.demandSupply.condition}`,
-      analysis.partialYear ? `Note: operations ran for ${analysis.operatingMonths.length} of 12 months this year.` : null,
-      '',
-      'Full breakdown, methodology, and assumptions are in the attached PDF.',
-      '',
-      'This is an automated message from the White Water Wells factory management system.',
-    ].filter((line) => line !== null);
+    const emailText = buildEmailBody(analysis, 'annual');
 
     await transport.sendMail({
       from: `"White Water Wells Reports" <${process.env.GMAIL_USER}>`,
       to: recipients.join(', '),
       subject,
-      text: bodyLines.join('\n'),
+      text: emailText,
       attachments: [{
         filename: `WWW-Annual-Report-${analysis.year}.pdf`,
         content: pdfBuffer,
@@ -395,26 +457,79 @@ function mountQuarterlyReportRoutes(app, deps) {
     }
   });
 
+  // ── Manual generation guards ──
+  // The period-availability rule lives here (not in generateAnd*), so the
+  // automatic cron, which deliberately fires at 23:55 on the final day of
+  // a period, is never blocked by it.
+  function parseQuarterParams(source) {
+    const fallback = justCompletedQuarter(new Date());
+    const year = Number(source && source.year) || fallback.year;
+    const quarter = Number(source && source.quarter) || fallback.quarter;
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) return { error: 'Please choose a valid year.' };
+    if (!Number.isInteger(quarter) || quarter < 1 || quarter > 4) return { error: 'Please choose a quarter between Q1 and Q4.' };
+    return { year, quarter };
+  }
+
+  function parseYearParam(source) {
+    const fallback = justCompletedYear(new Date());
+    const year = Number(source && source.year) || fallback.year;
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) return { error: 'Please choose a valid year.' };
+    return { year };
+  }
+
+  // Sends the structured "not available yet" response. Returns true if it
+  // responded, so callers can stop.
+  function respondIfNotAvailable(res, spec) {
+    const availability = checkPeriodAvailability(spec, new Date());
+    if (availability.available) return false;
+    res.status(409).json({
+      ok: false,
+      code: 'PERIOD_NOT_ENDED',
+      message: availability.message,
+      label: availability.label,
+      periodStart: availability.periodStart,
+      periodEnd: availability.periodEnd,
+      opensOn: availability.opensOn,
+      opensOnText: availability.opensOnText,
+      daysUntil: availability.daysUntil,
+      inProgress: availability.inProgress,
+      autoSendText: availability.autoSendText,
+    });
+    return true;
+  }
+
+  function respondKnownError(res, error) {
+    if (error && error.code === 'NO_DATA') {
+      res.status(422).json({ ok: false, code: 'NO_DATA', message: error.message });
+      return true;
+    }
+    return false;
+  }
+
   app.get('/api/reports/quarterly/preview', ...authGuards, async (req, res, next) => {
     try {
-      const now = new Date();
-      const fallback = justCompletedQuarter(now);
-      const year = Number(req.query.year) || fallback.year;
-      const quarter = Number(req.query.quarter) || fallback.quarter;
-      const result = await generateAndSendQuarterlyReport(deps, { year, quarter, dryRun: true });
+      const parsed = parseQuarterParams(req.query);
+      if (parsed.error) { res.status(400).json({ ok: false, code: 'BAD_INPUT', message: parsed.error }); return; }
+      const { year, quarter } = parsed;
+      if (respondIfNotAvailable(res, { periodType: 'quarter', year, quarter })) return;
+      const result = await generateAndSendQuarterlyReport(deps, { year, quarter, dryRun: true, generatedBy: req.user });
       res.json({ label: quarterLabel(year, quarter), analysis: result.analysis });
-    } catch (error) { next(error); }
+    } catch (error) {
+      if (respondKnownError(res, error)) return;
+      next(error);
+    }
   });
 
   app.post('/api/reports/quarterly/send-now', ...authGuards, async (req, res, next) => {
     try {
-      const now = new Date();
-      const fallback = justCompletedQuarter(now);
-      const year = Number(req.body && req.body.year) || fallback.year;
-      const quarter = Number(req.body && req.body.quarter) || fallback.quarter;
-      const result = await generateAndSendQuarterlyReport(deps, { year, quarter, dryRun: false });
+      const parsed = parseQuarterParams(req.body);
+      if (parsed.error) { res.status(400).json({ ok: false, code: 'BAD_INPUT', message: parsed.error }); return; }
+      const { year, quarter } = parsed;
+      if (respondIfNotAvailable(res, { periodType: 'quarter', year, quarter })) return;
+      const result = await generateAndSendQuarterlyReport(deps, { year, quarter, dryRun: false, generatedBy: req.user });
       res.json({ ok: true, label: result.analysis.label, recipients: result.recipients });
     } catch (error) {
+      if (respondKnownError(res, error)) return;
       if (error && error.message && !error.status) { next(createError(400, error.message)); return; }
       next(error);
     }
@@ -422,25 +537,39 @@ function mountQuarterlyReportRoutes(app, deps) {
 
   app.get('/api/reports/annual/preview', ...authGuards, async (req, res, next) => {
     try {
-      const now = new Date();
-      const fallback = justCompletedYear(now);
-      const year = Number(req.query.year) || fallback.year;
-      const result = await generateAndSendAnnualReport(deps, { year, dryRun: true });
+      const parsed = parseYearParam(req.query);
+      if (parsed.error) { res.status(400).json({ ok: false, code: 'BAD_INPUT', message: parsed.error }); return; }
+      const { year } = parsed;
+      if (respondIfNotAvailable(res, { periodType: 'year', year })) return;
+      const result = await generateAndSendAnnualReport(deps, { year, dryRun: true, generatedBy: req.user });
       res.json({ label: yearLabel(year), analysis: result.analysis });
-    } catch (error) { next(error); }
+    } catch (error) {
+      if (respondKnownError(res, error)) return;
+      next(error);
+    }
   });
 
   app.post('/api/reports/annual/send-now', ...authGuards, async (req, res, next) => {
     try {
-      const now = new Date();
-      const fallback = justCompletedYear(now);
-      const year = Number(req.body && req.body.year) || fallback.year;
-      const result = await generateAndSendAnnualReport(deps, { year, dryRun: false });
+      const parsed = parseYearParam(req.body);
+      if (parsed.error) { res.status(400).json({ ok: false, code: 'BAD_INPUT', message: parsed.error }); return; }
+      const { year } = parsed;
+      if (respondIfNotAvailable(res, { periodType: 'year', year })) return;
+      const result = await generateAndSendAnnualReport(deps, { year, dryRun: false, generatedBy: req.user });
       res.json({ ok: true, label: result.analysis.label, recipients: result.recipients });
     } catch (error) {
+      if (respondKnownError(res, error)) return;
       if (error && error.message && !error.status) { next(createError(400, error.message)); return; }
       next(error);
     }
+  });
+
+  // Lets the Accounting page show which periods are open before anyone clicks.
+  app.get('/api/reports/availability', ...authGuards, (req, res) => {
+    const now = new Date();
+    const year = Number(req.query.year) || now.getUTCFullYear();
+    const quarters = [1, 2, 3, 4].map((quarter) => checkPeriodAvailability({ periodType: 'quarter', year, quarter }, now));
+    res.json({ year, quarters, annual: checkPeriodAvailability({ periodType: 'year', year }, now) });
   });
 
   // ── Automatic quarterly cron ──

@@ -355,6 +355,29 @@
         print-color-adjust: exact;
       }
     }
+  
+    /* ── Report availability notices (Quarterly Reports tab) ───── */
+    .qr-hint { margin: 0 0 10px; font-size: 0.8rem; color: #587289; display: flex; align-items: center; gap: 6px; min-height: 1.2em; }
+    .qr-hint.qr-hint-open { color: #15803d; }
+    .qr-hint.qr-hint-wait { color: #b45309; }
+    .qr-notice { display: flex; gap: 14px; align-items: flex-start; padding: 14px 16px; border-radius: 12px; border: 1px solid; margin-top: 4px; animation: qrNoticeIn .25s ease; }
+    @keyframes qrNoticeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .qr-notice-wait { background: #fffbeb; border-color: #fde68a; }
+    .qr-notice-info { background: #eff6ff; border-color: #bfdbfe; }
+    .qr-notice-error { background: #fef2f2; border-color: #fecaca; }
+    .qr-notice-ok { background: #f0fdf4; border-color: #bbf7d0; }
+    .qr-notice-icon { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.05rem; flex-shrink: 0; background: #fff; border: 1px solid; }
+    .qr-notice-wait .qr-notice-icon { color: #b45309; border-color: #fcd34d; }
+    .qr-notice-info .qr-notice-icon { color: #0369a1; border-color: #93c5fd; }
+    .qr-notice-error .qr-notice-icon { color: #b91c1c; border-color: #fca5a5; }
+    .qr-notice-ok .qr-notice-icon { color: #15803d; border-color: #86efac; }
+    .qr-notice-body { min-width: 0; flex: 1; }
+    .qr-notice-title { margin: 0 0 4px; font-size: 0.95rem; font-weight: 700; color: #0f172a; }
+    .qr-notice-text { margin: 0; font-size: 0.86rem; line-height: 1.5; color: #334155; }
+    .qr-notice-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+    .qr-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: #fff; border: 1px solid #e2e8f0; font-size: 0.76rem; font-weight: 600; color: #334155; }
+    .qr-chip i { color: #64748b; }
+    .qr-notice-foot { margin: 10px 0 0; font-size: 0.78rem; color: #64748b; }
   </style>
 </head>
 <body class="ops-page" data-page="accounting">
@@ -883,6 +906,7 @@
               <i class="fa-solid fa-paper-plane"></i> Generate &amp; Send Now
             </button>
           </div>
+          <p class="qr-hint" id="qr-q-hint" aria-live="polite"></p>
           <div id="qr-q-result"></div>
         </div>
 
@@ -900,6 +924,7 @@
               <i class="fa-solid fa-paper-plane"></i> Generate &amp; Send Now
             </button>
           </div>
+          <p class="qr-hint" id="qr-a-hint" aria-live="polite"></p>
           <div id="qr-a-result"></div>
         </div>
       </div>
@@ -970,6 +995,7 @@
 <script src="../src/script.js?v=20260704u"></script>
 <script src="../src/assistant.js?v=2"></script>
 <script src="../src/conn-status.js?v=1"></script>
+<script src="../src/report-reader.js?v=1"></script>
 <script>
   // ── Salary Slip Generator ────────────────────────────────────
   (function initSlip() {
@@ -1600,13 +1626,16 @@
     const opts = years.map(y => `<option value="${y}">${y}</option>`).join('');
     el('qr-q-year').innerHTML = opts;
     el('qr-a-year').innerHTML = opts;
-    el('qr-q-year').value = String(now.getFullYear());
-    el('qr-a-year').value = String(now.getFullYear());
 
-    // Most recently completed quarter.
+    // Default to the most recently COMPLETED quarter, including its year
+    // (in Jan-Mar that is Q4 of last year, not Q4 of this year).
     const m = now.getMonth() + 1;
     const q = m <= 3 ? 4 : m <= 6 ? 1 : m <= 9 ? 2 : 3;
+    const qYear = m <= 3 ? now.getFullYear() - 1 : now.getFullYear();
+    el('qr-q-year').value = String(qYear);
     el('qr-q-quarter').value = String(q);
+    // Annual: the last fully completed year.
+    el('qr-a-year').value = String(now.getFullYear() - 1);
   }
 
   function renderRecipients(emails) {
@@ -1755,80 +1784,201 @@
     saveConfig({discountRateManualOverride:null});
   });
 
-  el('qr-q-preview-btn').addEventListener('click', async () => {
-    const year = el('qr-q-year').value;
-    const quarter = el('qr-q-quarter').value;
-    const host = el('qr-q-result');
-    host.innerHTML = '<p class="s-meta">Loading preview…</p>';
-    try {
-      const res = await fetch(`${API_BASE}/api/reports/quarterly/preview?year=${year}&quarter=${quarter}`, {credentials:'include'});
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || 'Preview failed.');
-      host.innerHTML = `<h4 style="margin:8px 0;">${data.label}</h4>${renderAnalysis(data.analysis)}`;
-    } catch (err) {
-      host.innerHTML = `<p style="color:#b91c1c;">${err.message}</p>`;
+  /* ── Availability + friendly notices ─────────────────────────── */
+
+  function esc(text) {
+    return String(text == null ? '' : text).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  }
+
+  function noticeHtml(tone, icon, title, text, chips, foot) {
+    const chipHtml = (chips || []).filter(Boolean).map(c => `<span class="qr-chip"><i class="fa-solid ${c.icon}"></i> ${esc(c.text)}</span>`).join('');
+    return `
+      <div class="qr-notice qr-notice-${tone}" role="status">
+        <div class="qr-notice-icon"><i class="fa-solid ${icon}"></i></div>
+        <div class="qr-notice-body">
+          <p class="qr-notice-title">${esc(title)}</p>
+          <p class="qr-notice-text">${esc(text)}</p>
+          ${chipHtml ? `<div class="qr-notice-chips">${chipHtml}</div>` : ''}
+          ${foot ? `<p class="qr-notice-foot">${esc(foot)}</p>` : ''}
+        </div>
+      </div>`;
+  }
+
+  // Turns an API problem (or a network failure) into a clear message card.
+  function renderProblem(host, data, kind) {
+    const noun = kind === 'annual' ? 'year' : 'quarter';
+    if (data && data.code === 'PERIOD_NOT_ENDED') {
+      const when = data.daysUntil === 1 ? 'tomorrow' : `in ${data.daysUntil} days`;
+      const lead = data.inProgress
+        ? `This ${noun} is still in progress. Please come back once it has closed, so the report covers complete figures.`
+        : `This ${noun} hasn't started yet, so there is nothing to report on. Please come back once it has closed.`;
+      host.innerHTML = noticeHtml(
+        'wait', 'fa-hourglass-half',
+        `The ${data.label}${kind === 'annual' ? ' annual' : ''} report can't be generated yet`,
+        lead,
+        [
+          { icon: 'fa-calendar-days', text: `Period: ${data.periodStart} – ${data.periodEnd}` },
+          { icon: 'fa-unlock', text: `Available from ${data.opensOnText} (${when})` },
+        ],
+        data.autoSendText ? `It will also be generated and sent automatically at ${data.autoSendText}.` : ''
+      );
+      return;
     }
+    if (data && data.code === 'NO_DATA') {
+      host.innerHTML = noticeHtml('info', 'fa-file-circle-question', 'No sales recorded for this period', data.message || 'There is nothing to report on yet.', [], '');
+      return;
+    }
+    const msg = (data && data.message) ? data.message : 'Something went wrong while contacting the server. Please check your connection and try again.';
+    host.innerHTML = noticeHtml('error', 'fa-circle-exclamation', "We couldn't complete that", msg, [], '');
+  }
+
+  function renderSuccess(host, data) {
+    const who = (data.recipients || []).length
+      ? `Emailed to ${data.recipients.join(', ')}.`
+      : 'No recipients are set, so it was archived only.';
+    host.innerHTML = noticeHtml('ok', 'fa-circle-check', `${data.label} report sent`, `${who} A copy is saved in Record Vault, under Financial Reports.`, [], '');
+  }
+
+  const availabilityCache = {};
+  async function getAvailability(year) {
+    if (availabilityCache[year] && Date.now() - availabilityCache[year].at < 60000) return availabilityCache[year].data;
+    try {
+      const res = await fetch(`${API_BASE}/api/reports/availability?year=${encodeURIComponent(year)}`, { credentials: 'include', cache: 'no-store' });
+      if (!res.ok) return null;
+      const data = await res.json();
+      availabilityCache[year] = { at: Date.now(), data };
+      return data;
+    } catch (_e) { return null; }
+  }
+
+  function setHint(hostId, item) {
+    const host = el(hostId);
+    if (!item) { host.className = 'qr-hint'; host.innerHTML = ''; return; }
+    if (item.available) {
+      host.className = 'qr-hint qr-hint-open';
+      host.innerHTML = `<i class="fa-solid fa-circle-check"></i> ${esc(item.label)} is complete and ready to generate (${esc(item.periodStart)} – ${esc(item.periodEnd)}).`;
+    } else {
+      const when = item.daysUntil === 1 ? 'tomorrow' : `in ${item.daysUntil} days`;
+      host.className = 'qr-hint qr-hint-wait';
+      host.innerHTML = `<i class="fa-solid fa-hourglass-half"></i> ${esc(item.label)} isn't ready yet. Available from ${esc(item.opensOnText)} (${when}).`;
+    }
+  }
+
+  async function refreshQuarterHint() {
+    const data = await getAvailability(el('qr-q-year').value);
+    setHint('qr-q-hint', data ? data.quarters.find(x => String(x.label).startsWith('Q' + el('qr-q-quarter').value)) : null);
+  }
+  async function refreshAnnualHint() {
+    const data = await getAvailability(el('qr-a-year').value);
+    setHint('qr-a-hint', data ? data.annual : null);
+  }
+
+  ['qr-q-year', 'qr-q-quarter'].forEach(id => el(id).addEventListener('change', () => { el('qr-q-result').innerHTML = ''; refreshQuarterHint(); }));
+  el('qr-a-year').addEventListener('change', () => { el('qr-a-result').innerHTML = ''; refreshAnnualHint(); });
+
+  /* ── Actions ──────────────────────────────────────────────────── */
+
+  function setBusy(ids, busy) { ids.forEach(id => { el(id).disabled = busy; }); }
+
+  async function runPreview({ kind, url, hostId, buttons }) {
+    const host = el(hostId);
+    host.innerHTML = '<p class="s-meta">Loading preview…</p>';
+    setBusy(buttons, true);
+    try {
+      const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { renderProblem(host, data, kind); return; }
+      if (window.WWReportReader) {
+        // Opens full-screen, easy to read on phone, tablet and desktop, with Close buttons.
+        host.innerHTML = `<p class="s-meta">${esc(data.label)} preview is ready. <button type="button" class="btn-secondary" data-qr-reopen style="margin-left:6px;">Open it again</button></p>`;
+        host.querySelector('[data-qr-reopen]').addEventListener('click', () => window.WWReportReader.open(data.analysis));
+        window.WWReportReader.open(data.analysis);
+      } else {
+        host.innerHTML = `<h4 style="margin:8px 0;">${esc(data.label)}</h4>${renderAnalysis(data.analysis)}`;
+      }
+    } catch (err) {
+      renderProblem(host, null, kind);
+    } finally {
+      setBusy(buttons, false);
+    }
+  }
+
+  async function runSend({ kind, url, body, hostId, buttons, confirmText, availabilityItem }) {
+    const host = el(hostId);
+    // Check first, so nobody is asked to confirm something that will be refused.
+    if (availabilityItem && !availabilityItem.available) {
+      renderProblem(host, {
+        code: 'PERIOD_NOT_ENDED', label: availabilityItem.label, periodStart: availabilityItem.periodStart, periodEnd: availabilityItem.periodEnd,
+        opensOnText: availabilityItem.opensOnText, daysUntil: availabilityItem.daysUntil, inProgress: availabilityItem.inProgress, autoSendText: availabilityItem.autoSendText,
+      }, kind);
+      return;
+    }
+    if (!confirm(confirmText)) return;
+    host.innerHTML = '<p class="s-meta">Generating and sending…</p>';
+    setBusy(buttons, true);
+    try {
+      const res = await fetch(url, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { renderProblem(host, data, kind); return; }
+      renderSuccess(host, data);
+      loadConfig();
+    } catch (err) {
+      renderProblem(host, null, kind);
+    } finally {
+      setBusy(buttons, false);
+    }
+  }
+
+  const qButtons = ['qr-q-preview-btn', 'qr-q-send-btn'];
+  const aButtons = ['qr-a-preview-btn', 'qr-a-send-btn'];
+
+  el('qr-q-preview-btn').addEventListener('click', () => {
+    runPreview({
+      kind: 'quarter', hostId: 'qr-q-result', buttons: qButtons,
+      url: `${API_BASE}/api/reports/quarterly/preview?year=${encodeURIComponent(el('qr-q-year').value)}&quarter=${encodeURIComponent(el('qr-q-quarter').value)}`,
+    });
   });
 
   el('qr-q-send-btn').addEventListener('click', async () => {
     const year = Number(el('qr-q-year').value);
     const quarter = Number(el('qr-q-quarter').value);
-    if (!confirm(`Generate and email the Q${quarter} ${year} report now to: ${currentEmails.join(', ') || '(no recipients set — archive only)'}?`)) return;
-
-    const host = el('qr-q-result');
-    host.innerHTML = '<p class="s-meta">Generating and sending…</p>';
-    try {
-      const res = await fetch(API_BASE + '/api/reports/quarterly/send-now', {
-        method:'POST', credentials:'include',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({year, quarter})
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || 'Send failed.');
-      host.innerHTML = `<p style="color:#15803d;"><i class="fa-solid fa-circle-check"></i> Sent ${data.label} to: ${(data.recipients || []).join(', ') || 'no recipients (archived only)'}.</p>`;
-      loadConfig();
-    } catch (err) {
-      host.innerHTML = `<p style="color:#b91c1c;">${err.message}</p>`;
-    }
+    const data = await getAvailability(year);
+    runSend({
+      kind: 'quarter', hostId: 'qr-q-result', buttons: qButtons,
+      url: API_BASE + '/api/reports/quarterly/send-now',
+      body: { year, quarter },
+      availabilityItem: data ? data.quarters.find(x => String(x.label).startsWith('Q' + quarter)) : null,
+      confirmText: `Generate and email the Q${quarter} ${year} report now to: ${currentEmails.join(', ') || '(no recipients set — archive only)'}?`,
+    });
   });
 
-  el('qr-a-preview-btn').addEventListener('click', async () => {
-    const year = el('qr-a-year').value;
-    const host = el('qr-a-result');
-    host.innerHTML = '<p class="s-meta">Loading preview…</p>';
-    try {
-      const res = await fetch(`${API_BASE}/api/reports/annual/preview?year=${year}`, {credentials:'include'});
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || 'Preview failed.');
-      host.innerHTML = `<h4 style="margin:8px 0;">${data.label}</h4>${renderAnalysis(data.analysis)}`;
-    } catch (err) {
-      host.innerHTML = `<p style="color:#b91c1c;">${err.message}</p>`;
-    }
+  el('qr-a-preview-btn').addEventListener('click', () => {
+    runPreview({
+      kind: 'annual', hostId: 'qr-a-result', buttons: aButtons,
+      url: `${API_BASE}/api/reports/annual/preview?year=${encodeURIComponent(el('qr-a-year').value)}`,
+    });
   });
 
   el('qr-a-send-btn').addEventListener('click', async () => {
     const year = Number(el('qr-a-year').value);
-    if (!confirm(`Generate and email the ${year} Annual Report now to: ${currentEmails.join(', ') || '(no recipients set — archive only)'}?`)) return;
-
-    const host = el('qr-a-result');
-    host.innerHTML = '<p class="s-meta">Generating and sending…</p>';
-    try {
-      const res = await fetch(API_BASE + '/api/reports/annual/send-now', {
-        method:'POST', credentials:'include',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({year})
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || 'Send failed.');
-      host.innerHTML = `<p style="color:#15803d;"><i class="fa-solid fa-circle-check"></i> Sent ${data.label} to: ${(data.recipients || []).join(', ') || 'no recipients (archived only)'}.</p>`;
-      loadConfig();
-    } catch (err) {
-      host.innerHTML = `<p style="color:#b91c1c;">${err.message}</p>`;
-    }
+    const data = await getAvailability(year);
+    runSend({
+      kind: 'annual', hostId: 'qr-a-result', buttons: aButtons,
+      url: API_BASE + '/api/reports/annual/send-now',
+      body: { year },
+      availabilityItem: data ? data.annual : null,
+      confirmText: `Generate and email the ${year} Annual Report now to: ${currentEmails.join(', ') || '(no recipients set — archive only)'}?`,
+    });
   });
 
   populateYears();
   loadConfig();
+  refreshQuarterHint();
+  refreshAnnualHint();
 })();
 </script>
 
