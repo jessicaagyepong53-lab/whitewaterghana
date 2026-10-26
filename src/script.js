@@ -1444,10 +1444,25 @@ function putAppDataKeyToServer(key, data, logResult = true) {
 			else console.log('[Sync] Saved', key, '✓');
 		}
 		if (res.ok && /^ww_sales_\d{4}-\d{2}$/.test(String(key || ''))) setSalesSyncWarning('');
+		if (res.ok) {
+			window.__wwLastSyncError = null;
+		} else {
+			// Status is available immediately; the server's own message follows.
+			const info = { key, status: res.status, code: '', message: '' };
+			window.__wwLastSyncError = info;
+			res.clone().json().catch(() => ({})).then((payload) => {
+				info.code = (payload && payload.code) || '';
+				info.message = (payload && payload.message) || '';
+				if (logResult && res.status !== 409) reportSyncFailure(info);
+			});
+		}
 		return res.ok;
 	})
 	.catch(err => {
 		if (logResult) console.error('[Sync] Network error saving', key, err);
+		const info = { key, status: 0, code: 'NETWORK_ERROR', message: String((err && err.message) || '') };
+		window.__wwLastSyncError = info;
+		if (logResult) reportSyncFailure(info);
 		return false;
 	});
 }
@@ -1586,7 +1601,7 @@ const TOAST_STYLES = {
 	warning: { bg: '#d97706', icon: 'fa-triangle-exclamation' },
 	info:    { bg: '#0077b6', icon: 'fa-circle-info' },
 };
-function showToast(message, type, iconOverride) {
+function showToast(message, type, iconOverride, durationMs) {
 	const style = TOAST_STYLES[type] || TOAST_STYLES.info;
 	let container = document.getElementById('ww-toast-container');
 	if (!container) {
@@ -1599,7 +1614,7 @@ function showToast(message, type, iconOverride) {
 	toast.style.cssText = `background:${style.bg};color:#fff;padding:10px 18px;border-radius:8px;font-size:0.9rem;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,0.18);opacity:1;transition:opacity 0.4s;max-width:320px;pointer-events:none;display:flex;align-items:center;gap:8px;`;
 	toast.innerHTML = `<i class="fa-solid ${iconOverride || style.icon}" style="flex-shrink:0"></i><span>${escapeHtml(String(message || ''))}</span>`;
 	container.appendChild(toast);
-	setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 420); }, 3000);
+	setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 420); }, Number(durationMs) || 3000);
 }
 
 /* ── Centralized fetch wrapper with retry ──
@@ -1661,6 +1676,69 @@ async function fetchWithRetry(url, options = {}, retryConfig = {}) {
 
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/* ── Role-aware, situation-specific error messages ──
+   Supervisors and staff are told to contact the CEO when something is
+   beyond what they can fix; CEO/Manager get the technical detail instead. */
+function currentRoleForErrors() {
+	try {
+		return String(window.__wwUserRole || localStorage.getItem('ww_user_role') || '').trim().toLowerCase();
+	} catch (_e) {
+		return '';
+	}
+}
+
+function isLimitedRole() {
+	const role = currentRoleForErrors();
+	return role === 'supervisor' || role === 'staff';
+}
+
+// info = { status, code, message }. status 0 means the server was never reached.
+function friendlyErrorMessage(action, info) {
+	const limited = isLimitedRole();
+	const status = Number(info && info.status) || 0;
+	const code = String((info && info.code) || '');
+	const serverMsg = String((info && info.message) || '').trim();
+	const what = action || 'complete that action';
+	const contact = limited ? ' Please contact the CEO.' : '';
+	const tech = limited ? '' : ` [${status ? 'HTTP ' + status : 'network'}${code ? ' ' + code : ''}]`;
+
+	if (status === 0) {
+		return `Could not reach the server to ${what}. Check your internet connection and try again. Your change was not saved.${tech}`;
+	}
+	if (status === 401) {
+		return `Your session has expired. Please log in again, then try to ${what}.`;
+	}
+	if (status === 403) {
+		return limited
+			? `You do not have permission to ${what}. Please contact the CEO.`
+			: `You do not have permission to ${what}.${tech}`;
+	}
+	if (status === 409) {
+		return `This could not be saved because it conflicts with existing data${serverMsg ? ': ' + serverMsg : ''}.${contact}${tech}`;
+	}
+	if (status === 429) {
+		return `Too many attempts in a short time. Please wait a minute, then try to ${what} again.${contact}`;
+	}
+	if (status === 503 || code === 'DB_CONNECTING' || code === 'DB_UNAVAILABLE') {
+		return `The system is starting up or temporarily unavailable. Wait about 10 seconds and try to ${what} again.${limited ? ' If it keeps happening, please contact the CEO.' : ''}${tech}`;
+	}
+	if (status >= 500) {
+		return `Something went wrong on the server while trying to ${what}. Please try again.${contact}${tech}`;
+	}
+	return `${serverMsg || `Could not ${what}.`}${contact}${tech}`;
+}
+
+// Shown when a background save fails. Throttled so a burst of failures
+// produces one message, and skips internal bookkeeping keys.
+function reportSyncFailure(info) {
+	const key = String((info && info.key) || '');
+	if (key === LAST_DATA_UPDATE_KEY || key === SALES_ADD_AUDIT_KEY || key === PRIVILEGED_ACTION_AUDIT_KEY) return;
+	const now = Date.now();
+	if (now - Number(window.__wwLastSyncToastMs || 0) < 8000) return;
+	window.__wwLastSyncToastMs = now;
+	showToast(friendlyErrorMessage('save your changes', info), 'error', 'fa-circle-exclamation', 8000);
 }
 
 /* ── Form double-submission guard ──
@@ -5548,19 +5626,112 @@ async function initInventoryPage() {
 	}
 	if (newMonthBtn && !newMonthBtn.dataset.bound) {
 		newMonthBtn.dataset.bound = '1';
+		let invNewMonthInFlight = false;
 		newMonthBtn.addEventListener('click', async () => {
-			const value = window.prompt('Enter month as YYYY-MM', currentInventoryMonth);
-			if (!value) return;
-			const month = value.trim();
-			if (!/^\d{4}-\d{2}$/.test(month)) {
-				window.alert('Invalid month format. Use YYYY-MM.');
+			if (invNewMonthInFlight) {
+				showToast('Please wait, the last month is still being saved.', 'info', 'fa-circle-info', 4000);
 				return;
 			}
-			ensureInventoryMonthExists(month);
-			selectedInventoryYear = Number(month.slice(0, 4));
-			await loadInventoryMonthState(month);
-			renderInventoryMonthOptions({ preserveCurrent: true });
-			rerenderInventory();
+			const now0 = new Date();
+			const input = window.prompt('Enter the month as YYYY-MM (for example 2026-07):', currentInventoryMonth);
+			if (input === null) return; // cancelled, nothing to report
+
+			const month = String(input).trim();
+			if (!month) {
+				showToast('No month was entered. Type it as year-month, like 2026-07.', 'warning', 'fa-triangle-exclamation', 6000);
+				return;
+			}
+			if (!/^\d{4}-\d{2}$/.test(month)) {
+				showToast(`"${month}" is not a valid month format. Use YYYY-MM, like 2026-07.`, 'warning', 'fa-triangle-exclamation', 7000);
+				return;
+			}
+			const yearNum = Number(month.slice(0, 4));
+			const monthNum = Number(month.slice(5, 7));
+			if (monthNum < 1 || monthNum > 12) {
+				showToast(`"${month.slice(5, 7)}" is not a real month. The month part must be 01 to 12.`, 'warning', 'fa-triangle-exclamation', 7000);
+				return;
+			}
+			if (yearNum < 2020 || yearNum > now0.getFullYear() + 1) {
+				showToast(`The year ${yearNum} looks wrong. Please check it and try again.${isLimitedRole() ? ' If it is correct, please contact the CEO.' : ''}`, 'warning', 'fa-triangle-exclamation', 7000);
+				return;
+			}
+
+			const monthKey = inventoryMonthStorageKey(month);
+			const hadMonthLocally = getInventoryMonths().includes(month);
+			const previousMonthsIndex = localStorage.getItem(INVENTORY_MONTHS_KEY);
+			const previousMonthPayload = localStorage.getItem(monthKey);
+			const goToMonth = async () => {
+				selectedInventoryYear = yearNum;
+				await loadInventoryMonthState(month);
+				renderInventoryMonthOptions({ preserveCurrent: true });
+				rerenderInventory();
+			};
+
+			invNewMonthInFlight = true;
+			newMonthBtn.disabled = true;
+			try {
+				if (hadMonthLocally) {
+					ensureInventoryMonthExists(month);
+					await goToMonth();
+					showToast(`${monthLabel(month)} already exists. Switched to it.`, 'info', 'fa-circle-info', 4000);
+					return;
+				}
+
+				// Ask the server first, so a month created on another device is opened, never overwritten.
+				let existsOnServer = false;
+				try {
+					const res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(monthKey), { credentials: 'include', cache: 'no-store' });
+					if (!res.ok) {
+						let payload = {};
+						try { payload = await res.clone().json(); } catch (_e) { /* no JSON body */ }
+						showToast(friendlyErrorMessage(`add ${monthLabel(month)}`, { status: res.status, code: payload && payload.code, message: payload && payload.message }), 'error', 'fa-circle-exclamation', 10000);
+						return;
+					}
+					const json = await res.json();
+					existsOnServer = !!(json && json.data !== null && json.data !== undefined);
+				} catch (netErr) {
+					showToast(friendlyErrorMessage(`add ${monthLabel(month)}`, { status: 0, message: netErr && netErr.message }), 'error', 'fa-circle-exclamation', 10000);
+					return;
+				}
+
+				if (existsOnServer) {
+					ensureInventoryMonthExists(month);
+					await goToMonth();
+					showToast(`${monthLabel(month)} already exists. Switched to it.`, 'info', 'fa-circle-info', 4000);
+					return;
+				}
+
+				// A month only truly exists once its data is saved on the server, so save it now and wait.
+				const emptyPayload = { rawMaterials: [], finishedProducts: [], equipment: [], customers: [] };
+				// Our own message is shown below, so mute the generic background one.
+				window.__wwLastSyncToastMs = Date.now();
+				const saved = await syncToServer(monthKey, emptyPayload);
+				if (!saved) {
+					const info = window.__wwLastSyncError || { status: 0 };
+					showToast(friendlyErrorMessage(`add ${monthLabel(month)}`, info), 'error', 'fa-circle-exclamation', 10000);
+					return;
+				}
+				localStorage.setItem(monthKey, JSON.stringify(emptyPayload));
+				ensureInventoryMonthExists(month);
+				await goToMonth();
+				persistInventoryMonthState(); // same follow-up the old flow did for a brand-new month
+				showToast(`${monthLabel(month)} added.`, 'success', 'fa-circle-check', 4000);
+			} catch (err) {
+				// Undo any local trace so the month does not appear to exist, then vanish on refresh.
+				if (!hadMonthLocally) {
+					try {
+						if (previousMonthsIndex === null) localStorage.removeItem(INVENTORY_MONTHS_KEY);
+						else localStorage.setItem(INVENTORY_MONTHS_KEY, previousMonthsIndex);
+						if (previousMonthPayload === null) localStorage.removeItem(monthKey);
+						else localStorage.setItem(monthKey, previousMonthPayload);
+					} catch (_e) { /* ignore */ }
+				}
+				console.error('[Inventory] New month failed:', err);
+				showToast(friendlyErrorMessage(`add ${monthLabel(month)}`, { status: 0, message: err && err.message }), 'error', 'fa-circle-exclamation', 10000);
+			} finally {
+				invNewMonthInFlight = false;
+				newMonthBtn.disabled = false;
+			}
 		});
 	}
 
@@ -7531,25 +7702,77 @@ async function initSalesInvoicesPage() {
 	}
 
 	if (newMonthBtn) {
-		newMonthBtn.addEventListener('click', () => {
-			const input = prompt('Enter month (YYYY-MM):', (() => {
-				const d = new Date();
-				return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-			})());
-			if (!input || !/^\d{4}-\d{2}$/.test(input.trim())) return;
-			const month = input.trim();
-			const months = getSalesMonths();
-			selectedSalesYear = Number(month.slice(0, 4)) || selectedSalesYear;
-			if (months.includes(month)) {
+		let newMonthInFlight = false;
+		newMonthBtn.addEventListener('click', async () => {
+			if (newMonthInFlight) {
+				showToast('Please wait, the last month is still being saved.', 'info', 'fa-circle-info', 4000);
+				return;
+			}
+			const now0 = new Date();
+			const suggestion = `${now0.getFullYear()}-${String(now0.getMonth() + 1).padStart(2, '0')}`;
+			const input = prompt('Enter the month as YYYY-MM (for example 2026-07):', suggestion);
+			if (input === null) return; // cancelled, nothing to report
+
+			const month = String(input).trim();
+			if (!month) {
+				showToast('No month was entered. Type it as year-month, like 2026-07.', 'warning', 'fa-triangle-exclamation', 6000);
+				return;
+			}
+			if (!/^\d{4}-\d{2}$/.test(month)) {
+				showToast(`"${month}" is not a valid month format. Use YYYY-MM, like 2026-07.`, 'warning', 'fa-triangle-exclamation', 7000);
+				return;
+			}
+			const yearNum = Number(month.slice(0, 4));
+			const monthNum = Number(month.slice(5, 7));
+			if (monthNum < 1 || monthNum > 12) {
+				showToast(`"${month.slice(5, 7)}" is not a real month. The month part must be 01 to 12.`, 'warning', 'fa-triangle-exclamation', 7000);
+				return;
+			}
+			if (yearNum < 2020 || yearNum > now0.getFullYear() + 1) {
+				showToast(`The year ${yearNum} looks wrong. Please check it and try again.${isLimitedRole() ? ' If it is correct, please contact the CEO.' : ''}`, 'warning', 'fa-triangle-exclamation', 7000);
+				return;
+			}
+
+			const existing = getSalesMonths();
+			selectedSalesYear = yearNum || selectedSalesYear;
+			if (existing.includes(month)) {
 				loadMonthData(month);
-			} else {
-				ensureMonthExists(month);
+				populateMonthSelect();
+				renderSalesPage();
+				showToast(`${monthLabel(month)} already exists. Switched to it.`, 'info', 'fa-circle-info', 4000);
+				return;
+			}
+
+			newMonthInFlight = true;
+			newMonthBtn.disabled = true;
+			const previousMonths = [...existing];
+			try {
+				const next = [...existing, month].sort();
+				localStorage.setItem(MONTHS_KEY, JSON.stringify(next));
+				// Our own message is shown below, so mute the generic background one.
+				window.__wwLastSyncToastMs = Date.now();
+				const saved = await syncToServer(MONTHS_KEY, next);
+				if (!saved) {
+					// Undo the local add so the month does not appear to exist, then vanish on refresh.
+					localStorage.setItem(MONTHS_KEY, JSON.stringify(previousMonths));
+					const info = window.__wwLastSyncError || { status: 0 };
+					showToast(friendlyErrorMessage(`add ${monthLabel(month)}`, info), 'error', 'fa-circle-exclamation', 10000);
+					return;
+				}
 				loadMonthData(month);
 				saveSalesDataToStorage();
+				populateMonthSelect();
+				renderSalesPage();
+				refreshSalesMonthFromServer(currentSalesMonth);
+				showToast(`${monthLabel(month)} added.`, 'success', 'fa-circle-check', 4000);
+			} catch (err) {
+				localStorage.setItem(MONTHS_KEY, JSON.stringify(previousMonths));
+				console.error('[Sales] New month failed:', err);
+				showToast(friendlyErrorMessage(`add ${monthLabel(month)}`, { status: 0, message: err && err.message }), 'error', 'fa-circle-exclamation', 10000);
+			} finally {
+				newMonthInFlight = false;
+				newMonthBtn.disabled = false;
 			}
-			populateMonthSelect();
-			renderSalesPage();
-			refreshSalesMonthFromServer(currentSalesMonth);
 		});
 	}
 
