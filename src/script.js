@@ -5051,6 +5051,39 @@ async function initInventoryPage() {
 			saveInventoryMonths(months);
 		}
 	};
+	// The month list is kept in the browser, so it has to be shared through the server,
+	// otherwise other devices never learn that a month exists. Merges, never replaces.
+	const syncInventoryMonthsIndex = async () => {
+		let serverMonths = [];
+		let serverHasList = false;
+		try {
+			const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+			const timer = ctrl ? setTimeout(() => ctrl.abort(), 5000) : null;
+			let res;
+			try {
+				res = await fetch(API_BASE + '/api/app-data/' + encodeURIComponent(INVENTORY_MONTHS_KEY), { credentials: 'include', cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
+			} finally {
+				if (timer) clearTimeout(timer);
+			}
+			if (!res.ok) return false;
+			const json = await res.json();
+			if (Array.isArray(json && json.data)) {
+				serverHasList = true;
+				serverMonths = json.data.map((m) => String(m)).filter((m) => /^\d{4}-\d{2}$/.test(m));
+			}
+		} catch (_e) {
+			return false;
+		}
+		const merged = Array.from(new Set([...serverMonths, ...getInventoryMonths()])).sort();
+		saveInventoryMonths(merged);
+		const serverSorted = Array.from(new Set(serverMonths)).sort();
+		if (serverHasList && merged.join(',') === serverSorted.join(',')) return true;
+		try {
+			return await putAppDataKeyToServer(INVENTORY_MONTHS_KEY, merged, false);
+		} catch (_e) {
+			return false;
+		}
+	};
 	const hasAnyInventoryMonthPayload = () => {
 		const months = getInventoryMonths();
 		return months.some((m) => {
@@ -5062,6 +5095,7 @@ async function initInventoryPage() {
 			}
 		});
 	};
+	await syncInventoryMonthsIndex();
 	const now = new Date();
 	const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 	const initialMonths = getInventoryMonths();
@@ -5696,6 +5730,7 @@ async function initInventoryPage() {
 
 				if (existsOnServer) {
 					ensureInventoryMonthExists(month);
+					syncInventoryMonthsIndex().catch(() => {});
 					await goToMonth();
 					showToast(`${monthLabel(month)} already exists. Switched to it.`, 'info', 'fa-circle-info', 4000);
 					return;
@@ -5713,9 +5748,14 @@ async function initInventoryPage() {
 				}
 				localStorage.setItem(monthKey, JSON.stringify(emptyPayload));
 				ensureInventoryMonthExists(month);
+				const listShared = await syncInventoryMonthsIndex();
 				await goToMonth();
 				persistInventoryMonthState(); // same follow-up the old flow did for a brand-new month
-				showToast(`${monthLabel(month)} added.`, 'success', 'fa-circle-check', 4000);
+				if (listShared) {
+					showToast(`${monthLabel(month)} added.`, 'success', 'fa-circle-check', 4000);
+				} else {
+					showToast(`${monthLabel(month)} was added, but other devices may not see it yet. It will be shared the next time the Inventory page is opened with a good connection.${isLimitedRole() ? ' If it still does not show, please contact the CEO.' : ''}`, 'warning', 'fa-triangle-exclamation', 10000);
+				}
 			} catch (err) {
 				// Undo any local trace so the month does not appear to exist, then vanish on refresh.
 				if (!hadMonthLocally) {
@@ -15151,6 +15191,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 						document.dispatchEvent(new Event('ww-refresh-page'));
 						return;
 					}
+				if (changedKey === 'ww_inventory_months') {
+					await loadFromServerForceFresh(changedKey);
+					emitStorageKeyChange(changedKey);
+				}
 				if (/^ww_inventory_\d{4}-\d{2}$/.test(changedKey)) {
 					await loadFromServerForceFresh(changedKey);
 					emitStorageKeyChange(changedKey);
