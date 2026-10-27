@@ -5690,6 +5690,7 @@ async function initInventoryPage() {
 				return;
 			}
 
+			try { if (window.wwMonthManager) await window.wwMonthManager.reopenMonth(month); } catch (_e) { /* ignore */ }
 			const monthKey = inventoryMonthStorageKey(month);
 			const hadMonthLocally = getInventoryMonths().includes(month);
 			const previousMonthsIndex = localStorage.getItem(INVENTORY_MONTHS_KEY);
@@ -7773,6 +7774,7 @@ async function initSalesInvoicesPage() {
 				return;
 			}
 
+			try { if (window.wwMonthManager) await window.wwMonthManager.reopenMonth(month); } catch (_e) { /* ignore */ }
 			const existing = getSalesMonths();
 			selectedSalesYear = yearNum || selectedSalesYear;
 			if (existing.includes(month)) {

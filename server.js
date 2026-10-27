@@ -3100,7 +3100,7 @@ const ALLOWED_DATA_KEYS = [
 
   'ww_cost_centre_budgets', 'ww_bom_data',
 
-  'ww_sales_months', 'ww_equipment', 'ww_seed_flags', 'ww_last_data_update', 'ww_recent_restores',
+  'ww_sales_months', 'ww_inventory_months', 'ww_equipment', 'ww_seed_flags', 'ww_last_data_update', 'ww_recent_restores',
 
   'ww_record_vault', 'ww_privileged_action_audit_v1',
 
@@ -3335,6 +3335,225 @@ function normalizeSalesMonthPayload(key, payload) {
 }
 
 
+/* ═══════════════════════════════════════════════
+   MONTH MANAGER
+   One shared month list (Sales + Inventory) kept on the server so every
+   device sees the same months, an automatic "current month", and a safe
+   CEO/Manager-only delete with a restorable backup.
+   ═══════════════════════════════════════════════ */
+const DELETED_MONTHS_KEY = 'ww_deleted_months_v1';
+const DELETED_MONTH_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const SALES_MONTHS_LIST_KEY = 'ww_sales_months';
+const INVENTORY_MONTHS_LIST_KEY = 'ww_inventory_months';
+
+function currentMonthKeyUtc(date) {
+  const d = date || new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function isValidMonthKey(value) {
+  const text = String(value || '');
+  if (!/^\d{4}-\d{2}$/.test(text)) return false;
+  const m = Number(text.slice(5, 7));
+  return m >= 1 && m <= 12;
+}
+
+function canManageMonths(user) {
+  const email = String((user && user.email) || '').toLowerCase();
+  const roles = new Set([
+    String((user && user.role) || '').toLowerCase(),
+    ...(SPECIAL_ACCESS_OVERRIDES[email] || []),
+  ]);
+  return roles.has('ceo') || roles.has('manager');
+}
+
+async function readDeletedMonths() {
+  const doc = await AppData.findOne({ key: DELETED_MONTHS_KEY }).lean();
+  const now = Date.now();
+  const list = Array.isArray(doc && doc.data) ? doc.data : [];
+  return list.filter((e) => e && isValidMonthKey(e.month) && now - Number(e.deletedAt || 0) < DELETED_MONTH_TTL_MS);
+}
+
+async function writeDeletedMonths(list) {
+  await AppData.updateOne({ key: DELETED_MONTHS_KEY }, { $set: { key: DELETED_MONTHS_KEY, data: list } }, { upsert: true });
+}
+
+async function getDeletedMonthSet() {
+  return new Set((await readDeletedMonths()).map((e) => e.month));
+}
+
+async function clearMonthTombstone(month) {
+  const list = await readDeletedMonths();
+  const next = list.filter((e) => e.month !== month);
+  if (next.length !== list.length) await writeDeletedMonths(next);
+}
+
+async function readMonthList(key) {
+  const doc = await AppData.findOne({ key }).lean();
+  return Array.isArray(doc && doc.data) ? doc.data.map(String).filter(isValidMonthKey) : [];
+}
+
+async function writeMonthList(key, months) {
+  const clean = Array.from(new Set(months)).sort();
+  await AppData.updateOne({ key }, { $set: { key, data: clean } }, { upsert: true });
+  return clean;
+}
+
+function emptySalesMonthPayload() {
+  return { invoices: [], salesOrders: [], deletedInvoiceIds: [], deletedOrderIds: [] };
+}
+
+function emptyInventoryMonthPayload() {
+  return { rawMaterials: [], finishedProducts: [], equipment: [], customers: [] };
+}
+
+function summarizeMonthData(salesData, inventoryData) {
+  const len = (obj, field) => (obj && Array.isArray(obj[field]) ? obj[field].length : 0);
+  const counts = {
+    invoices: len(salesData, 'invoices'),
+    salesOrders: len(salesData, 'salesOrders'),
+    rawMaterials: len(inventoryData, 'rawMaterials'),
+    finishedProducts: len(inventoryData, 'finishedProducts'),
+    equipment: len(inventoryData, 'equipment'),
+    customers: len(inventoryData, 'customers'),
+  };
+  return { counts, hasData: Object.values(counts).some((n) => n > 0) };
+}
+
+// Adds the month to both shared lists and creates its (empty) data records if
+// they do not exist yet. Never touches a month that already has data.
+async function ensureMonthExists(month) {
+  if (!isValidMonthKey(month)) return { changed: false, keys: [] };
+  const tombstones = await getDeletedMonthSet();
+  if (tombstones.has(month)) return { changed: false, keys: [] };
+  const changedKeys = [];
+
+  const salesList = await readMonthList(SALES_MONTHS_LIST_KEY);
+  if (!salesList.includes(month)) {
+    await writeMonthList(SALES_MONTHS_LIST_KEY, [...salesList, month]);
+    changedKeys.push(SALES_MONTHS_LIST_KEY);
+  }
+  const inventoryList = await readMonthList(INVENTORY_MONTHS_LIST_KEY);
+  if (!inventoryList.includes(month)) {
+    await writeMonthList(INVENTORY_MONTHS_LIST_KEY, [...inventoryList, month]);
+    changedKeys.push(INVENTORY_MONTHS_LIST_KEY);
+  }
+
+  const salesKey = `ww_sales_${month}`;
+  const salesResult = await AppData.updateOne({ key: salesKey }, { $setOnInsert: { data: emptySalesMonthPayload() } }, { upsert: true });
+  if (salesResult && salesResult.upsertedCount) changedKeys.push(salesKey);
+  const inventoryKey = `ww_inventory_${month}`;
+  const inventoryResult = await AppData.updateOne({ key: inventoryKey }, { $setOnInsert: { data: emptyInventoryMonthPayload() } }, { upsert: true });
+  if (inventoryResult && inventoryResult.upsertedCount) changedKeys.push(inventoryKey);
+
+  return { changed: changedKeys.length > 0, keys: changedKeys };
+}
+
+// Automatic new month: called on server start, hourly, and on every
+// /api/months request, so the first visit in a new month always finds it ready.
+async function ensureCurrentMonthShared() {
+  const result = await ensureMonthExists(currentMonthKeyUtc());
+  if (result.changed && typeof broadcastRealtimeUpdate === 'function') {
+    result.keys.forEach((key) => broadcastRealtimeUpdate({ key, source: null }));
+  }
+  return result;
+}
+
+app.get('/api/months', ensureAuthenticated, async (req, res, next) => {
+  try {
+    await ensureCurrentMonthShared();
+    const [sales, inventory, deleted] = await Promise.all([
+      readMonthList(SALES_MONTHS_LIST_KEY),
+      readMonthList(INVENTORY_MONTHS_LIST_KEY),
+      readDeletedMonths(),
+    ]);
+    res.json({
+      current: currentMonthKeyUtc(),
+      sales,
+      inventory,
+      deleted: deleted.map((e) => e.month),
+      canManage: canManageMonths(req.user),
+    });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/months/:month/summary', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const month = String(req.params.month || '').trim();
+    if (!isValidMonthKey(month)) throw createError(400, 'Invalid month');
+    if (!canManageMonths(req.user)) throw createError(403, 'Only the CEO or a manager can delete a month');
+    const [salesDoc, inventoryDoc] = await Promise.all([
+      AppData.findOne({ key: `ww_sales_${month}` }).lean(),
+      AppData.findOne({ key: `ww_inventory_${month}` }).lean(),
+    ]);
+    const summary = summarizeMonthData(salesDoc && salesDoc.data, inventoryDoc && inventoryDoc.data);
+    res.json({ month, isCurrent: month === currentMonthKeyUtc(), ...summary });
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/months/:month', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const month = String(req.params.month || '').trim();
+    if (!isValidMonthKey(month)) throw createError(400, 'Invalid month');
+    if (!canManageMonths(req.user)) throw createError(403, 'Only the CEO or a manager can delete a month');
+    if (month === currentMonthKeyUtc()) {
+      throw createError(400, 'The current month cannot be deleted. A new month is added automatically, so it would simply come back.');
+    }
+    const salesKey = `ww_sales_${month}`;
+    const inventoryKey = `ww_inventory_${month}`;
+    const [salesDoc, inventoryDoc] = await Promise.all([
+      AppData.findOne({ key: salesKey }).lean(),
+      AppData.findOne({ key: inventoryKey }).lean(),
+    ]);
+    const summary = summarizeMonthData(salesDoc && salesDoc.data, inventoryDoc && inventoryDoc.data);
+    if (summary.hasData && String((req.body && req.body.confirmMonth) || '') !== month) {
+      throw createError(400, `This month contains data. Type ${month} to confirm the deletion.`);
+    }
+
+    // Keep a restorable copy (Trash Bin, 30 days) before anything is removed.
+    if (summary.hasData) {
+      await moveToTrash(
+        'month',
+        { month, sales: salesDoc ? salesDoc.data : null, inventory: inventoryDoc ? inventoryDoc.data : null },
+        `${req.user.name} (${req.user.role})`,
+        { kind: 'monthBackup', month },
+      );
+    }
+
+    await AppData.deleteMany({ key: { $in: [salesKey, inventoryKey] } });
+    const [salesList, inventoryList] = await Promise.all([
+      readMonthList(SALES_MONTHS_LIST_KEY),
+      readMonthList(INVENTORY_MONTHS_LIST_KEY),
+    ]);
+    await writeMonthList(SALES_MONTHS_LIST_KEY, salesList.filter((m) => m !== month));
+    await writeMonthList(INVENTORY_MONTHS_LIST_KEY, inventoryList.filter((m) => m !== month));
+
+    // Tombstone: stops a device that still holds this month from re-uploading it.
+    const tombstones = (await readDeletedMonths()).filter((e) => e.month !== month);
+    tombstones.push({ month, deletedAt: Date.now(), deletedBy: `${req.user.name} (${req.user.role})` });
+    await writeDeletedMonths(tombstones);
+
+    try {
+      await logActivity({ req, action: 'delete', entityType: 'month', entityId: month, batchId: getActivityBatchId(req) });
+    } catch (_activityErr) { /* logging must never block the delete */ }
+
+    if (typeof broadcastRealtimeUpdate === 'function') {
+      [SALES_MONTHS_LIST_KEY, INVENTORY_MONTHS_LIST_KEY, salesKey, inventoryKey].forEach((key) => broadcastRealtimeUpdate({ key, source: null }));
+    }
+    res.json({ ok: true, month, deleted: summary.counts });
+  } catch (error) { next(error); }
+});
+
+// Used when someone deliberately adds a month that was deleted earlier.
+app.post('/api/months/:month/reopen', ensureAuthenticated, async (req, res, next) => {
+  try {
+    const month = String(req.params.month || '').trim();
+    if (!isValidMonthKey(month)) throw createError(400, 'Invalid month');
+    await clearMonthTombstone(month);
+    res.json({ ok: true, month });
+  } catch (error) { next(error); }
+});
+
 app.get('/api/app-data-bulk', ensureAuthenticated, async (req, res, next) => {
 
   try {
@@ -3473,6 +3692,18 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
       : null;
 
     if (!isAllowedDataKey(key)) return res.status(400).json({ message: 'Invalid key' });
+    // Month manager: a device that still holds a deleted month must not bring it back.
+    if (key === 'ww_sales_months' || key === 'ww_inventory_months') {
+      const deletedMonths = await getDeletedMonthSet();
+      if (deletedMonths.size && req.body && Array.isArray(req.body.data)) {
+        req.body.data = req.body.data.filter((m) => !deletedMonths.has(String(m)));
+      }
+    } else {
+      const monthKeyMatch = /^ww_(?:sales|inventory)_(\d{4}-\d{2})$/.exec(String(key));
+      if (monthKeyMatch && (await getDeletedMonthSet()).has(monthKeyMatch[1])) {
+        return res.status(409).json({ ok: false, code: 'MONTH_DELETED', message: `${monthKeyMatch[1]} was deleted by the CEO or a manager. Refresh the page to continue.` });
+      }
+    }
 
     if (key === 'ww_privileged_action_audit_v1') {
       const incoming = Array.isArray(req.body.data) ? req.body.data : [];
@@ -5161,6 +5392,25 @@ async function restoreTrashAppDataItem(trashItem) {
   const meta = trashItem && trashItem.restore_meta ? trashItem.restore_meta : null;
 
   if (!meta || !meta.kind) throw createError(400, 'Unsupported restore metadata kind');
+  if (meta.kind === 'monthBackup') {
+    const month = String(meta.month || '').trim();
+    if (!isValidMonthKey(month)) throw createError(400, 'Invalid month in backup');
+    const backup = trashItem.record_data || {};
+    if (backup.sales) await AppData.updateOne({ key: `ww_sales_${month}` }, { $set: { key: `ww_sales_${month}`, data: backup.sales } }, { upsert: true });
+    if (backup.inventory) await AppData.updateOne({ key: `ww_inventory_${month}` }, { $set: { key: `ww_inventory_${month}`, data: backup.inventory } }, { upsert: true });
+    await clearMonthTombstone(month);
+    await ensureMonthExists(month);
+    await TrashBin.deleteOne({ _id: trashItem._id });
+    if (typeof broadcastRealtimeUpdate === 'function') {
+      ['ww_sales_months', 'ww_inventory_months', `ww_sales_${month}`, `ww_inventory_${month}`].forEach((key) => broadcastRealtimeUpdate({ key, source: null }));
+    }
+    return {
+      kind: 'appDataRestore',
+      module: trashItem.module,
+      recordData: trashItem.record_data,
+      restoreMeta: trashItem.restore_meta || null,
+    };
+  }
 
 
 
@@ -7919,6 +8169,12 @@ if (!process.env.VERCEL) {
     server.listen(PORT, () => {
 
       console.log(`Server running on port ${PORT}`);
+      // Automatic new month: on start, then hourly (also done on every /api/months call).
+      ensureCurrentMonthShared().catch((err) => console.error('[Months] auto-add failed:', err && err.message));
+      const monthTimer = setInterval(() => {
+        ensureCurrentMonthShared().catch((err) => console.error('[Months] auto-add failed:', err && err.message));
+      }, 60 * 60 * 1000);
+      if (monthTimer && typeof monthTimer.unref === 'function') monthTimer.unref();
 
     });
 
