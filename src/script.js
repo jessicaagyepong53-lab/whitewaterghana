@@ -6,6 +6,22 @@
 // fetch('/api/...') would silently hit Vercel's own domain instead of
 // Render, so every request needs an absolute URL pointing at Render
 // whenever this page isn't already being served from that origin.
+// Optional enhancements, loaded from the same folder as this file on every page:
+//  - month-manager.js: Delete Month button + shared/automatic months
+//  - smart-suggest.js: dropdowns that learn from what people have typed
+(function loadEnhancements() {
+	try {
+		const cs = document.currentScript;
+		if (!cs || !cs.src || window.__wwEnhancementsRequested) return;
+		window.__wwEnhancementsRequested = true;
+		['month-manager.js?v=2', 'smart-suggest.js?v=1'].forEach((file) => {
+			const tag = document.createElement('script');
+			tag.src = cs.src.replace(/script\.js(\?.*)?$/, file);
+			tag.defer = true;
+			document.head.appendChild(tag);
+		});
+	} catch (_e) { /* optional */ }
+})();
 const RENDER_API_ORIGIN = 'https://whitewaterghana.onrender.com';
 const API_BASE = (function resolveApiBase() {
 	try {
@@ -1253,6 +1269,31 @@ function formatRelativeTime(isoStamp) {
 	if (diffHr < 24) return `${diffHr} hr${diffHr === 1 ? '' : 's'} ago`;
 	const diffDay = Math.floor(diffHr / 24);
 	return `${diffDay} day${diffDay === 1 ? '' : 's'} ago`;
+}
+
+// "Last signed in: 10:28 | 28/10/26" (24-hour time, same style as the MTN MoMo app).
+function formatLastSignedIn(iso) {
+	const d = new Date(iso);
+	if (!iso || Number.isNaN(d.getTime())) return '--';
+	const pad = (n) => String(n).padStart(2, '0');
+	return `${pad(d.getHours())}:${pad(d.getMinutes())} | ${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${String(d.getFullYear()).slice(-2)}`;
+}
+let __wwLastSignedInPromise = null;
+function renderLastSignedIn(el) {
+	if (!el) return;
+	const cached = sessionStorage.getItem('ww_last_signed_in');
+	if (cached) el.textContent = formatLastSignedIn(cached);
+	if (!__wwLastSignedInPromise) {
+		__wwLastSignedInPromise = fetch(API_BASE + '/api/auth/me', { credentials: 'include', cache: 'no-store' })
+			.then((r) => (r.ok ? r.json() : null))
+			.then((data) => {
+				const value = data && data.user && data.user.lastSignedIn;
+				if (value) sessionStorage.setItem('ww_last_signed_in', value);
+				return value || null;
+			})
+			.catch(() => null);
+	}
+	__wwLastSignedInPromise.then((value) => { if (value) el.textContent = formatLastSignedIn(value); });
 }
 
 function formatStampWithRelative(isoStamp) {
@@ -4315,7 +4356,7 @@ async function initDashboardPage() {
 		}
 		const latest = rows[0];
 		const summary = String(latest.summary || '').trim();
-		const stamp = formatStampWithRelative(String(latest.timestamp || ''));
+		const stamp = formatRelativeTime(String(latest.timestamp || ''));
 		feed.innerHTML = `<li class="dash-activity-item"><div>${escapeHtml(summary)}</div>${stamp ? `<div class="dash-activity-meta">${escapeHtml(stamp)}</div>` : ''}</li>`;
 	};
 
@@ -4742,8 +4783,7 @@ async function initDashboardPage() {
 
 		const stamp = document.getElementById('dash-timestamp');
 		if (stamp) {
-			const refreshStamp = getDashboardDataRefreshStamp();
-			stamp.textContent = formatStampWithRelative(refreshStamp);
+			renderLastSignedIn(stamp);
 		}
 		renderDashboardActivityFeed(window.__wwDashboardActivityItems || []);
 	};
@@ -7819,7 +7859,9 @@ async function initSalesInvoicesPage() {
 	}
 
 	if (repairMonthBtn) {
-		repairMonthBtn.addEventListener('click', () => {
+		repairMonthBtn.addEventListener('click', async () => {
+			const repairRole = await resolveCurrentUserRole();
+			if (repairRole !== 'ceo' && repairRole !== 'manager') { alert('Only the CEO or a manager can repair a month.'); return; }
 			const month = currentSalesMonth;
 			if (!month) return;
 			const ok = window.confirm(`Repair ${monthLabel(month)} consistency now? This keeps your latest entries and rebuilds invoice/sales pairing.`);
@@ -14979,14 +15021,6 @@ function bindPasswordAssistanceForms() {
 				const data = await postJson('/api/auth/forgot-password', { email });
 				setAuthMessage(data.message || 'Password assistance sent.', false);
 				forgotForm.reset();
-				// Auto-open the forgot reset panel so user can proceed without a current password.
-				const forgotPanel = document.getElementById('forgot-password-panel');
-				const resetPanel = document.getElementById('forgot-reset-password-panel');
-				if (forgotPanel) forgotPanel.hidden = true;
-				if (resetPanel) {
-					resetPanel.hidden = false;
-					resetPanel.scrollIntoView({ behavior: 'smooth' });
-				}
 			} catch (error) {
 				setAuthMessage(error.message || 'Could not process request.', true);
 			}

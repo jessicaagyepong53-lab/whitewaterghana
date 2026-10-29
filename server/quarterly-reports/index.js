@@ -405,7 +405,15 @@ async function generateAndSendAnnualReport(deps, { year, dryRun = false, generat
 }
 
 function mountQuarterlyReportRoutes(app, deps) {
-  const { AppData, ProductionBatch, nowIso, createError, ensureAuthenticated, SPECIAL_ACCESS_OVERRIDES } = deps;
+  const { AppData, ProductionBatch, nowIso, createError, ensureAuthenticated, SPECIAL_ACCESS_OVERRIDES, logActivity } = deps;
+  // Record what a person did in the Business Activity log. Never blocks the report itself.
+  async function logReportActivity(req, action, entityId, details) {
+    try {
+      if (typeof logActivity === 'function') {
+        await logActivity({ req, action, entityType: 'report', entityId, details });
+      }
+    } catch (_logErr) { /* logging must never break a report */ }
+  }
 
   function requireFinanceAccess(req, _res, next) {
     if (!req.user) { next(createError(401, 'Authentication required')); return; }
@@ -449,6 +457,11 @@ function mountQuarterlyReportRoutes(app, deps) {
       } else if (body.discountRateManualOverride !== undefined) {
         await setManualOverride(AppData, nowIso, body.discountRateManualOverride);
       }
+      const changed = [];
+      if (Array.isArray(body.recipientEmails)) changed.push('recipient emails');
+      if (body.discountRateManualOverride === null) changed.push('cleared the discount rate override');
+      else if (body.discountRateManualOverride !== undefined) changed.push('discount rate override');
+      if (changed.length) await logReportActivity(req, 'update', 'report-settings', changed.join(', '));
       const config = await readConfig(AppData);
       res.json({ ok: true, config });
     } catch (error) {
@@ -527,6 +540,7 @@ function mountQuarterlyReportRoutes(app, deps) {
       const { year, quarter } = parsed;
       if (respondIfNotAvailable(res, { periodType: 'quarter', year, quarter })) return;
       const result = await generateAndSendQuarterlyReport(deps, { year, quarter, dryRun: false, generatedBy: req.user });
+      await logReportActivity(req, 'create', result.analysis.label, 'quarterly report sent by email');
       res.json({ ok: true, label: result.analysis.label, recipients: result.recipients });
     } catch (error) {
       if (respondKnownError(res, error)) return;
@@ -556,6 +570,7 @@ function mountQuarterlyReportRoutes(app, deps) {
       const { year } = parsed;
       if (respondIfNotAvailable(res, { periodType: 'year', year })) return;
       const result = await generateAndSendAnnualReport(deps, { year, dryRun: false, generatedBy: req.user });
+      await logReportActivity(req, 'create', result.analysis.label, 'annual report sent by email');
       res.json({ ok: true, label: result.analysis.label, recipients: result.recipients });
     } catch (error) {
       if (respondKnownError(res, error)) return;

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>User Management</title>
-<link rel="stylesheet" href="../src/script.css?v=20260704o">
+<link rel="stylesheet" href="../src/script.css?v=20261029a">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
 </head>
 <body class="ops-page" data-page="users">
@@ -60,6 +60,7 @@
       <button class="tab-btn" data-tab="permissions" onclick="switchTab('um','permissions')">Permissions Matrix</button>
       <button class="tab-btn" data-tab="staff-actions" onclick="switchTab('um','staff-actions')"><i class="fa-solid fa-user-clock"></i> Staff Actions</button>
       <button class="tab-btn" data-tab="trash-bin" onclick="switchTab('um','trash-bin')"><i class="fa-solid fa-trash-can"></i> Trash Bin</button>
+      <button class="tab-btn" data-tab="security" onclick="switchTab('um','security')"><i class="fa-solid fa-shield-halved"></i> Security</button>
     </div>
     <div id="um-tab-users-list" class="tab-panel tab-active">
       <table class="data-table">
@@ -95,7 +96,7 @@
     </div>
     <div id="um-tab-staff-actions" class="tab-panel">
       <div class="info-box" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
-        <p style="margin:0"><i class="fa-solid fa-circle-info"></i> Shows create, edit, and delete actions performed by staff or supervisor users when they had rights at the time of action.</p>
+        <p style="margin:0"><i class="fa-solid fa-circle-info"></i> Shows every create, edit, and delete action performed by staff or supervisor users, on any page.</p>
         <button type="button" class="btn-secondary" id="um-refresh-actions-btn"><i class="fa-solid fa-rotate"></i> Refresh</button>
       </div>
       <table class="data-table">
@@ -104,6 +105,20 @@
         </thead>
         <tbody id="um-actions-tbody">
           <tr><td colspan="7" style="color:#64748b;text-align:center;padding:20px">No action logs yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="um-tab-security" class="tab-panel">
+      <div class="info-box" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <p style="margin:0"><i class="fa-solid fa-circle-info"></i> Sign-ins, password changes and password resets (latest 100).</p>
+        <button type="button" class="btn-secondary" id="um-refresh-security-btn"><i class="fa-solid fa-rotate"></i> Refresh</button>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr><th>When</th><th>User</th><th>Role</th><th>What happened</th></tr>
+        </thead>
+        <tbody id="um-security-tbody">
+          <tr><td colspan="4" style="color:#64748b;text-align:center;padding:20px">No security activity yet.</td></tr>
         </tbody>
       </table>
     </div>
@@ -126,6 +141,7 @@
           <option value="purchaseOrders">Purchase Orders</option>
           <option value="factory-equipment">Factory Equipment</option>
           <option value="record-vault">Record Vault</option>
+          <option value="month">Months</option>
         </select>
         <button type="button" class="btn-secondary" id="trash-undo-last-btn" title="Undo the most recent restore" style="padding:6px 10px;font-size:.82rem">
           <i class="fa-solid fa-rotate-right"></i> Undo Last Restore
@@ -212,8 +228,8 @@
     </div>
   </div>
 </main>
-<script src="../src/script.js?v=20260704u"></script>
-<script src="../src/conn-status.js?v=1"></script>
+<script src="../src/script.js?v=20261029a"></script>
+<script src="../src/conn-status.js?v=20261029a"></script>
 <script>
 (function() {
   const ACCESS_LEVELS = {
@@ -250,6 +266,10 @@
     if (!normalized) return '';
     if (normalized === 'ceo') return 'CEO';
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   function formatLogin(dt) {
@@ -302,15 +322,15 @@
       var action = formatActionLabel(row.action);
       var actionLower = String(row.action || '').toLowerCase();
       var actionClass = actionLower === 'delete' ? 'status-red' : (actionLower === 'add' ? 'status-green' : 'status-blue');
-      var userDisplay = userEmail ? (userName + '<br><small style="color:#64748b">' + userEmail + '</small>') : userName;
+      var userDisplay = userEmail ? (esc(userName) + '<br><small style="color:#64748b">' + esc(userEmail) + '</small>') : esc(userName);
       return '<tr>' +
         '<td>' + formatLogin(row.timestamp) + '</td>' +
         '<td>' + userDisplay + '</td>' +
-        '<td>' + roleLabel + '</td>' +
+        '<td>' + esc(roleLabel) + '</td>' +
         '<td><span class="status-pill ' + actionClass + '">' + action + '</span></td>' +
         '<td>' + formatModuleLabel(row.module) + '</td>' +
-        '<td>' + recordText + '</td>' +
-        '<td>' + details + '</td>' +
+        '<td>' + esc(recordText) + '</td>' +
+        '<td>' + esc(details) + '</td>' +
       '</tr>';
     }).join('');
   }
@@ -335,7 +355,7 @@
     var when = isNaN(dt)
       ? String(user.rightsUpdatedAt)
       : dt.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-    return '<div style="font-size:.72rem;color:#64748b;margin-top:4px">Changed by ' + String(user.rightsUpdatedBy) + ' on ' + when + '</div>';
+    return '<div style="font-size:.72rem;color:#64748b;margin-top:4px">Changed by ' + esc(user.rightsUpdatedBy) + ' on ' + esc(when) + '</div>';
   }
 
   function renderTable(users) {
@@ -354,11 +374,11 @@
         const roleHint = ACCESS_LEVELS[role] || 'Per role defaults';
         const rightsAudit = formatRightsAudit(u);
         return '<tr>' +
-          '<td>' + (u.name || '') + '</td>' +
-          '<td>' + (u.email || '') + '</td>' +
+          '<td>' + esc(u.name || '') + '</td>' +
+          '<td>' + esc(u.email || '') + '</td>' +
           '<td>' + formatRoleLabel(u.role) + '</td>' +
           '<td>' + access + '<div style="font-size:.75rem;color:#64748b;margin-top:4px">' + roleHint + '</div>' + rightsAudit + '</td>' +
-          '<td><span class="status-pill ' + (u.status === 'Active' ? 'pill-success' : 'pill-warning') + '">' + (u.status || 'Active') + '</span></td>' +
+          '<td><span class="status-pill ' + (u.status === 'Active' ? 'pill-success' : 'pill-warning') + '">' + esc(u.status || 'Active') + '</span></td>' +
           '<td>' + formatLogin(u.lastLogin) + '</td>' +
           '<td><div class="row-actions"><button class="btn-edit um-toggle-rights-btn" data-id="' + u.id + '" title="' + toggleTitle + '"><i class="fa-solid ' + toggleIcon + '"></i></button><button class="btn-edit um-rights-history-btn" data-id="' + u.id + '" title="View rights history"><i class="fa-solid fa-clock-rotate-left"></i></button><button class="btn-edit um-edit-btn" data-id="' + u.id + '" title="Edit"><i class="fa-solid fa-pen-to-square"></i></button><button class="btn-edit um-reset-pwd-btn" data-id="' + u.id + '" title="Reset Password" style="color:#f59e0b"><i class="fa-solid fa-key"></i></button><button class="btn-delete um-delete-btn" data-id="' + u.id + '" title="Delete"><i class="fa-solid fa-trash"></i></button></div></td>' +
         '</tr>';
@@ -442,10 +462,10 @@
         rightsHistoryTbody.innerHTML = rows.map(function(row) {
           return '<tr>' +
             '<td>' + formatLogin(row.changedAt) + '</td>' +
-            '<td>' + (row.changedBy || 'System') + '</td>' +
+            '<td>' + esc(row.changedBy || 'System') + '</td>' +
             '<td>' + formatRightsValue(row.oldCanEditDelete) + '</td>' +
             '<td>' + formatRightsValue(row.newCanEditDelete) + '</td>' +
-            '<td>' + (row.note || 'Rights updated') + '</td>' +
+            '<td>' + esc(row.note || 'Rights updated') + '</td>' +
           '</tr>';
         }).join('');
       }
@@ -622,6 +642,46 @@
       loadStaffActions();
     });
   }
+  var securityTbody = document.getElementById('um-security-tbody');
+  var refreshSecurityBtn = document.getElementById('um-refresh-security-btn');
+  var securityTabBtn = document.querySelector('.tab-btn[data-tab="security"]');
+
+  // Same style as the dashboard's "Last signed in": 10:28 | 28/10/26
+  function formatSecurityTime(dt) {
+    var d = new Date(dt);
+    if (!dt || isNaN(d)) return '—';
+    var pad = function(n) { return String(n).padStart(2, '0'); };
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ' | ' + pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + String(d.getFullYear()).slice(-2);
+  }
+
+  async function loadSecurityEvents() {
+    if (!securityTbody) return;
+    securityTbody.innerHTML = '<tr><td colspan="4" style="color:#64748b;text-align:center;padding:20px">Loading...</td></tr>';
+    try {
+      var res = await fetch(API_BASE + '/api/security-log', { credentials: 'include', cache: 'no-store' });
+      var json = await res.json().catch(function() { return []; });
+      if (!res.ok) throw new Error((json && json.message) || 'Failed to load security activity');
+      if (!Array.isArray(json) || json.length === 0) {
+        securityTbody.innerHTML = '<tr><td colspan="4" style="color:#64748b;text-align:center;padding:20px">No security activity yet.</td></tr>';
+        return;
+      }
+      securityTbody.innerHTML = json.map(function(row) {
+        var event = String(row.event || '').trim();
+        var pill = /password/i.test(event) ? 'status-blue' : 'status-green';
+        return '<tr>' +
+          '<td>' + esc(formatSecurityTime(row.timestamp)) + '</td>' +
+          '<td>' + esc(row.name || 'Unknown') + '</td>' +
+          '<td>' + esc(formatRoleLabel(row.role)) + '</td>' +
+          '<td><span class="status-pill ' + pill + '">' + esc(event.charAt(0).toUpperCase() + event.slice(1)) + '</span></td>' +
+        '</tr>';
+      }).join('');
+    } catch (err) {
+      securityTbody.innerHTML = '<tr><td colspan="4" style="color:#ef4444;text-align:center;padding:20px">' + esc(err.message || 'Failed to load security activity') + '</td></tr>';
+    }
+  }
+  if (refreshSecurityBtn) refreshSecurityBtn.addEventListener('click', loadSecurityEvents);
+  if (securityTabBtn) securityTabBtn.addEventListener('click', loadSecurityEvents);
+
   if (staffActionsTabBtn) {
     staffActionsTabBtn.addEventListener('click', function() {
       loadStaffActions();
@@ -664,16 +724,21 @@
   var undoLastBtn = document.getElementById('trash-undo-last-btn');
   var cachedTrash = [];
 
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
   var MODULE_LABELS = {
     users: 'Users', customers: 'Customers', vendors: 'Vendors',
     inventory: 'Inventory', machines: 'Machines', production: 'Production',
     sales: 'Sales', invoices: 'Invoices', accounting: 'Accounting',
     purchaseOrders: 'Purchase Orders', 'factory-equipment': 'Factory Equipment',
-    'record-vault': 'Record Vault',
+    'record-vault': 'Record Vault', month: 'Months',
   };
 
   function getRecordSummary(item) {
     var d = item.recordData || {};
+    if (item.module === 'month' && d.month) return 'Month ' + d.month + ' (Sales & Inventory)';
     if (d.name) return d.name;
     if (d.order_code) return d.order_code + (d.product ? ' — ' + d.product : '');
     if (d.invoice_code) return d.invoice_code;
@@ -726,9 +791,9 @@
     }
     trashTbody.innerHTML = filtered.map(function(t) {
       return '<tr>' +
-        '<td><span class="status-pill status-blue">' + (MODULE_LABELS[t.module] || t.module) + '</span></td>' +
-        '<td>' + getRecordSummary(t) + '</td>' +
-        '<td>' + (t.deletedBy || '—') + '</td>' +
+        '<td><span class="status-pill status-blue">' + esc(MODULE_LABELS[t.module] || t.module) + '</span></td>' +
+        '<td>' + esc(getRecordSummary(t)) + '</td>' +
+        '<td>' + esc(t.deletedBy || '—') + '</td>' +
         '<td>' + formatDt(t.deletedAt) + '</td>' +
         '<td><span style="color:#f59e0b;font-size:.82rem">' + daysUntil(t.expiresAt) + '</span></td>' +
         '<td><div class="row-actions">' +

@@ -4518,3 +4518,46 @@ body[data-page="sales"] .ops-topbar > .ops-nav a.is-active {
 @media (min-width: 721px) and (max-width: 1100px) {
 	.rv-viewer-modal { width: 96vw; height: 94vh; }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   RESPONSIVE FIXES (phone / tablet / desktop)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Dashboard KPI cards: long lines used to stay on one row and ran past the card edge
+   (".split-meta span" is nowrap). Let them wrap inside the card. */
+.kpi-card-dashboard .split-meta span,
+.kpi-card-dashboard .kpi-meta span {
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+.kpi-card-dashboard .kpi-meta { line-height: 1.4; }
+
+/* The icon square stays beside the value instead of dropping underneath it,
+   and big numbers shrink a little instead of pushing the icon away. */
+.kpi-card-dashboard .kpi-head { flex-wrap: nowrap; align-items: flex-start; }
+.kpi-card-dashboard .kpi-head > div:first-child { min-width: 0; flex: 1 1 auto; }
+.kpi-card-dashboard .kpi-icon-square { flex: 0 0 auto; }
+.kpi-card-dashboard .kpi-value { font-size: clamp(1.15rem, 0.95rem + 0.7vw, 1.45rem); overflow-wrap: anywhere; }
+
+/* The floating assistant button no longer covers the last lines of a page. */
+.ops-main { padding-bottom: 88px; }
+
+/* Pop-ups: never taller than the screen, scroll inside, comfortable on phones. */
+.inv-modal { max-height: calc(100dvh - 24px); overflow-y: auto; }
+
+/* Phones */
+@media (max-width: 640px) {
+	.kpi-card-dashboard { padding: 14px; }
+	.page-header h2 { font-size: 1.2rem; }
+	.stats-row .stat-card { min-width: 0; }
+	.inv-modal-overlay { padding: 10px; }
+	.inv-modal { width: 100%; max-width: 100%; }
+	.inv-modal-footer { flex-wrap: wrap; }
+	.inv-modal-footer button { flex: 1 1 120px; }
+}
+
+/* Tablets */
+@media (min-width: 641px) and (max-width: 1050px) {
+	.kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.ops-main { padding-left: 14px; padding-right: 14px; }
+}

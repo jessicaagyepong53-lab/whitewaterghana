@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sales & Invoicing</title>
-  <link rel="stylesheet" href="../src/script.css?v=20260504">
+  <link rel="stylesheet" href="../src/script.css?v=20261029a">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
   <style>
     .online-badge { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; background: #dc2626; color: #fff; border-radius: 10px; font-size: 0.72rem; font-weight: 700; margin-left: 6px; vertical-align: middle; }
@@ -58,6 +58,8 @@
       <select id="sales-month-select"></select>
     </div>
     <button type="button" class="btn-secondary" id="new-month-btn"><i class="fa-solid fa-plus"></i> New Month</button>
+    <button type="button" class="btn-secondary" id="repair-month-btn" title="Repair current month consistency" style="display:none"><i class="fa-solid fa-wrench"></i> Repair Current Month</button>
+    <button type="button" id="purge-sales-btn" style="display:none;background:#dc2626;color:#fff;border:none;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:0.83rem;font-weight:600;gap:6px;align-items:center;"><i class="fa-solid fa-trash-can"></i> Purge All Sales &amp; Invoices</button>
   </section>
   <section class="stats-row" id="si-stats-row"></section>
   <div class="panel">
@@ -168,9 +170,31 @@
   </div>
 </div>
 </main>
-<script src="../src/script.js?v=20260704u"></script>
-<script src="../src/assistant.js?v=2"></script>
-<script src="../src/conn-status.js?v=1"></script>
+<!-- Purge Confirmation Modal (CEO only) -->
+<div id="purge-sales-modal" class="inv-modal-overlay" role="dialog" aria-modal="true" style="display:none">
+  <div class="inv-modal" style="max-width:420px">
+    <div class="inv-modal-header" style="background:#fef2f2;border-bottom:1px solid #fecaca">
+      <h3 style="color:#b91c1c"><i class="fa-solid fa-triangle-exclamation" style="margin-right:6px"></i>Purge All Sales &amp; Invoices</h3>
+      <button type="button" class="inv-modal-close" id="purge-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="inv-modal-body">
+      <p style="margin:0 0 10px;color:#374151">This will <strong>permanently delete</strong> all sales orders, invoices, store orders, and related trash entries, then reset all customer balances to zero.</p>
+      <p style="margin:0 0 10px;color:#991b1b;font-weight:600">This action cannot be undone.</p>
+      <label for="purge-confirm-input" style="display:block;margin-bottom:6px;color:#374151">Type <strong>PURGE</strong> to confirm:</label>
+      <input id="purge-confirm-input" type="text" autocomplete="off" style="width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;box-sizing:border-box">
+      <div id="purge-sales-msg" style="margin-top:12px;font-size:0.85rem"></div>
+    </div>
+    <div class="inv-modal-footer">
+      <button type="button" class="btn-secondary" id="purge-cancel">Cancel</button>
+      <button type="button" id="purge-confirm-btn" disabled style="background:#dc2626;color:#fff;border:none;padding:7px 18px;border-radius:6px;cursor:pointer;font-weight:600;opacity:.5">Yes, Purge Everything</button>
+    </div>
+  </div>
+</div>
+
+<script src="../src/script.js?v=20261029a"></script>
+<script src="../src/assistant.js?v=20261029a"></script>
+<script src="../src/conn-status.js?v=20261029a"></script>
+  <script src="../src/month-manager.js?v=20261029a"></script>
 <script>
 (async function initAssistantWidget() {
   const role = await resolveCurrentUserRole();
@@ -178,6 +202,81 @@
     const widget = document.getElementById('ai-assistant-widget');
     if (widget) widget.style.display = 'block';
   }
+})();
+</script>
+<script>
+(async function initSalesAdminTools() {
+  const role = await resolveCurrentUserRole();
+  const repairBtn = document.getElementById('repair-month-btn');
+  const purgeBtn = document.getElementById('purge-sales-btn');
+  if ((role === 'ceo' || role === 'manager') && repairBtn) repairBtn.style.display = '';
+  if (role === 'ceo' && purgeBtn) purgeBtn.style.display = 'inline-flex';
+
+  const modal = document.getElementById('purge-sales-modal');
+  const input = document.getElementById('purge-confirm-input');
+  const confirmBtn = document.getElementById('purge-confirm-btn');
+  const msgEl = document.getElementById('purge-sales-msg');
+
+  function setConfirmReady(ready) {
+    confirmBtn.disabled = !ready;
+    confirmBtn.style.opacity = ready ? '1' : '.5';
+  }
+  function openPurgeModal() {
+    msgEl.textContent = '';
+    input.value = '';
+    setConfirmReady(false);
+    confirmBtn.textContent = 'Yes, Purge Everything';
+    modal.style.display = 'flex';
+    input.focus();
+  }
+  function closePurgeModal() { modal.style.display = 'none'; }
+
+  function clearSalesBrowserCache() {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (key === 'ww_sales_months' || key === 'ww_sales_data' || key === 'ww_last_data_update') { keysToRemove.push(key); continue; }
+      if (key.startsWith('ww_sales_') || key.startsWith('ww_pending_sales_sync_') || key.startsWith('ww_sales_protected_') || key.startsWith('ww_sales_version_')) keysToRemove.push(key);
+    }
+    keysToRemove.forEach((key) => localStorage.removeItem(key));
+    if (typeof setLastDataUpdateStamp === 'function') setLastDataUpdateStamp(new Date().toISOString());
+    if (typeof broadcastRemoteSyncRefresh === 'function') broadcastRemoteSyncRefresh();
+  }
+
+  async function confirmPurge() {
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Purging…';
+    msgEl.style.color = '#374151';
+    msgEl.textContent = 'Working…';
+    try {
+      const res = await fetch(API_BASE + '/api/admin/purge-sales-and-invoices', { method: 'DELETE', credentials: 'include' });
+      const data = await res.json();
+      if (res.ok) {
+        msgEl.style.color = '#15803d';
+        msgEl.textContent = data.message || 'Purge complete.';
+        clearSalesBrowserCache();
+        confirmBtn.textContent = 'Done';
+        setTimeout(() => { closePurgeModal(); location.reload(); }, 1800);
+      } else {
+        msgEl.style.color = '#b91c1c';
+        msgEl.textContent = data.message || 'Purge failed.';
+        setConfirmReady(true);
+        confirmBtn.textContent = 'Yes, Purge Everything';
+      }
+    } catch (err) {
+      msgEl.style.color = '#b91c1c';
+      msgEl.textContent = 'Network error. Please try again.';
+      setConfirmReady(true);
+      confirmBtn.textContent = 'Yes, Purge Everything';
+    }
+  }
+
+  if (purgeBtn) purgeBtn.addEventListener('click', openPurgeModal);
+  document.getElementById('purge-close').addEventListener('click', closePurgeModal);
+  document.getElementById('purge-cancel').addEventListener('click', closePurgeModal);
+  input.addEventListener('input', () => setConfirmReady(input.value.trim() === 'PURGE'));
+  confirmBtn.addEventListener('click', () => { if (input.value.trim() === 'PURGE') confirmPurge(); });
 })();
 </script>
 </body>

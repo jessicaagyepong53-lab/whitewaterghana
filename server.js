@@ -799,6 +799,10 @@ function toStaffModuleFromEntityType(entityType) {
     recordVaultFolder: 'Record Vault',
 
     storeOrder: 'Store Orders',
+    month: 'Months',
+    bom: 'Bill of Materials',
+    budget: 'Cost Centre Budgets',
+    report: 'Reports',
 
   };
 
@@ -1009,11 +1013,9 @@ async function logStaffAction({ req, action, entityType, entityId, batchId, chan
 
   if (!actionName) return;
 
-  const resourceKey = toResourceKeyFromEntityType(entityType);
+  // Everything a supervisor or staff member does is recorded, including actions done without edit rights.
 
-  if (!hasModuleRightsForUser(userForRights, resourceKey)) return;
 
-  if ((actionName === 'edit' || actionName === 'delete') && !resolveCanEditDelete(userForRights)) return;
 
   const cleanChanges = actionName === 'edit' ? normalizeStaffChanges(changes) : [];
 
@@ -1071,71 +1073,148 @@ function hashRecordContent(record) {
 // pair rather than a single 'update' — an accepted approximation so that
 // adds/removes on these pages are visible in the activity feed at all.
 async function logContentDiffActivity({ req, entityType, previousArr, nextArr, batchId }) {
-
   const prev = Array.isArray(previousArr) ? previousArr : [];
-
   const next = Array.isArray(nextArr) ? nextArr : [];
-
   if (!prev.length && !next.length) return;
-
-  const prevCounts = new Map();
-
-  for (const row of prev) {
-
-    const key = JSON.stringify(row);
-
-    prevCounts.set(key, (prevCounts.get(key) || 0) + 1);
-
-  }
-
-  const nextCounts = new Map();
-
-  for (const row of next) {
-
-    const key = JSON.stringify(row);
-
-    nextCounts.set(key, (nextCounts.get(key) || 0) + 1);
-
-  }
-
-  const allKeys = new Set([...prevCounts.keys(), ...nextCounts.keys()]);
-
-  for (const key of allKeys) {
-
+  const tally = (rows) => {
+    const counts = new Map();
+    rows.forEach((row) => { const key = JSON.stringify(row); counts.set(key, (counts.get(key) || 0) + 1); });
+    return counts;
+  };
+  const prevCounts = tally(prev);
+  const nextCounts = tally(next);
+  const removed = [];
+  const added = [];
+  for (const key of new Set([...prevCounts.keys(), ...nextCounts.keys()])) {
     const delta = (nextCounts.get(key) || 0) - (prevCounts.get(key) || 0);
-
-    if (delta === 0) continue;
-
-    const sampleRow = delta > 0
-
-      ? next.find((row) => JSON.stringify(row) === key)
-
-      : prev.find((row) => JSON.stringify(row) === key);
-
-    const baseId = hashRecordContent(sampleRow);
-
-    const count = Math.abs(delta);
-
-    for (let i = 0; i < count; i += 1) {
-
-      await logActivity({
-
-        req,
-
-        action: delta > 0 ? 'create' : 'delete',
-
-        entityType,
-
-        entityId: `${baseId}-${i}`,
-
-        batchId,
-
-      });
-
-    }
-
+    if (delta > 0) { const row = next.find((r) => JSON.stringify(r) === key); for (let i = 0; i < delta; i += 1) added.push(row); }
+    if (delta < 0) { const row = prev.find((r) => JSON.stringify(r) === key); for (let i = 0; i < -delta; i += 1) removed.push(row); }
   }
+  // A record without an id that was edited appears as one removed + one added row.
+  // Pair rows that are mostly identical so it is logged as ONE update, not a delete + add.
+  const similarity = (a, b) => {
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return 0;
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    if (keys.size < 3) return 0;
+    let same = 0;
+    keys.forEach((k) => { if (JSON.stringify(a[k]) === JSON.stringify(b[k])) same += 1; });
+    return same / keys.size;
+  };
+  const leftover = removed.slice();
+  const pairs = [];
+  const created = [];
+  for (const row of added) {
+    let bestIndex = -1;
+    let best = 0;
+    leftover.forEach((old, index) => { const score = similarity(old, row); if (score > best) { best = score; bestIndex = index; } });
+    if (bestIndex >= 0 && best >= 0.6) pairs.push([leftover.splice(bestIndex, 1)[0], row]);
+    else created.push(row);
+  }
+  const seen = new Map();
+  const nextId = (row) => {
+    const base = hashRecordContent(row);
+    const n = seen.get(base) || 0;
+    seen.set(base, n + 1);
+    return `${base}-${n}`;
+  };
+  for (const [oldRow, newRow] of pairs) {
+    const fields = Array.from(new Set([...Object.keys(oldRow), ...Object.keys(newRow)]));
+    const changes = collectChangedFields(fields.map((field) => ({ field, oldValue: oldRow[field], newValue: newRow[field] }))).slice(0, 8);
+    await logActivity({ req, action: 'update', entityType, entityId: nextId(newRow), batchId, changes });
+  }
+  for (const row of created) await logActivity({ req, action: 'create', entityType, entityId: nextId(row), batchId });
+  for (const row of leftover) await logActivity({ req, action: 'delete', entityType, entityId: nextId(row), batchId });
+}
 
+// Diffs two arrays of rows. When every row has a unique, non-empty id this logs
+// proper create / update (with the changed fields) / delete entries, so an edit
+// shows as "updated" instead of a delete + add pair. Rows without usable ids
+// fall back to the content diff above.
+async function logIdOrContentDiffActivity({ req, entityType, previousArr, nextArr, batchId, ignoreFields }) {
+  const prev = Array.isArray(previousArr) ? previousArr : [];
+  const next = Array.isArray(nextArr) ? nextArr : [];
+  if (!prev.length && !next.length) return;
+  const idOf = (row) => String(row && typeof row === 'object' && row.id != null ? row.id : '').trim();
+  const usable = (rows) => {
+    const ids = rows.map(idOf);
+    return ids.every(Boolean) && new Set(ids).size === ids.length;
+  };
+  if (!usable(prev) || !usable(next)) {
+    return logContentDiffActivity({ req, entityType, previousArr: prev, nextArr: next, batchId });
+  }
+  const skip = new Set(['id', '_id', 'createdAt', 'updatedAt', 'lastUpdated', 'last_updated', ...(ignoreFields || [])]);
+  const prevMap = new Map(prev.map((row) => [idOf(row), row]));
+  const nextMap = new Map(next.map((row) => [idOf(row), row]));
+  for (const [id, row] of nextMap) {
+    const before = prevMap.get(id);
+    if (!before) {
+      await logActivity({ req, action: 'create', entityType, entityId: id, batchId });
+      continue;
+    }
+    const fields = Array.from(new Set([...Object.keys(before), ...Object.keys(row)])).filter((f) => !skip.has(f));
+    const changes = collectChangedFields(fields.map((field) => ({ field, oldValue: before[field], newValue: row[field] }))).slice(0, 8);
+    if (changes.length) {
+      await logActivity({ req, action: 'update', entityType, entityId: id, batchId, changes });
+    }
+  }
+  for (const id of prevMap.keys()) {
+    if (!nextMap.has(id)) await logActivity({ req, action: 'delete', entityType, entityId: id, batchId });
+  }
+}
+// One log entry per top-level entry of an object that changed (e.g. one product's BOM).
+async function logObjectChangeActivity({ req, entityType, previousObj, nextObj, batchId }) {
+  const prev = previousObj && typeof previousObj === 'object' && !Array.isArray(previousObj) ? previousObj : {};
+  const next = nextObj && typeof nextObj === 'object' && !Array.isArray(nextObj) ? nextObj : {};
+  const keys = new Set([...Object.keys(prev), ...Object.keys(next)]);
+  for (const name of keys) {
+    const a = JSON.stringify(prev[name] === undefined ? null : prev[name]);
+    const b = JSON.stringify(next[name] === undefined ? null : next[name]);
+    if (a === b) continue;
+    const action = !(name in prev) ? 'create' : (!(name in next) ? 'delete' : 'update');
+    await logActivity({ req, action, entityType, entityId: name, batchId });
+  }
+}
+
+// Sign-ins and password changes are recorded as "security" events. They are kept out of the
+// dashboard's business-activity line (so they never push real business activity off it) and are
+// available from /api/security-log for the CEO and managers.
+async function logSecurityEvent({ userName, userRole, event, subject }) {
+  try {
+    const name = String(userName || '').trim();
+    const role = String(userRole || '').trim();
+    if (!name || !role) return;
+    await ActivityLog.create({
+      action: 'update',
+      entityType: 'security',
+      module: 'Security',
+      entityId: String(subject || event || 'event'),
+      details: String(event || '').trim(),
+      changes: [],
+      batchId: `sec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      userName: name,
+      userRole: role,
+      timestamp: new Date(),
+    });
+  } catch (_securityLogErr) { /* never block sign-in or a password change */ }
+}
+
+// The dashboard only ever shows the latest business activity, so older entries are removed as soon as a
+// new activity is logged (set ACTIVITY_KEEP_LATEST_ONLY=false in the server settings to keep full history).
+// Security events (sign-ins, password changes) are never pruned here. Entries from the last 30 seconds
+// are left alone so an activity that is still being written is never cut in half.
+const ACTIVITY_KEEP_LATEST_ONLY = String(process.env.ACTIVITY_KEEP_LATEST_ONLY || 'true').toLowerCase() !== 'false';
+const ACTIVITY_PRUNE_GRACE_MS = 30 * 1000;
+let lastPrunedActivityBatch = null;
+async function pruneOlderActivity(currentBatchId) {
+  if (!ACTIVITY_KEEP_LATEST_ONLY || !currentBatchId || lastPrunedActivityBatch === currentBatchId) return;
+  lastPrunedActivityBatch = currentBatchId;
+  try {
+    await ActivityLog.deleteMany({
+      entityType: { $ne: 'security' },
+      batchId: { $ne: currentBatchId },
+      timestamp: { $lt: new Date(Date.now() - ACTIVITY_PRUNE_GRACE_MS) },
+    });
+  } catch (_pruneErr) { /* pruning must never block a save */ }
 }
 
 async function logActivity({ req, action, entityType, entityId, batchId, changes, details }) {
@@ -1176,6 +1255,7 @@ async function logActivity({ req, action, entityType, entityId, batchId, changes
 
   });
 
+  await pruneOlderActivity(String(batchId || getActivityBatchId(req)).trim() || getActivityBatchId(req));
   await logStaffAction({ req, action: normalizedAction, entityType, entityId, batchId, changes });
 
 }
@@ -2193,6 +2273,7 @@ mountQuarterlyReportRoutes(app, {
   SPECIAL_ACCESS_OVERRIDES,
   getGridFSBucket,
   broadcastRealtimeUpdate,
+  logActivity,
 });
 
 
@@ -2294,6 +2375,8 @@ app.post('/api/auth/register', async (req, res, next) => {
     const validRoles = ['ceo', 'manager', 'supervisor', 'staff'];
 
     if (!validRoles.includes(selectedRole)) throw createError(400, 'Please select a valid role');
+    // CEO and Manager accounts are never self-created: a CEO or Manager adds them from the User Management page.
+    if (selectedRole === 'ceo' || selectedRole === 'manager') throw createError(403, 'Manager and CEO accounts can only be created by a CEO or Manager from the User Management page.');
 
 
 
@@ -2427,7 +2510,17 @@ app.post('/api/auth/login', async (req, res, next) => {
 
     await Session.create({ token, user_id: user._id, expires_at: expiresAt });
 
+    // Keep the PREVIOUS sign-in so the dashboard can show "Last signed in" (like the MTN app).
+    const previousSignIn = user.last_login || null;
     await User.updateOne({ _id: user._id }, { last_login: timestamp });
+    try {
+      await AppData.updateOne(
+        { key: 'ww_signin_history_v1' },
+        { $set: { [`data.${String(user._id)}`]: { previous: previousSignIn, current: timestamp } } },
+        { upsert: true },
+      );
+    } catch (_signInErr) { /* never block a login */ }
+    await logSecurityEvent({ userName: user.name, userRole: user.role, event: 'signed in', subject: String(user._id) });
 
 
 
@@ -2518,42 +2611,10 @@ app.post('/api/auth/forgot-password', async (req, res, next) => {
 
 app.get('/api/auth/forgot-reset-password', (_req, res) => { res.json({ message: 'Use POST.' }); });
 
-app.post('/api/auth/forgot-reset-password', async (req, res, next) => {
-
-  try {
-
-    requireFields(req.body, ['email', 'newPassword']);
-
-    const email = String(req.body.email).trim().toLowerCase();
-
-    const newPassword = String(req.body.newPassword);
-
-    if (newPassword.length < 6) throw createError(400, 'New password must be at least 6 characters');
-
-
-
-    const user = await User.findOne({ email });
-
-    if (!user) throw createError(404, 'No user found with this email');
-
-
-
-    await User.updateOne({ _id: user._id }, { password_hash: bcrypt.hashSync(newPassword, 10) });
-
-    await Session.deleteMany({ user_id: user._id });
-
-    clearCachedSessionsForUser(user._id);
-
-
-
-    res.json({ message: 'Password reset successfully. Please sign in with your new password.' });
-
-  } catch (error) {
-
-    next(error);
-
-  }
-
+app.post('/api/auth/forgot-reset-password', (_req, _res, next) => {
+  // Closed on purpose: this used to reset ANY account's password knowing only its email address.
+  // Resets are done by a Manager or the CEO (admin-reset-password), or by the owner via change-password.
+  next(createError(403, 'Password resets are done by a Manager or the CEO from the User Management page. Please contact them.'));
 });
 
 
@@ -2597,6 +2658,7 @@ app.post('/api/auth/reset-password', async (req, res, next) => {
     await Session.deleteMany({ user_id: user._id });
 
     clearCachedSessionsForUser(user._id);
+    await logSecurityEvent({ userName: user.name, userRole: user.role, event: 'changed their password', subject: String(user._id) });
 
 
 
@@ -2637,6 +2699,7 @@ app.post('/api/auth/admin-reset-password', ensureAuthenticated, ensureRole('user
     await Session.deleteMany({ user_id: user._id });
 
     clearCachedSessionsForUser(user._id);
+    await logSecurityEvent({ userName: req.user.name || req.user.email, userRole: req.user.role, event: `reset the password for ${user.name}`, subject: String(user._id) });
 
 
 
@@ -2652,7 +2715,7 @@ app.post('/api/auth/admin-reset-password', ensureAuthenticated, ensureRole('user
 
 
 
-app.get('/api/auth/me', (req, res) => {
+app.get('/api/auth/me', async (req, res) => {
 
   if (!req.user) { res.status(401).json({ message: 'Not signed in' }); return; }
 
@@ -2662,7 +2725,13 @@ app.get('/api/auth/me', (req, res) => {
 
   const effectiveRole = effectiveRoles.includes('ceo') ? 'ceo' : req.user.role;
 
-  res.json({ user: { ...req.user, effectiveRole, effectiveRoles } });
+  let lastSignedIn = req.user.lastLogin || null;
+  try {
+    const history = await AppData.findOne({ key: 'ww_signin_history_v1' }).lean();
+    const entry = history && history.data && history.data[String(req.user.id)];
+    if (entry) lastSignedIn = entry.previous || entry.current || lastSignedIn;
+  } catch (_historyErr) { /* fall back to the stored login time */ }
+  res.json({ user: { ...req.user, effectiveRole, effectiveRoles, lastSignedIn } });
 
 });
 
@@ -2700,6 +2769,19 @@ app.get('/api/dashboard', ensureAuthenticated, ensureRole('dashboard'), async (_
 
 
 
+app.get('/api/security-log', ensureAuthenticated, ensureRole('users'), async (req, res, next) => {
+  try {
+    const rows = await ActivityLog.find({ entityType: 'security' }).sort({ timestamp: -1, _id: -1 }).limit(100).lean();
+    res.json(rows.map((row) => ({
+      name: row.userName,
+      role: row.userRole,
+      event: row.details,
+      summary: `${row.userName} (${String(row.userRole || '').toUpperCase()}) ${row.details}`,
+      timestamp: row.timestamp,
+    })));
+  } catch (error) { next(error); }
+});
+
 app.get('/api/activity-log', ensureAuthenticated, ensureRole('dashboard'), async (req, res, next) => {
 
   try {
@@ -2714,7 +2796,8 @@ app.get('/api/activity-log', ensureAuthenticated, ensureRole('dashboard'), async
 
     const rows = await ActivityLog.find({
 
-      userName: { $exists: true, $ne: '' },
+            entityType: { $ne: 'security' },
+userName: { $exists: true, $ne: '' },
 
       userRole: { $exists: true, $ne: '' },
 
@@ -3459,6 +3542,85 @@ async function ensureCurrentMonthShared() {
   return result;
 }
 
+// ── Smart suggestions ──────────────────────────────────────────────────────
+// The server learns the values people type into repeating fields (locations,
+// suppliers, car types, car numbers, purchase items, accounting descriptions,
+// BOM units) and hands them back as dropdown choices. Nothing extra is stored:
+// the lists are rebuilt from the saved records, so a new value appears soon
+// after it is saved and a value nobody uses any more drops off by itself.
+// Names (customers, employees, suppliers' own names), phone numbers, amounts and
+// dates are deliberately NOT suggested.
+function collectSuggestionLists(docs) {
+  const names = ['locations', 'suppliers', 'carTypes', 'carNumbers', 'items', 'descriptions', 'units'];
+  const tally = {};
+  names.forEach((n) => { tally[n] = new Map(); });
+  const add = (list, value) => {
+    const text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+    if (!text || text.length > 80 || /^n\/a$/i.test(text)) return;
+    const key = text.toLowerCase();
+    if (!tally[list].has(key)) tally[list].set(key, new Map());
+    const spellings = tally[list].get(key);
+    spellings.set(text, (spellings.get(text) || 0) + 1);
+  };
+  const rows = (v) => (Array.isArray(v) ? v : []);
+  const collectUnits = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 4) return;
+    if (Array.isArray(node)) {
+      node.forEach((item) => {
+        if (item && typeof item === 'object' && !Array.isArray(item) && typeof item.unit === 'string' && item.unit.trim().toLowerCase() !== 'unit') add('units', item.unit);
+        collectUnits(item, depth + 1);
+      });
+    } else {
+      Object.values(node).forEach((child) => collectUnits(child, depth + 1));
+    }
+  };
+  (docs || []).forEach((doc) => {
+    const key = String((doc && doc.key) || '');
+    const data = doc && doc.data;
+    if (key === 'ww_raw_materials') {
+      rows(data).forEach((r) => { add('locations', r && r.location); add('suppliers', r && r.supplier); });
+    } else if (key === 'ww_finished_products') {
+      rows(data).forEach((r) => add('locations', r && r.location));
+    } else if (/^ww_inventory_\d{4}-\d{2}$/.test(key) && data && typeof data === 'object') {
+      rows(data.rawMaterials).forEach((r) => { add('locations', r && r.location); add('suppliers', r && r.supplier); });
+      rows(data.finishedProducts).forEach((r) => add('locations', r && r.location));
+    } else if (/^ww_sales_\d{4}-\d{2}$/.test(key) && data && typeof data === 'object') {
+      rows(data.invoices).concat(rows(data.salesOrders)).forEach((r) => { add('carTypes', r && r.carType); add('carNumbers', r && r.carNumber); });
+    } else if (key === 'ww_purchase_data_v2' && data && typeof data === 'object') {
+      rows(data.purchaseOrders).forEach((r) => add('items', r && r.item));
+      rows(data.suppliers).forEach((r) => add('suppliers', r && r.name));
+    } else if (key === 'ww_accounting_data_v2' && data && typeof data === 'object') {
+      rows(data.ledger).concat(rows(data.cashbook)).forEach((r) => add('descriptions', r && r.desc));
+    } else if (key === 'ww_bom_data') {
+      collectUnits(data, 0);
+    }
+  });
+  const result = {};
+  names.forEach((n) => {
+    result[n] = Array.from(tally[n].values())
+      .map((spellings) => Array.from(spellings.entries()).sort((a, b) => b[1] - a[1])[0][0])
+      .sort((a, b) => a.localeCompare(b));
+  });
+  return result;
+}
+
+let suggestionCache = { at: 0, value: null };
+app.get('/api/suggestions', ensureAuthenticated, async (req, res, next) => {
+  try {
+    if (suggestionCache.value && Date.now() - suggestionCache.at < 10000) return res.json(suggestionCache.value);
+    const docs = await AppData.find({
+      $or: [
+        { key: { $in: ['ww_raw_materials', 'ww_finished_products', 'ww_purchase_data_v2', 'ww_accounting_data_v2', 'ww_bom_data'] } },
+        { key: /^ww_inventory_\d{4}-\d{2}$/ },
+        { key: /^ww_sales_\d{4}-\d{2}$/ },
+      ],
+    }).lean();
+    const value = collectSuggestionLists(docs);
+    suggestionCache = { at: Date.now(), value };
+    res.json(value);
+  } catch (error) { next(error); }
+});
+
 app.get('/api/months', ensureAuthenticated, async (req, res, next) => {
   try {
     await ensureCurrentMonthShared();
@@ -3983,6 +4145,15 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
         const activityBatchId = getActivityBatchId(req);
 
+        // Sales orders are logged as "sales" so the feed counts an order + its invoice as one sales record.
+        await logIdOrContentDiffActivity({
+          req,
+          entityType: 'sales',
+          previousArr: Array.isArray(serverData.salesOrders) ? serverData.salesOrders : [],
+          nextArr: normalized.salesOrders,
+          batchId: activityBatchId,
+          ignoreFields: ['sourceInvoiceId', 'clientTxnKey', 'txnKey'],
+        });
         const INVOICE_ACTIVITY_FIELDS = ['customer', 'amount', 'status', 'date', 'paymentMode', 'carType', 'carNumber', 'promo'];
 
         for (const inv of normalized.invoices) {
@@ -4076,10 +4247,30 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
 
       const nextObj = normalized && typeof normalized === 'object' ? normalized : {};
 
+      // Every other page that saves through this route is logged too, so the
+      // Business Activity feed shows what each person did on any page.
+      if (/^ww_inventory_\d{4}-\d{2}$/.test(String(key))) {
+        // Raw materials / finished products are logged via their own shared keys; the
+        // monthly payload adds equipment and customers (Inventory page tabs).
+        await logIdOrContentDiffActivity({ req, entityType: 'equipment', previousArr: priorObj.equipment, nextArr: nextObj.equipment, batchId: activityBatchId });
+        await logIdOrContentDiffActivity({ req, entityType: 'customers', previousArr: priorObj.customers, nextArr: nextObj.customers, batchId: activityBatchId });
+      }
+      if (key === 'ww_sales_months' || key === 'ww_inventory_months') {
+        const before = new Set(Array.isArray(priorDataForActivity) ? priorDataForActivity.map(String) : []);
+        for (const m of (Array.isArray(normalized) ? normalized.map(String) : [])) {
+          if (!before.has(m)) await logActivity({ req, action: 'create', entityType: 'month', entityId: m, batchId: activityBatchId });
+        }
+      }
+      if (key === 'ww_bom_data') {
+        await logObjectChangeActivity({ req, entityType: 'bom', previousObj: priorObj, nextObj, batchId: activityBatchId });
+      }
+      if (key === 'ww_cost_centre_budgets') {
+        await logObjectChangeActivity({ req, entityType: 'budget', previousObj: priorObj, nextObj, batchId: activityBatchId });
+      }
       if (key === 'ww_raw_materials') {
-        await logContentDiffActivity({ req, entityType: 'inventory', previousArr: priorDataForActivity, nextArr: normalized, batchId: activityBatchId });
+        await logIdOrContentDiffActivity({ req, entityType: 'inventory', previousArr: priorDataForActivity, nextArr: normalized, batchId: activityBatchId });
       } else if (key === 'ww_finished_products') {
-        await logContentDiffActivity({ req, entityType: 'finishedProducts', previousArr: priorDataForActivity, nextArr: normalized, batchId: activityBatchId });
+        await logIdOrContentDiffActivity({ req, entityType: 'finishedProducts', previousArr: priorDataForActivity, nextArr: normalized, batchId: activityBatchId });
       } else if (key === 'ww_production_batches') {
 
         await logContentDiffActivity({ req, entityType: 'production', previousArr: priorDataForActivity, nextArr: normalized, batchId: activityBatchId });
@@ -4099,6 +4290,7 @@ app.put('/api/app-data/:key', ensureAuthenticated, async (req, res, next) => {
         await logContentDiffActivity({ req, entityType: 'accounting', previousArr: priorObj.salaries, nextArr: nextObj.salaries, batchId: activityBatchId });
 
         await logContentDiffActivity({ req, entityType: 'accounting', previousArr: priorObj.assets, nextArr: nextObj.assets, batchId: activityBatchId });
+        await logContentDiffActivity({ req, entityType: 'accounting', previousArr: priorObj.currencies, nextArr: nextObj.currencies, batchId: activityBatchId });
 
       }
 
@@ -4486,6 +4678,7 @@ app.post('/api/users', ensureAuthenticated, ensureRole('users'), async (req, res
     requireFields(req.body, ['name', 'email', 'role', 'password']);
 
     const nextRole = String(req.body.role).trim().toLowerCase();
+    if (!['ceo', 'manager', 'supervisor', 'staff'].includes(nextRole)) throw createError(400, 'Please select a valid role');
     const explicitCanEditDelete = typeof req.body.canEditDelete === 'boolean' ? !!req.body.canEditDelete : undefined;
     const nextCanEditDelete = (nextRole === 'ceo' || nextRole === 'manager')
       ? true
@@ -4990,6 +5183,7 @@ app.put('/api/users/:id', ensureAuthenticated, ensureRole('users'), async (req, 
     if (req.body.email) update.email = String(req.body.email).trim().toLowerCase();
 
     if (req.body.role) update.role = String(req.body.role).trim().toLowerCase();
+    if (update.role && !['ceo', 'manager', 'supervisor', 'staff'].includes(update.role)) throw createError(400, 'Please select a valid role');
 
     if (typeof req.body.canEditDelete === 'boolean') {
       const nextRole = String(update.role || existingUser.role || '').trim().toLowerCase();
@@ -6091,6 +6285,7 @@ app.post('/api/trash/:id/restore', ensureAuthenticated, ensureRole('users'), asy
       if (restoredActions.some((a) => a.module === 'sales' || a.module === 'invoices')) await refreshCustomerStats();
 
       if (restoredActions.some((a) => a.module === 'inventory')) await refreshInventoryStatuses();
+      await logActivity({ req, action: 'create', entityType: trashItem.module || 'record', entityId: req.params.id, details: 'restored from trash' });
 
       res.json({
 
@@ -6177,6 +6372,7 @@ app.post('/api/trash/:id/restore', ensureAuthenticated, ensureRole('users'), asy
     if (trashItem.module === 'sales' || trashItem.module === 'invoices') await refreshCustomerStats();
 
     if (trashItem.module === 'inventory') await refreshInventoryStatuses();
+    await logActivity({ req, action: 'create', entityType: trashItem.module || 'record', entityId: req.params.id, details: 'restored from trash' });
 
 
 
@@ -6340,6 +6536,7 @@ app.post('/api/approvals/:id/decision', ensureAuthenticated, ensureRole('approva
 
     await refreshInventoryStatuses();
 
+    await logActivity({ req, action: 'update', entityType: 'approvals', entityId: approvalId, details: decision });
     res.json({ ok: true });
 
   } catch (error) { next(error); }

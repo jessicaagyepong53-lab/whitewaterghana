@@ -145,8 +145,8 @@
     var style = document.createElement('style');
     style.id = 'ww-mm-styles';
     style.textContent = [
-      '.ww-del-month-btn{display:inline-flex;align-items:center;gap:6px;margin-left:8px;padding:7px 14px;border:1.5px solid #dc2626;border-radius:8px;background:#fff;color:#dc2626;font:inherit;font-size:.85rem;font-weight:600;cursor:pointer;transition:background .15s,color .15s}',
-      '.ww-del-month-btn:hover,.ww-del-month-btn:focus-visible{background:#dc2626;color:#fff;outline:none}',
+      'button.ww-del-month-btn,.month-selector-bar button.ww-del-month-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;margin-left:8px;padding:7px 14px;border:1.5px solid #dc2626;border-radius:8px;background:#fff;color:#dc2626;font:inherit;font-size:.85rem;font-weight:600;cursor:pointer;transition:background .15s,color .15s}',
+      'button.ww-del-month-btn:hover,button.ww-del-month-btn:focus-visible,.month-selector-bar button.ww-del-month-btn:hover,.month-selector-bar button.ww-del-month-btn:focus-visible{background:#dc2626;color:#fff;outline:none}',
       '.ww-mm-overlay{position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(15,23,42,.55)}',
       '.ww-mm-modal{width:100%;max-width:440px;background:#fff;border-radius:12px;box-shadow:0 20px 50px rgba(0,0,0,.3);overflow:hidden}',
       '.ww-mm-head{display:flex;align-items:center;gap:10px;padding:14px 18px;background:#fef2f2;border-bottom:1px solid #fecaca;color:#b91c1c}',
@@ -163,7 +163,7 @@
       '.ww-mm-confirm:disabled{opacity:.45;cursor:not-allowed}',
       '.ww-mm-refresh-bar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:10001;display:flex;gap:12px;align-items:center;padding:10px 16px;border-radius:10px;background:#0f172a;color:#fff;font-size:.9rem;box-shadow:0 8px 24px rgba(0,0,0,.3)}',
       '.ww-mm-refresh-bar button{padding:5px 12px;border:none;border-radius:6px;background:#38bdf8;color:#0f172a;font-weight:700;cursor:pointer}',
-      '@media (max-width:600px){.ww-del-month-btn{margin-left:0;margin-top:8px}}'
+      '@media (max-width:640px){button.ww-del-month-btn,.month-selector-bar button.ww-del-month-btn{margin-left:0}.ww-mm-refresh-bar{left:12px;right:12px;transform:none;justify-content:space-between}}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -237,7 +237,8 @@
         confirmBtn.disabled = false;
       }
     }).catch(function (err) {
-      body.innerHTML = '<p>Could not check this month: ' + (err.message || 'unknown error') + '</p>';
+      var hint = err.status === 404 ? ' The server has not been updated yet: replace server.js and restart it.' : '';
+      body.innerHTML = '<p>Could not check this month: ' + (err.message || 'unknown error') + '.' + hint + '</p>';
       confirmBtn.style.display = 'none';
     });
 
@@ -281,6 +282,7 @@
     anchor.insertAdjacentElement('afterend', btn);
   }
 
+
   /* Called by the New Month buttons so a deleted month can be added again. */
   window.wwMonthManager = {
     reopenMonth: function (month) {
@@ -291,7 +293,11 @@
   async function init() {
     injectStyles();
     await checkMonths(true);
-    if (MONTH_PAGES.indexOf(page) !== -1 && state.canManage) mountDeleteButton();
+    if (MONTH_PAGES.indexOf(page) !== -1) {
+      var role = '';
+      try { role = String((await resolveCurrentUserRole()) || '').toLowerCase(); } catch (_e) { /* ignore */ }
+      if (state.canManage || role === 'ceo' || role === 'manager') mountDeleteButton();
+    }
 
     // Pages left open: pick up a new month / another device's changes.
     setInterval(function () { if (!document.hidden) checkMonths(false); }, 60000);
